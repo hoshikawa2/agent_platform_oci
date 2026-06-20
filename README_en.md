@@ -18,6 +18,92 @@ The goal is for each new agent to implement only its domain logic — prompts, b
 
 >**Note: If you want to test the DEMO, go to the Section 17 and 18.**
 
+## SPECs / SDDs of the Agent Platform OCI
+
+The Agent Platform OCI documentation is organized into numbered SPECs/SDDs, each covering an architectural, operational, or governance area of the platform. The objective is to standardize the construction, evolution, operation, and certification of enterprise agents based on the Agent Framework OCI.
+
+>**/agent_platform_oci/specs**
+
+### SPEC-001 — Architecture
+
+Defines the overall architecture of the platform, its main components, repository structure, logical and physical architecture, core contracts, main flow, non-functional requirements, and acceptance criteria.
+
+### SPEC-002 — Agent Runtime
+
+Describes the conversational execution runtime of the agents, including LangGraph, state, memory, checkpoints, routing, supervisor, BusinessContext, MCP integration, RAG, events, and error handling.
+
+### SPEC-003 — AI Gateway
+
+Specifies the gateway responsible for centralizing LLM and embedding calls, including request/response contracts, profiles, providers, OCI authentication, fallback, rate limiting, metrics, security, and observability.
+
+### SPEC-004 — MCP Gateway
+
+Defines the MCP integration model, including tool catalog, routing, execution, authorization, cache, retry, timeout, parameter mapping, events, metrics, and standardized tool responses.
+
+### SPEC-005 — Guardrails
+
+Describes the platform guardrails model, covering input, output, tools, RAG, and final response policies. It also defines phases, execution modes, guardrail types, LLM profiles, base codes, events, tests, and acceptance criteria.
+
+### SPEC-006 — Evals
+
+Defines the platform evaluation layer, including online evaluation, offline evaluation, regression, certification, datasets, judges, metrics, CLI, API, result persistence, and evidence publication.
+
+### SPEC-007 — Observability
+
+Specifies the observability model, including logs, traces, metrics, Langfuse, OpenTelemetry, IC/NOC/GRL events, dashboards, alerts, data masking, and operational evidence generation.
+
+### SPEC-008 — Deployment
+
+Describes the platform packaging and deployment process, including deployable components, CI/CD pipeline, Kubernetes/OKE, Docker, secrets, OCI authentication, health checks, rollback, smoke tests, and certification stage.
+
+### SPEC-009 — Channel Gateway
+
+Defines the channel gateway, responsible for normalizing external payloads into the platform’s canonical contract and translating responses for each channel. It covers operation modes, idempotency, versioning, security, errors, and anti-patterns.
+
+### SPEC-010 — Agent Development
+
+Describes the standard for developing agents using templates, YAML configuration, BusinessContext, MCP, guardrails, judges, RAG, memory, observability, and evals. It also differentiates the responsibilities of the framework and the agent.
+
+### SPEC-011 — Governance Model
+
+Defines the platform governance model, including ownership, roles and responsibilities, RACI, governance of agents, prompts, guardrails, judges, models, MCP, datasets, approval process, and mandatory evidence.
+
+### SPEC-012 — Canonical Contracts
+
+Documents the platform’s canonical contracts, such as GatewayRequest, ChannelResponse, BusinessContext, AgentState, ToolInvocation, ToolResult, LLMRequest, LLMResponse, EvaluationRun, and EventEnvelope. It also defines rules for evolving these contracts.
+
+### SPEC-013 — Versioning and Compatibility Model
+
+Defines the platform versioning and compatibility model, including Semantic Versioning, versioned artifacts, contract versioning, compatibility matrix, deprecation policy, migration, and rollback.
+
+### SPEC-014 — Templates and Agent Creation Model
+
+Describes the official templates and the model for creating agents from scratch. It explains what belongs to the framework, what belongs to the agent, the standard structure, and the step-by-step process to copy a template, define scope, register the agent, configure routes, tools, BusinessContext, prompts, datasets, and tests.
+
+### SPEC-015 — Adoption and Eligibility Criteria
+
+Defines clear criteria for adopting the platform, including recommended use cases, non-recommended use cases, business entry criteria, architecture, security, quality, operation, exception process, and adoption checklist.
+
+### SPEC-016 — Agent Development Lifecycle
+
+Describes the complete agent development lifecycle, from discovery and scope definition to design, prompt, MCP, RAG, implementation, testing, evaluation, certification, homologation, and production.
+
+### SPEC-017 — Release Management and CI/CD
+
+Defines the release and CI/CD model, including the standard pipeline, stages, release artifacts, quality gates, rollback strategy, common errors, and acceptance criteria.
+
+### SPEC-018 — Security and Identity Model
+
+Specifies the platform security and identity model, covering authentication, Workload Identity, authorization, secrets, data protection, MCP security, channel security, auditing, and acceptance criteria.
+
+### SPEC-019 — Evaluation and Certification Framework
+
+Details the evaluation and certification framework, including evaluation architecture, metrics, datasets, EvaluationRun, CLI, certification process, mandatory evidence, and acceptance criteria.
+
+### SPEC-020 — Operational Readiness and SRE Model
+
+Defines the platform operational readiness and SRE model, including operated components, health checks, readiness, SLOs, metrics, dashboards, alerts, runbooks, incident management, capacity, and production checklist.
+
 ---
 
 ## 1. Architecture overview

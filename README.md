@@ -1,6 +1,6 @@
 # Agent Platform OCI - Manual do Desenvolvedor
 
-Este tutorial ensina como implementar um novo agente a partir do `agent_template_backend`, usando o framework como motor corporativo de execução.
+Este manual ensina como implementar um novo agente a partir do `agent_template_backend`, usando o framework como motor corporativo de execução.
 
 A ideia central é simples:
 

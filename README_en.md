@@ -7771,7 +7771,7 @@ workflow completed
 At the root of the project:
 
 ```bash
-cd agent_framework_oci
+cd agent_platform_oci
 python -m venv .venv
 ```
 
@@ -7901,7 +7901,7 @@ curl -X POST http://localhost:8000/debug/mcp/call/consultar_titulo_financeiro \
 ### 18.4. Upload Frontend for testing
 
 ```bash
-cd agent_framework_oci
+cd agent_platform_oci
 cd agent_frontend
 python -m http.server 5173
 ```

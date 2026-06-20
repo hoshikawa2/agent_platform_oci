@@ -1,4 +1,4 @@
-# Tutorial — Implementing an Agent using `agent_template_backend`
+# Agent Platform OCI - Developer Guide
 
 This tutorial teaches you how to implement a new agent from `agent_template_backend`, using the framework as a corporate execution engine.
 

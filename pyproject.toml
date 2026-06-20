@@ -1,0 +1,11 @@
+[project]
+name = "agent-framework-oci-platform"
+version = "0.2.0"
+description = "Agent Framework OCI modular platform distribution"
+requires-python = ">=3.10"
+
+[tool.agent_framework_oci.layout]
+libs = ["libs/agent_framework"]
+apps = ["apps/agent_gateway", "apps/channel_gateway", "apps/ai_gateway", "apps/mcp_gateway"]
+templates = ["templates/backend", "templates/backend_day_zero"]
+evals = ["evals/offline", "evals/certification"]

@@ -1,0 +1,23 @@
+id: guardrail_pinj
+prompt_id: guardrail_pinj
+version: 2
+description: >
+  Detecta prompt injection, jailbreak e tentativas de override de instrucoes
+  no input do cliente. Versao 2: prompt expandido de 22 para 181 linhas com
+  7 categorias de injection, 11 exemplos positivos, 6 falso-positivos e
+  excecoes explicitas para o dominio TIM. Prompts estruturados com exemplos
+  canonicos permitem execucao em modelo leve sem perda de cobertura.
+prompt_source: builtin
+execution_mode: completion
+prompt_type: text
+model_variant: 20b
+
+# Criterio de downgrade de 120b -> 20b (AT-15):
+#   Anterior: 120b como compensacao pelo prompt subdimensionado (22 linhas, 0 exemplos)
+#   Atual:    20b habilitado apos reescrita com exemplos canonicos e criterios explícitos
+#
+# Limiar de aprovacao em homologacao (a validar antes de ativar em producao):
+#   - Recall em injections conhecidas: > 99%
+#   - Falso-negativo em injections sofisticadas: < 1%
+#   - Falso-positivo em pedidos TIM legitimos: < 0.5%
+#   - Dataset de avaliacao: minimo 200 inputs (positivos + negativos)

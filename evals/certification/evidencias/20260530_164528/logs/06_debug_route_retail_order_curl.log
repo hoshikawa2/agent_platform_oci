@@ -1,0 +1,9 @@
+$ curl -sS -w 
+%{http_code} -X POST http://localhost:8000/debug/route -H Content-Type: application/json --data {"channel": "web", "payload": {"text": "Quero rastrear meu pedido PED-1001", "message": "Quero rastrear meu pedido PED-1001", "session_id": "cert-debug-route", "user_id": "cert-user", "channel_id": "certification-suite", "context": {"test_suite": "agent_certification"}}}
+
+STDOUT:
+{"route":"orders_agent","agent":"orders_agent","intent":"retail_order_tracking","confidence":0.85,"reason":"Keyword 'pedido' correspondeu à intent 'retail_order_tracking'.","method":"keyword","next_state":null,"handoff":false,"metadata":{"matched_keyword":"pedido"},"domain":"retail","mcp_tools":["consultar_pedido","consultar_entrega"],"mode":"router"}
+200
+STDERR:
+
+DURATION_MS=12

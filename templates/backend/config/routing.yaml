@@ -1,0 +1,114 @@
+# Roteamento enterprise configurável com MCP-aware intents.
+router:
+  # mode também pode ser definido por variável de ambiente ROUTING_MODE.
+  # Valores: router | supervisor
+  mode: router
+  fallback_agent: billing_agent
+  confidence_threshold: 0.65
+  allow_handoff: true
+
+state_policies:
+  - state: WAITING_BILLING_CONFIRMATION
+    agent: billing_agent
+    description: Mantém mensagens curtas como "sim" ou "não" no fluxo de fatura.
+  - state: WAITING_PRODUCT_CONFIRMATION
+    agent: product_agent
+    description: Mantém confirmações no fluxo de produtos/serviços.
+  - state: WAITING_ORDER_CONFIRMATION
+    agent: orders_agent
+    description: Mantém confirmações no fluxo de pedidos.
+  - state: WAITING_SUPPORT_CONFIRMATION
+    agent: support_agent
+    description: Mantém confirmações no fluxo de suporte retail.
+
+intents:
+  - name: billing_invoice_explanation
+    domain: telecom
+    agent: billing_agent
+    description: Dúvidas sobre fatura, cobrança, vencimento, segunda via, contestação e valores.
+    priority: 10
+    mcp_tools:
+      - consultar_fatura
+      - consultar_pagamentos
+    keywords:
+      - fatura
+      - conta
+      - cobrança
+      - boleto
+      - vencimento
+      - segunda via
+      - contestar
+      - valor alto
+      - invoice
+    examples:
+      - Minha fatura veio alta.
+      - Quero entender uma cobrança.
+      - Preciso da segunda via da conta.
+
+  - name: product_services_information
+    domain: telecom
+    agent: product_agent
+    description: Dúvidas sobre plano, pacote, produto, serviço, VAS, internet, roaming e benefícios.
+    priority: 20
+    mcp_tools:
+      - consultar_plano
+      - listar_servicos
+    keywords:
+      - plano
+      - produto
+      - serviço
+      - pacote
+      - internet
+      - roaming
+      - vas
+      - benefício
+      - assinatura
+    examples:
+      - Quais serviços estão ativos no meu plano?
+      - Quero saber sobre meu pacote de internet.
+      - Tenho roaming internacional?
+
+  - name: retail_order_tracking
+    domain: retail
+    agent: orders_agent
+    description: Consulta de pedido, entrega, rastreamento, atraso e status de compra.
+    priority: 30
+    mcp_tools:
+      - consultar_pedido
+      - consultar_entrega
+    keywords:
+      - pedido
+      - entrega
+      - rastreio
+      - rastreamento
+      - encomenda
+      - compra
+      - atraso
+      - correios
+    examples:
+      - Meu pedido não chegou.
+      - Quero rastrear minha entrega.
+      - Qual é o status da minha compra?
+
+  - name: retail_support_exchange_return
+    domain: retail
+    agent: support_agent
+    description: Suporte, troca, devolução, garantia e problema com produto.
+    priority: 40
+    mcp_tools:
+      - consultar_pedido
+      - solicitar_troca
+      - solicitar_devolucao
+    keywords:
+      - troca
+      - devolução
+      - devolver
+      - garantia
+      - defeito
+      - produto quebrado
+      - suporte
+      - arrependimento
+    examples:
+      - Quero trocar um produto.
+      - Meu produto veio com defeito.
+      - Como faço uma devolução?

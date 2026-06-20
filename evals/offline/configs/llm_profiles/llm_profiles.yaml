@@ -1,0 +1,11 @@
+profiles:
+  judge:
+    provider: oci_openai
+    model: meta.llama-3.3-70b-instruct
+    temperature: 0
+    max_tokens: 900
+  mock:
+    provider: mock
+    model: mock-judge
+    temperature: 0
+    max_tokens: 300

@@ -1,0 +1,14 @@
+{
+  "APP_ENV": "local",
+  "LLM_PROVIDER": "oci_openai",
+  "ENABLE_LANGFUSE": true,
+  "LANGFUSE_HOST": "http://localhost:3005",
+  "TELEMETRY_ENABLED": true,
+  "SQLITE_DB_PATH": "./data/agent_framework.db",
+  "SESSION_REPOSITORY_PROVIDER": "autonomous",
+  "MEMORY_REPOSITORY_PROVIDER": "autonomous",
+  "CHECKPOINT_REPOSITORY_PROVIDER": "autonomous",
+  "AGENTS_CONFIG_PATH": "./config/agents.yaml",
+  "ROUTING_CONFIG_PATH": "./config/routing.yaml",
+  "ROUTING_MODE": "router"
+}

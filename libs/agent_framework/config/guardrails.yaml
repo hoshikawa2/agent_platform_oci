@@ -1,0 +1,16 @@
+# Fonte da verdade para quais guardrails rodam.
+# Se este arquivo existir, somente os rails habilitados aqui serão instanciados.
+# Se este arquivo não existir, o framework usa o bundle default legado.
+
+input:
+  - code: MSK
+    enabled: true
+  - code: VLOOP
+    enabled: true
+
+output:
+  - code: REVPREC
+    enabled: true
+
+retrieval: []
+tool: []

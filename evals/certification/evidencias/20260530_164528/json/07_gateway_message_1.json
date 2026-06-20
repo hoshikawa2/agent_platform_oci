@@ -1,0 +1,229 @@
+{
+  "channel": "web",
+  "session_id": "default:telecom_contas:cert-session-20260530194529",
+  "text": "[BillingAgent] Olá, Cristiano! Segue o detalhamento da fatura solicitada:\n\n- Número da fatura: INV-CERT-001\n- Número de telefone: ***CPF_MASKED***\n- Valor total: R$ 249,90\n- Vencimento: 10/06/2026\n- Status: Aberta\n\nItens cobrados:\n- Plano Controle 50GB: R$ 149,90\n- Roaming internacional: R$ 50,00\n- Serviços digitais: R$ 50,00\n\nSe precisar de mais informações sobre esta fatura, estou à disposição.",
+  "metadata": {
+    "channel_id": null,
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "original_session_id": "cert-session-20260530194529",
+    "conversation_key": "default:telecom_contas:cert-session-20260530194529",
+    "message_id": "8e95357c-4ba7-4a51-a6dd-ae5527f23fd2",
+    "route": "billing_agent",
+    "intent": "billing_invoice_explanation",
+    "route_decision": {
+      "route": "billing_agent",
+      "agent": "billing_agent",
+      "intent": "billing_invoice_explanation",
+      "confidence": 0.85,
+      "reason": "Keyword 'fatura' correspondeu à intent 'billing_invoice_explanation'.",
+      "method": "keyword",
+      "next_state": null,
+      "handoff": false,
+      "metadata": {
+        "matched_keyword": "fatura"
+      },
+      "domain": "telecom",
+      "mcp_tools": [
+        "consultar_fatura",
+        "consultar_pagamentos"
+      ]
+    },
+    "domain": "telecom",
+    "mcp_tools": [
+      "consultar_fatura",
+      "consultar_pagamentos"
+    ],
+    "mcp_results": [
+      {
+        "tool_name": "consultar_fatura",
+        "server_name": "telecom",
+        "ok": true,
+        "result": {
+          "invoice_id": "INV-EXEMPLO-001",
+          "msisdn": "11999999999",
+          "valor_total": 249.9,
+          "vencimento": "2026-06-10",
+          "status": "ABERTA",
+          "itens": [
+            {
+              "descricao": "Plano Controle 50GB",
+              "valor": 149.9
+            },
+            {
+              "descricao": "Roaming internacional",
+              "valor": 50.0
+            },
+            {
+              "descricao": "Serviços digitais",
+              "valor": 50.0
+            }
+          ]
+        },
+        "error": null,
+        "metadata": {
+          "server": "telecom",
+          "tool": "consultar_fatura"
+        }
+      },
+      {
+        "tool_name": "consultar_pagamentos",
+        "server_name": "telecom",
+        "ok": true,
+        "result": {
+          "msisdn": "11999999999",
+          "pagamentos": [
+            {
+              "data": "2026-05-10",
+              "valor": 199.9,
+              "status": "CONFIRMADO"
+            },
+            {
+              "data": "2026-04-10",
+              "valor": 189.9,
+              "status": "CONFIRMADO"
+            }
+          ]
+        },
+        "error": null,
+        "metadata": {
+          "server": "telecom",
+          "tool": "consultar_pagamentos"
+        }
+      }
+    ],
+    "judges": [
+      {
+        "name": "response_quality",
+        "score": 1.0,
+        "passed": true,
+        "reason": "Tamanho e completude básicos"
+      },
+      {
+        "name": "groundedness",
+        "score": 0.6,
+        "passed": true,
+        "reason": "Sem evidência configurada; aprovado com ressalva"
+      }
+    ],
+    "guardrails": [
+      {
+        "code": "MSIZE",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "size": 83,
+          "max_chars": 12000
+        }
+      },
+      {
+        "code": "MSK",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": "Meu nome é Cristiano e quero consultar a fatura INV-CERT-001 do número ***CPF_MASKED***.",
+        "metadata": {
+          "masked": true,
+          "entities": [
+            "CPF_MASKED"
+          ]
+        }
+      },
+      {
+        "code": "TOX",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "toxicity_detected": false,
+          "severity": "none",
+          "terms": []
+        }
+      },
+      {
+        "code": "PINJ",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "prompt_injection_detected": false,
+          "score": 0.0,
+          "matches": []
+        }
+      },
+      {
+        "code": "JBRK",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "jailbreak_detected": false,
+          "score": 0.0,
+          "matches": []
+        }
+      },
+      {
+        "code": "VLOOP",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "history_window": 1,
+          "repeated": false
+        }
+      },
+      {
+        "code": "PII_OUT",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": "[BillingAgent] Olá, Cristiano! Segue o detalhamento da fatura solicitada:\n\n- Número da fatura: INV-CERT-001\n- Número de telefone: ***CPF_MASKED***\n- Valor total: R$ 249,90\n- Vencimento: 10/06/2026\n- Status: Aberta\n\nItens cobrados:\n- Plano Controle 50GB: R$ 149,90\n- Roaming internacional: R$ 50,00\n- Serviços digitais: R$ 50,00\n\nSe precisar de mais informações sobre esta fatura, estou à disposição.",
+        "metadata": {
+          "masked": true,
+          "entities": [
+            "CPF_MASKED"
+          ]
+        }
+      },
+      {
+        "code": "CMP",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "softened_absolute_claims": 0
+        }
+      },
+      {
+        "code": "REVPREC",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "has_action_claim": false,
+          "confirmed": false
+        }
+      },
+      {
+        "code": "GND",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "grounded": false,
+          "risk": "high",
+          "is_specific": true
+        }
+      },
+      {
+        "code": "ALUC_RISK",
+        "allowed": true,
+        "reason": "",
+        "sanitized_text": null,
+        "metadata": {
+          "risk": "low",
+          "support_count": 0
+        }
+      }
+    ]
+  }
+}

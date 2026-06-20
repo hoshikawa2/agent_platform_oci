@@ -1,0 +1,51 @@
+# ============================================================================
+# DAY ZERO
+# Este arquivo foi copiado do agent_template_backend original.
+# Ajuste os exemplos abaixo para o domínio do seu novo agente.
+# ============================================================================
+mcp_parameter_mapping:
+  defaults:
+    use_mock: true
+  tools:
+    consultar_fatura:
+      map:
+        customer_key: msisdn
+        contract_key: invoice_id
+        interaction_key: ura_call_id
+        session_key: session_id
+    consultar_pagamentos:
+      map:
+        customer_key: msisdn
+        interaction_key: ura_call_id
+        session_key: session_id
+    consultar_plano:
+      map:
+        customer_key: msisdn
+        resource_key: asset_id
+        contract_key: asset_id
+        session_key: session_id
+    listar_servicos:
+      map:
+        customer_key: msisdn
+        session_key: session_id
+    consultar_pedido:
+      map:
+        customer_key: customer_id
+        contract_key: order_id
+        session_key: session_id
+    consultar_entrega:
+      map:
+        contract_key: order_id
+        session_key: session_id
+    solicitar_troca:
+      map:
+        contract_key: order_id
+        session_key: session_id
+      defaults:
+        reason: Solicitação aberta pelo atendimento conversacional.
+    solicitar_devolucao:
+      map:
+        contract_key: order_id
+        session_key: session_id
+      defaults:
+        reason: Solicitação aberta pelo atendimento conversacional.

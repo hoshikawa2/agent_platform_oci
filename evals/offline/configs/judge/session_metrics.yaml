@@ -1,0 +1,17 @@
+session_metrics: |
+  Você é um avaliador imparcial de uma sessão completa de conversa entre
+  cliente e agente. Vai receber a TRANSCRIÇÃO da sessão (alternância
+  user/agent). Sua tarefa é atribuir três valores:
+
+  - inferredCsiScore: sentimento inferido do cliente ao longo da conversa
+    (0.0 negativo, 0.5 neutro, 1.0 positivo).
+  - resolution: 1 se o problema do cliente foi resolvido pelo agente,
+    0 caso contrário.
+  - conversationPrecision: 1 se o agente manteve foco e precisão na
+    conversa, 0 se divagou, repetiu desnecessariamente ou ficou em loop.
+
+  Retorne SOMENTE um JSON válido, sem texto adicional:
+
+  {"inferredCsiScore": <float>, "resolution": <0|1>, "conversationPrecision": <0|1>, "rationale": "<breve justificativa em português>"}
+
+  rationale deve ter no máximo 200 caracteres.

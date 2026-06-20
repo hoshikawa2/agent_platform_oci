@@ -1,0 +1,38 @@
+VALIDAÇÃO - GLOBAL SUPERVISOR
+
+Alterações implementadas:
+
+1. Framework
+- agent_framework.global_supervisor.models
+- agent_framework.global_supervisor.config
+- agent_framework.global_supervisor.session_store
+- agent_framework.global_supervisor.router
+- agent_framework.global_supervisor.client
+
+2. Novo serviço
+- agent_gateway/app/main.py
+- agent_gateway/app/settings.py
+- agent_gateway/config/backends.yaml
+- agent_gateway/README.md
+- agent_gateway/Dockerfile
+- agent_gateway/docs/ARQUITETURA_GLOBAL_SUPERVISOR.md
+
+3. Docker Compose
+- serviço agent-gateway adicionado na porta 8010.
+
+Validações executadas:
+
+- python3 -m compileall -q agent_framework/src/agent_framework/global_supervisor agent_gateway/app
+  Resultado: OK
+
+- Smoke test do roteamento híbrido:
+  Entrada 1: "Minha fatura veio alta" -> contas
+  Entrada 2: "e esse valor?" na mesma session_id -> contas por active_backend
+  Resultado: OK
+
+- Smoke test de import do app FastAPI:
+  from app.main import app, registry, router
+  Resultado: OK
+
+Observação:
+- O proxy SSE do gateway foi deixado como etapa futura. O endpoint /gateway/message/sse já roteia e encaminha como mensagem normal; para SSE fim-a-fim, pode-se implementar proxy de /gateway/events/{session_id} para o backend ativo.

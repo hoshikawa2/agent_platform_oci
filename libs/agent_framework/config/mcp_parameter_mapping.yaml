@@ -1,0 +1,67 @@
+mcp_parameter_mapping:
+  defaults:
+    use_mock: false
+  tools:
+    consultar_fatura:
+      map:
+        customer_key: msisdn
+        contract_key: invoice_id
+        interaction_key: ura_call_id
+        session_key: session_id
+
+      extract:
+        parametro_externo:
+          from: message
+          type: string
+          strategy: llm
+          description: >
+            Extraia da mensagem do usuário o valor necessário para o parâmetro
+            parametro_externo. Retorne null quando a informação não estiver
+            presente no texto.
+
+    consultar_pagamentos:
+      map:
+        customer_key: msisdn
+        interaction_key: ura_call_id
+        session_key: session_id
+    consultar_plano:
+      map:
+        customer_key: msisdn
+        resource_key: asset_id
+        contract_key: asset_id
+        session_key: session_id
+    listar_servicos:
+      map:
+        customer_key: msisdn
+        session_key: session_id
+    consultar_pedido:
+      map:
+        customer_key: customer_id
+        contract_key: order_id
+        session_key: session_id
+    consultar_entrega:
+      map:
+        contract_key: order_id
+        session_key: session_id
+    solicitar_troca:
+      map:
+        contract_key: order_id
+        session_key: session_id
+      defaults:
+        reason: Solicitação aberta pelo atendimento conversacional.
+    solicitar_devolucao:
+      map:
+        contract_key: order_id
+        session_key: session_id
+      defaults:
+        reason: Solicitação aberta pelo atendimento conversacional.
+    consultar_titulo_financeiro:
+      map:
+        customer_key: customer_id
+        contract_key: contract_id
+        interaction_key: interaction_id
+        session_key: session_id
+    consultar_pagamentos_financeiro:
+      map:
+        customer_key: customer_id
+        session_key: session_id

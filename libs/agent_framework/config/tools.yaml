@@ -1,0 +1,90 @@
+tools:
+  consultar_fatura:
+    description: Consulta dados resumidos de fatura por msisdn/invoice_id.
+    mcp_server: telecom
+    enabled: true
+    cache:
+      enabled: true
+      ttl_seconds: 600
+    args_schema:
+      msisdn: string
+      invoice_id: string
+
+  consultar_pagamentos:
+    description: Consulta histórico de pagamentos do cliente.
+    mcp_server: telecom
+    enabled: true
+    cache:
+      enabled: true
+      ttl_seconds: 300
+    args_schema:
+      msisdn: string
+
+  consultar_plano:
+    description: Consulta plano ativo e atributos comerciais.
+    mcp_server: telecom
+    enabled: true
+    cache:
+      enabled: true
+      ttl_seconds: 300
+    args_schema:
+      msisdn: string
+      asset_id: string
+
+  listar_servicos:
+    description: Lista serviços ativos e adicionais VAS.
+    mcp_server: telecom
+    enabled: true
+    cache:
+      enabled: true
+      ttl_seconds: 300
+    args_schema:
+      msisdn: string
+
+  consultar_pedido:
+    description: Consulta pedido de varejo por order_id/customer_id.
+    mcp_server: retail
+    enabled: true
+    cache:
+      enabled: true
+      ttl_seconds: 300
+    args_schema:
+      order_id: string
+      customer_id: string
+
+  consultar_entrega:
+    description: Consulta entrega e rastreamento do pedido.
+    mcp_server: retail
+    enabled: true
+    cache:
+      enabled: true
+      ttl_seconds: 300
+    args_schema:
+      order_id: string
+
+  solicitar_troca:
+    description: Simula abertura de solicitação de troca.
+    mcp_server: retail
+    enabled: true
+    tool_type: action
+    requires: [order_id, reason]
+    confirmation_required: false
+    cache:
+      enabled: false
+    args_schema:
+      order_id: string
+      reason: string
+
+  solicitar_devolucao:
+    description: Simula abertura de solicitação de devolução.
+    mcp_server: retail
+    enabled: true
+    tool_type: action
+    requires: [order_id, reason]
+    confirmation_required: false
+    cache:
+      enabled: false
+    args_schema:
+      order_id: string
+      reason: string
+

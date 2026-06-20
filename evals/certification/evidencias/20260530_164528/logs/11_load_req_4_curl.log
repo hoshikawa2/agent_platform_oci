@@ -1,0 +1,9 @@
+$ curl -sS -w 
+%{http_code} -X POST http://localhost:8000/debug/route -H Content-Type: application/json --data {"channel": "web", "payload": {"text": "Quero consultar a fatura e rastrear meu pedido", "message": "Quero consultar a fatura e rastrear meu pedido", "session_id": "cert-load", "user_id": "cert-user", "channel_id": "certification-suite", "context": {"test_suite": "agent_certification"}}}
+
+STDOUT:
+{"route":"billing_agent","agent":"billing_agent","intent":"billing_invoice_explanation","confidence":0.85,"reason":"Keyword 'fatura' correspondeu à intent 'billing_invoice_explanation'.","method":"keyword","next_state":null,"handoff":false,"metadata":{"matched_keyword":"fatura"},"domain":"telecom","mcp_tools":["consultar_fatura","consultar_pagamentos"],"mode":"router"}
+200
+STDERR:
+
+DURATION_MS=16

@@ -1,0 +1,9 @@
+$ curl -sS -w 
+%{http_code} -X POST http://localhost:8000/gateway/message -H Content-Type: application/json --data {"channel": "web", "payload": {"text": "Qual foi meu nome informado no começo?", "message": "Qual foi meu nome informado no começo?", "session_id": "cert-session-20260530194529", "user_id": "cert-user", "channel_id": "certification-suite", "context": {"test_suite": "agent_certification"}}}
+
+STDOUT:
+Internal Server Error
+500
+STDERR:
+
+DURATION_MS=2409

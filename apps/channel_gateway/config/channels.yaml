@@ -1,0 +1,13 @@
+channels:
+  web:
+    enabled: true
+    endpoint: /channels/web/message
+    adapter: web
+  whatsapp:
+    enabled: true
+    endpoint: /channels/whatsapp/webhook
+    adapter: whatsapp
+  voice:
+    enabled: true
+    endpoint: /channels/voice/transcript
+    adapter: voice

@@ -1,0 +1,15 @@
+{
+  "vus": 5,
+  "requests_per_vu": 2,
+  "total": 10,
+  "ok": 10,
+  "failed": 0,
+  "duration_s": 0.042,
+  "rps": 238.96,
+  "latency_ms_min": 14,
+  "latency_ms_avg": 17.3,
+  "latency_ms_max": 22,
+  "status_codes": {
+    "200": 10
+  }
+}

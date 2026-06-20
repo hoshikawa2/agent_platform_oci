@@ -1,0 +1,9 @@
+{
+  "provider_hint": "",
+  "sqlite_candidates": [
+    "/mnt/c/Users/hoshi/Downloads/agent_framework_oci_2/agent_certification_tests/data/agent_framework.db",
+    "/mnt/c/Users/hoshi/Downloads/agent_framework_oci_2/agent_certification_tests/agent_template_backend/data/agent_framework.db",
+    "/mnt/c/Users/hoshi/Downloads/agent_framework_oci_2/agent_certification_tests/data/agent_framework.db"
+  ],
+  "sqlite_found": null
+}

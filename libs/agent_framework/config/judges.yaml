@@ -1,0 +1,28 @@
+# Source of truth for the judge stage.
+# The simple schema remains valid. In this adapted version, these names use
+# calibrated LLM prompts by default:
+# - response_quality -> RQLT calibrated judge
+# - groundedness     -> ALUC calibrated judge
+# The model/provider comes from llm_profiles.yaml profile `judge`.
+# Calibrated LLM judges fail-closed by default. Set fail_closed: false only if you intentionally want fail-open.
+# To force old heuristic behavior, add `type: deterministic` to an entry.
+judges:
+  - name: response_quality
+    enabled: true
+    threshold: 0.7
+  - name: groundedness
+    enabled: true
+    threshold: 0.6
+
+# Optional calibrated judges:
+#  - name: tone
+#    enabled: true
+#    threshold: 0.0
+#  - name: sentiment
+#    enabled: true
+#    fail_on_negative: false
+#  - name: llm_judge
+#    type: llm
+#    enabled: true
+#    profile: judge
+#    fail_closed: true

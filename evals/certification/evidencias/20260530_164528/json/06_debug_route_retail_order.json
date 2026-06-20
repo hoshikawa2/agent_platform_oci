@@ -1,0 +1,19 @@
+{
+  "route": "orders_agent",
+  "agent": "orders_agent",
+  "intent": "retail_order_tracking",
+  "confidence": 0.85,
+  "reason": "Keyword 'pedido' correspondeu à intent 'retail_order_tracking'.",
+  "method": "keyword",
+  "next_state": null,
+  "handoff": false,
+  "metadata": {
+    "matched_keyword": "pedido"
+  },
+  "domain": "retail",
+  "mcp_tools": [
+    "consultar_pedido",
+    "consultar_entrega"
+  ],
+  "mode": "router"
+}

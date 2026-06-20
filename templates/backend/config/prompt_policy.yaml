@@ -1,0 +1,19 @@
+tone:
+  style: "claro, objetivo, empático"
+  forbidden_phrases:
+    - "procure atendimento humano"
+vocabulary:
+  preferred:
+    fatura: "fatura"
+    contestacao: "contestação"
+intents:
+  billing_agent:
+    - fatura
+    - boleto
+    - cobrança
+    - segunda via
+  product_agent:
+    - plano
+    - produto
+    - oferta
+    - serviço

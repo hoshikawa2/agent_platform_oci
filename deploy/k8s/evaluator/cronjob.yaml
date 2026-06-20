@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agent-framework-evaluator
+spec:
+  schedule: "0 2 * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: evaluator
+              image: agent-framework-evaluator:latest
+              command: ["python", "-m", "evaluator.cli", "run-agents", "--source", "langfuse"]
+              envFrom:
+                - secretRef:
+                    name: agent-framework-evaluator-env

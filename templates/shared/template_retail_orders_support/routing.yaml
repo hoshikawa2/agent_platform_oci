@@ -1,0 +1,50 @@
+router:
+  fallback_agent: support_agent
+  confidence_threshold: 0.65
+  allow_handoff: true
+
+state_policies:
+  - state: WAITING_ORDER_CONFIRMATION
+    agent: orders_agent
+    description: Mantém confirmações curtas no fluxo de pedido.
+  - state: WAITING_SUPPORT_CONFIRMATION
+    agent: support_agent
+    description: Mantém confirmações curtas no fluxo de suporte.
+
+intents:
+  - name: order_status_delivery
+    agent: orders_agent
+    description: Status de pedido, entrega, rastreio, troca, devolução e cancelamento de compra.
+    priority: 10
+    keywords:
+      - pedido
+      - entrega
+      - rastreio
+      - rastrear
+      - transportadora
+      - troca
+      - devolução
+      - cancelar compra
+      - nota fiscal
+    examples:
+      - Quero saber onde está meu pedido.
+      - Preciso devolver um produto.
+      - Minha entrega atrasou.
+
+  - name: account_payment_support
+    agent: support_agent
+    description: Problemas de login, cadastro, pagamento, cupom e suporte geral.
+    priority: 20
+    keywords:
+      - login
+      - senha
+      - cadastro
+      - pagamento
+      - cartão
+      - cupom
+      - erro no site
+      - suporte
+    examples:
+      - Não consigo entrar na minha conta.
+      - Meu cupom não funciona.
+      - O pagamento foi recusado.

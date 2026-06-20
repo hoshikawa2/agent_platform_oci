@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Agent Frontend</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>AI Agent Platform</h1>
+      <p>Frontend independente usando Channel Gateway HTTP + SSE no padrão FIRST.</p>
+    </header>
+    <section class="config">
+      <label>Backend URL <input id="backend" value="http://localhost:8000" /></label>
+      <label>Canal
+        <select id="channel"><option value="web">web</option><option value="whatsapp">whatsapp</option><option value="voice">voice</option></select>
+      </label>
+      <label>Session ID <input id="session" placeholder="gerado automaticamente" /></label>
+      <label><input id="useSse" type="checkbox" checked /> Usar SSE</label>
+      <span id="status">SSE aguardando</span>
+    </section>
+    <section id="chat" class="chat"></section>
+    <form id="form">
+      <input id="message" placeholder="Digite sua mensagem..." autocomplete="off" />
+      <button>Enviar</button>
+    </form>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

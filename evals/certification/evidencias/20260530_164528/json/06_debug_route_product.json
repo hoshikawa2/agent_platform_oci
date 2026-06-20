@@ -1,0 +1,19 @@
+{
+  "route": "product_agent",
+  "agent": "product_agent",
+  "intent": "product_services_information",
+  "confidence": 0.85,
+  "reason": "Keyword 'serviço' correspondeu à intent 'product_services_information'.",
+  "method": "keyword",
+  "next_state": null,
+  "handoff": false,
+  "metadata": {
+    "matched_keyword": "serviço"
+  },
+  "domain": "telecom",
+  "mcp_tools": [
+    "consultar_plano",
+    "listar_servicos"
+  ],
+  "mode": "router"
+}

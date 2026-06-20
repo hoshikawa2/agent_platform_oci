@@ -1,0 +1,9 @@
+$ curl -sS -w 
+%{http_code} -X POST http://localhost:8000/debug/mcp/call/consultar_fatura -H Content-Type: application/json --data {"msisdn": "11999999999", "invoice_id": "INV-CERT-001"}
+
+STDOUT:
+{"tool_name":"consultar_fatura","server_name":"telecom","ok":true,"result":{"invoice_id":"INV-CERT-001","msisdn":"11999999999","valor_total":249.9,"vencimento":"2026-06-10","status":"ABERTA","itens":[{"descricao":"Plano Controle 50GB","valor":149.9},{"descricao":"Roaming internacional","valor":50.0},{"descricao":"Serviços digitais","valor":50.0}]},"error":null,"metadata":{"server":"telecom","tool":"consultar_fatura"}}
+200
+STDERR:
+
+DURATION_MS=59

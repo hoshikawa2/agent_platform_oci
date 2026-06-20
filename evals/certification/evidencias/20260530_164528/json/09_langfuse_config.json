@@ -1,0 +1,6 @@
+{
+  "enabled_hint": false,
+  "host": "http://localhost:3005",
+  "has_public_key": false,
+  "has_secret_key": false
+}

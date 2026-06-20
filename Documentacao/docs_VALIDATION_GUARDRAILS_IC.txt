@@ -1,0 +1,5 @@
+VALIDATION REPORT - guardrails parallel fail-fast + observer IC
+Date: 2026-06-03
+
+compileall: OK
+smoke-tests: OK

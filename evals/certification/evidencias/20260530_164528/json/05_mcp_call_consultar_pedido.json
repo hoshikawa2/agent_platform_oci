@@ -1,0 +1,30 @@
+{
+  "tool_name": "consultar_pedido",
+  "server_name": "retail",
+  "ok": true,
+  "result": {
+    "order_id": "PED-CERT-001",
+    "customer_id": "CLIENTE-CERT",
+    "status": "EM_TRANSPORTE",
+    "valor_total": 349.9,
+    "itens": [
+      {
+        "sku": "LIV-001",
+        "descricao": "Livro de Arquitetura de IA",
+        "quantidade": 1,
+        "valor": 199.9
+      },
+      {
+        "sku": "CAB-USB",
+        "descricao": "Cabo USB-C",
+        "quantidade": 1,
+        "valor": 150.0
+      }
+    ]
+  },
+  "error": null,
+  "metadata": {
+    "server": "retail",
+    "tool": "consultar_pedido"
+  }
+}

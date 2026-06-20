@@ -1,0 +1,15 @@
+servers:
+  telecom:
+    base_url: http://telecom-mcp-server:8101
+    tools:
+      - consultar_fatura
+      - consultar_pagamentos
+      - consultar_plano
+      - listar_servicos
+  retail:
+    base_url: http://retail-mcp-server:8102
+    tools:
+      - consultar_pedido
+      - consultar_entrega
+      - solicitar_troca
+      - solicitar_devolucao

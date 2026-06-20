@@ -1,0 +1,38 @@
+default_backend: contas
+
+backends:
+  contas:
+    url: http://localhost:8001
+    description: Backend responsável por faturas, contas, pagamentos, consumo, segunda via e contestação.
+    domains: [contas, fatura, pagamento, consumo, contestacao]
+    keywords: [fatura, conta, boleto, pagamento, consumo, segunda via, contestar, contestação, valor, cobrança]
+    examples:
+      - Quero consultar minha fatura
+      - Minha conta veio alta
+      - Preciso da segunda via do boleto
+    priority: 10
+    default_agent_id: telecom_contas
+
+  ofertas:
+    url: http://localhost:8002
+    description: Backend responsável por ofertas, planos, upgrades, retenção e contratação.
+    domains: [ofertas, planos, retenção, contratação]
+    keywords: [oferta, plano, contratar, upgrade, desconto, promoção, pacote, retenção, cancelar serviço]
+    examples:
+      - Quero trocar meu plano
+      - Tem alguma oferta para mim?
+      - Quero cancelar um serviço
+    priority: 20
+    default_agent_id: telecom_ofertas
+
+  suporte:
+    url: http://localhost:8003
+    description: Backend responsável por suporte técnico, falhas, rede, internet e atendimento operacional.
+    domains: [suporte, técnico, rede, internet]
+    keywords: [internet, sinal, rede, suporte, técnico, problema, falha, sem conexão, modem]
+    examples:
+      - Minha internet está lenta
+      - Estou sem sinal
+      - Preciso de suporte técnico
+    priority: 30
+    default_agent_id: telecom_suporte

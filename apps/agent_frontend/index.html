@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Agent Frontend</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>AI Agent Platform</h1>
+      <p>Frontend independente com chaves de conversa propagadas até o framework e MCP Server.</p>
+    </header>
+
+    <section class="config">
+      <label>Backend URL <input id="backend" value="http://localhost:8000" /></label>
+      <label>Canal
+        <select id="channel"><option value="web">web</option><option value="whatsapp">whatsapp</option><option value="voice">voice</option></select>
+      </label>
+      <label>Tenant <input id="tenant" value="default" /></label>
+      <label>Agent
+        <select id="agent">
+          <option value="telecom_contas">telecom_contas</option>
+          <option value="retail_orders">retail_orders</option>
+        </select>
+      </label>
+      <label>Session ID <input id="session" placeholder="gerado automaticamente" /></label>
+      <label><input id="useSse" type="checkbox" checked /> Usar SSE</label>
+      <span id="status">SSE aguardando</span>
+    </section>
+
+    <section class="config identity">
+      <label>customer_key <input id="customerKey" value="11999999999" /></label>
+      <label>contract_key <input id="contractKey" value="3000131180" /></label>
+      <label>interaction_key <input id="interactionKey" placeholder="URA/call/message id" /></label>
+      <label>resource_key <input id="resourceKey" placeholder="asset/product/resource" /></label>
+      <label>account_key <input id="accountKey" placeholder="billing account/customer account" /></label>
+    </section>
+
+    <section id="chat" class="chat"></section>
+    <form id="form">
+      <input id="message" placeholder="Digite sua mensagem..." autocomplete="off" />
+      <button>Enviar</button>
+    </form>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

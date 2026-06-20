@@ -1,0 +1,21 @@
+agents:
+  - agent_id: telecom_contas
+    enabled: true
+    days_back: 1
+    percentage: 1.0
+    langfuse_agent_aliases: [telecom_contas, billing_agent, financeiro_agent]
+    gcs_prefix: agnt_ai_contas/llm_qa/input
+
+  - agent_id: retail_orders
+    enabled: true
+    days_back: 1
+    percentage: 1.0
+    langfuse_agent_aliases: [retail_orders, orders_agent, retail_agent]
+    gcs_prefix: agnt_ai_orders/llm_qa/input
+
+  - agent_id: financeiro_agent
+    enabled: true
+    days_back: 1
+    percentage: 1.0
+    langfuse_agent_aliases: [financeiro_agent, billing_agent, telecom_contas]
+    gcs_prefix: agnt_ai_financeiro/llm_qa/input

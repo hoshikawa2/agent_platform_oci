@@ -1,0 +1,58 @@
+mcp_parameter_mapping:
+  defaults:
+    use_mock: true
+  tools:
+    consultar_fatura:
+      map:
+        customer_key: msisdn
+        contract_key: invoice_id
+        interaction_key: ura_call_id
+        session_key: session_id
+
+      extract:
+        mes_referencia:
+          from: message
+          type: int
+          strategy: month_name_pt
+          description: >
+            Extrair mês citado na mensagem.
+            janeiro=1, fevereiro=2, março=3,
+            abril=4, maio=5, junho=6,
+            julho=7, agosto=8, setembro=9,
+            outubro=10, novembro=11, dezembro=12.
+    consultar_pagamentos:
+      map:
+        customer_key: msisdn
+        interaction_key: ura_call_id
+        session_key: session_id
+    consultar_plano:
+      map:
+        customer_key: msisdn
+        resource_key: asset_id
+        contract_key: asset_id
+        session_key: session_id
+    listar_servicos:
+      map:
+        customer_key: msisdn
+        session_key: session_id
+    consultar_pedido:
+      map:
+        customer_key: customer_id
+        contract_key: order_id
+        session_key: session_id
+    consultar_entrega:
+      map:
+        contract_key: order_id
+        session_key: session_id
+    solicitar_troca:
+      map:
+        contract_key: order_id
+        session_key: session_id
+      defaults:
+        reason: Solicitação aberta pelo atendimento conversacional.
+    solicitar_devolucao:
+      map:
+        contract_key: order_id
+        session_key: session_id
+      defaults:
+        reason: Solicitação aberta pelo atendimento conversacional.

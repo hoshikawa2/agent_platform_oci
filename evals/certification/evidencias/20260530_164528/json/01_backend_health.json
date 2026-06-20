@@ -1,0 +1,17 @@
+{
+  "status": "ok",
+  "llm_provider": "oci_openai",
+  "llm_class": "OCICompatibleOpenAIProvider",
+  "langfuse_enabled": true,
+  "agents": [
+    "telecom_contas",
+    "retail_orders"
+  ],
+  "default_agent_id": "telecom_contas",
+  "routing_mode": "router",
+  "sse_enabled": true,
+  "session_repository": "autonomous",
+  "memory_repository": "autonomous",
+  "checkpoint_repository": "autonomous",
+  "usage_repository": "autonomous"
+}

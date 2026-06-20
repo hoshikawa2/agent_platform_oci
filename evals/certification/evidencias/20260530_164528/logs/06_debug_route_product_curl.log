@@ -1,0 +1,9 @@
+$ curl -sS -w 
+%{http_code} -X POST http://localhost:8000/debug/route -H Content-Type: application/json --data {"channel": "web", "payload": {"text": "Quais serviços e VAS estão ativos no meu plano?", "message": "Quais serviços e VAS estão ativos no meu plano?", "session_id": "cert-debug-route", "user_id": "cert-user", "channel_id": "certification-suite", "context": {"test_suite": "agent_certification"}}}
+
+STDOUT:
+{"route":"product_agent","agent":"product_agent","intent":"product_services_information","confidence":0.85,"reason":"Keyword 'serviço' correspondeu à intent 'product_services_information'.","method":"keyword","next_state":null,"handoff":false,"metadata":{"matched_keyword":"serviço"},"domain":"telecom","mcp_tools":["consultar_plano","listar_servicos"],"mode":"router"}
+200
+STDERR:
+
+DURATION_MS=12

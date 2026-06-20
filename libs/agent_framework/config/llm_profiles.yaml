@@ -1,0 +1,89 @@
+# Optional file. If this file is absent, the backend keeps using .env exactly as before.
+# If present, each inference point can override provider/model/params.
+# Put this files in the same .env file folder
+profiles:
+  default:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0.2
+    max_tokens: 2048
+
+  # Workflow/routing
+  supervisor:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0
+    max_tokens: 700
+
+  router:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0
+    max_tokens: 500
+
+  # Safety / evaluation
+  guardrail:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0
+    max_tokens: 600
+
+  grl:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0
+    max_tokens: 700
+
+  judge:
+    provider: oci_openai
+    model: xopenai.gpt-4.1
+    temperature: 0
+    max_tokens: 800
+
+  # RAG
+  rag_rewriter:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0
+    max_tokens: 300
+
+  rag_compressor:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0
+    max_tokens: 1200
+
+  rag_generation:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0.1
+    max_tokens: 1800
+
+  # Memory / operations
+  summary_memory:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0.1
+    max_tokens: 1200
+
+  noc:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0
+    max_tokens: 700
+
+  # Agent-specific overrides
+  billing_agent:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0.2
+
+  product_agent:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0.2
+
+  backoffice_agent:
+    provider: oci_openai
+    model: openai.gpt-4.1
+    temperature: 0.2

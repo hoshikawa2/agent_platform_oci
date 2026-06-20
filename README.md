@@ -7881,8 +7881,8 @@ Dentro de `agent_template_backend`:
 
 ```bash
 source .venv/bin/activate
-cd agent_template_backend
-pip install -e ../agent_framework
+cd templates/agent_template_backend
+pip install -e ../../libs/agent_framework
 pip install -r requirements.txt
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -7949,7 +7949,7 @@ Se os MCP Servers forem processos Python separados, suba cada um em uma porta di
 Exemplo:
 
 ```bash
-cd ../mcp_servers/financeiro_mcp_server
+cd mcp/servers/financeiro_mcp_server
 source .venv/bin/activate
 python -m uvicorn main:app --host 0.0.0.0 --port 8300 --reload
 ```
@@ -7998,7 +7998,7 @@ Install before the [npm](https://nodejs.org/) and:
 
 ```bash
 cd agent_platform_oci
-cd agent_frontend
+cd apps/agent_frontend
 python -m http.server 5173
 ```
 

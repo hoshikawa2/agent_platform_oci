@@ -32,7 +32,7 @@ Defines the overall platform architecture, its main components, repository struc
 
 Describes the conversational execution runtime for agents, including LangGraph, state management, memory, checkpoints, routing, supervisor, BusinessContext, MCP integration, RAG, events, and error handling.
 
-### [SPEC-003 — AI Gateway](specs/SPEC-003-AI-Gateway.md)
+### [SPEC-003 — Agent Gateway](specs/SPEC-003-Agent-Gateway.md)
 
 Specifies the gateway responsible for centralizing LLM and embedding calls, including request/response contracts, profiles, providers, OCI authentication, fallback, rate limiting, metrics, security, and observability.
 

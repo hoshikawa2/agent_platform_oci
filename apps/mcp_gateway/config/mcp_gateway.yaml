@@ -1,9 +1,36 @@
 # Dedicated MCP Gateway configuration.
 # The agent backend/framework calls this gateway; this gateway calls the final MCP servers.
 
+
+# Discovery allows the gateway to sync tool catalogs from registered MCP servers.
+# Static tools below remain supported and override discovered tools with the same name.
+discovery:
+  enabled: true
+  sync_on_startup: true
+  timeout_seconds: 10
+  default_catalog_endpoints:
+    - /.well-known/mcp-server.json
+    - /manifest
+    - /mcp/tools
+    - /tools/list
+    - /tools
+    - /v1/tools
+  tool_defaults:
+    version: 1.0.0
+    protocol: legacy_http
+    enabled: true
+    idempotent: true
+    cache_ttl_seconds: 300
+    timeout_seconds: 30
+    retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
 servers:
   telecom:
     enabled: true
+    discover: false
     protocol: legacy_http
     transport: http
     # Local run: uvicorn mcp.servers.telecom_mcp_server.main:app --port 8100
@@ -12,6 +39,7 @@ servers:
 
   retail:
     enabled: true
+    discover: false
     protocol: legacy_http
     transport: http
     # Local run: uvicorn mcp.servers.retail_mcp_server.main:app --port 8200
@@ -170,3 +198,19 @@ auth:
   static_tokens:
     runtime-local-token:
       agents: []
+
+
+# Example of a dynamically discovered MCP server.
+# Uncomment and adjust the URL to plug a new server that exposes a catalog/manifest.
+# servers:
+#   nf_items:
+#     enabled: true
+#     discover: true
+#     protocol: legacy_http
+#     transport: http
+#     url: http://localhost:8400/mcp
+#     # Optional. If omitted, the gateway tries the discovery.default_catalog_endpoints.
+#     # manifest_url: http://localhost:8400/.well-known/mcp-server.json
+#     # catalog_endpoint: /tools
+#     # invoke_endpoint: /tools/call
+#     timeout_seconds: 30

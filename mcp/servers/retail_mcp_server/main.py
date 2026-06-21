@@ -31,6 +31,19 @@ TOOLS = {
 async def health():
     return {"status": "ok", "server": "retail_mcp_server"}
 
+
+@app.get("/.well-known/mcp-server.json")
+async def well_known_manifest():
+    return {"server_id": "retail", "protocol": "legacy_http", "invoke_endpoint": "/tools/call", "tools": [{"name": name, **cfg} for name, cfg in TOOLS.items()]}
+
+@app.get("/manifest")
+async def manifest():
+    return await well_known_manifest()
+
+@app.get("/mcp/tools")
+async def tools_catalog():
+    return {"tools": [{"name": name, **cfg} for name, cfg in TOOLS.items()]}
+
 @app.get("/mcp/tools/list")
 async def list_tools():
     return {"tools": [{"name": name, **cfg} for name, cfg in TOOLS.items()]}

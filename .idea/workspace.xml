@@ -5,8 +5,17 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MANUAL_AGENT_PLATFORM_GATEWAYS.md" beforeDir="false" afterPath="$PROJECT_DIR$/MANUAL_AGENT_PLATFORM_GATEWAYS.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README_en.md" beforeDir="false" afterPath="$PROJECT_DIR$/README_en.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/agent_gateway/config/backends.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/apps/agent_gateway/config/backends.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/mcp_gateway/app/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/apps/mcp_gateway/app/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/mcp_gateway/config/mcp_gateway.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/apps/mcp_gateway/config/mcp_gateway.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/mcp/servers/retail_mcp_server/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcp/servers/retail_mcp_server/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/mcp/servers/telecom_mcp_server/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcp/servers/telecom_mcp_server/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/specs/SPEC-001-Architecture.md" beforeDir="false" afterPath="$PROJECT_DIR$/specs/SPEC-001-Architecture.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/templates/agent_template_backend/.env" beforeDir="false" afterPath="$PROJECT_DIR$/templates/agent_template_backend/.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/templates/agent_template_backend_day_zero/.env" beforeDir="false" afterPath="$PROJECT_DIR$/templates/agent_template_backend_day_zero/.env" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -31,10 +40,10 @@
     &quot;accountId&quot;: &quot;bd799ac0-7624-42b2-999a-b96e6e11f98a&quot;
   }
 }</component>
-  <component name="KubernetesApiPersistence"><![CDATA[{}]]></component>
-  <component name="KubernetesApiProvider"><![CDATA[{
-  "isMigrated": true
-}]]></component>
+  <component name="KubernetesApiPersistence">{}</component>
+  <component name="KubernetesApiProvider">{
+  &quot;isMigrated&quot;: true
+}</component>
   <component name="PhpWorkspaceProjectConfiguration" interpreter_name="PHP 8.1" />
   <component name="ProjectCodeStyleSettingsMigration">
     <option name="version" value="2" />
@@ -82,6 +91,7 @@
       <updated>1781996088468</updated>
       <workItem from="1781996091031" duration="1242000" />
       <workItem from="1782038604623" duration="6486000" />
+      <workItem from="1782047166074" duration="27000" />
     </task>
     <task id="LOCAL-00001" summary="Ajustes na documentação e remanejamento dos folders">
       <option name="closed" value="true" />

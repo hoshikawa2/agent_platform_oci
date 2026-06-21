@@ -29,8 +29,6 @@ MCP Gateway (8300)
 Telecom MCP Server (8100)
 Retail MCP Server (8200)
 
-Não existe AI Gateway.
-
 ---
 
 # Portas Oficiais
@@ -263,7 +261,6 @@ curl http://localhost:8200/health
 
 # Decisões Arquiteturais Oficiais
 
-- Não existe AI Gateway
 - Agent Gateway centraliza governança
 - Runtime executa LangGraph
 - Runtime executa LLM

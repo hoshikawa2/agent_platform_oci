@@ -1,0 +1,172 @@
+# Dedicated MCP Gateway configuration.
+# The agent backend/framework calls this gateway; this gateway calls the final MCP servers.
+
+servers:
+  telecom:
+    enabled: true
+    protocol: legacy_http
+    transport: http
+    # Local run: uvicorn mcp.servers.telecom_mcp_server.main:app --port 8100
+    url: http://localhost:8100/mcp
+    timeout_seconds: 30
+
+  retail:
+    enabled: true
+    protocol: legacy_http
+    transport: http
+    # Local run: uvicorn mcp.servers.retail_mcp_server.main:app --port 8200
+    url: http://localhost:8200/mcp
+    timeout_seconds: 30
+
+tools:
+  consultar_fatura:
+    version: 1.0.0
+    server: telecom
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: true
+    cache_ttl_seconds: 300
+    timeout_seconds: 30
+    retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+  consultar_pagamentos:
+    version: 1.0.0
+    server: telecom
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: true
+    cache_ttl_seconds: 300
+    timeout_seconds: 30
+    retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+  consultar_plano:
+    version: 1.0.0
+    server: telecom
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: true
+    cache_ttl_seconds: 300
+    timeout_seconds: 30
+    retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+  listar_servicos:
+    version: 1.0.0
+    server: telecom
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: true
+    cache_ttl_seconds: 300
+    timeout_seconds: 30
+    retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+  consultar_pedido:
+    version: 1.0.0
+    server: retail
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: true
+    cache_ttl_seconds: 300
+    timeout_seconds: 30
+    retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+  consultar_entrega:
+    version: 1.0.0
+    server: retail
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: true
+    cache_ttl_seconds: 300
+    timeout_seconds: 30
+    retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+  solicitar_troca:
+    version: 1.0.0
+    server: retail
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: false
+    cache_ttl_seconds: 0
+    timeout_seconds: 30
+    retry: {enabled: false}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+  solicitar_devolucao:
+    version: 1.0.0
+    server: retail
+    endpoint: /tools/call
+    protocol: legacy_http
+    enabled: true
+    idempotent: false
+    cache_ttl_seconds: 0
+    timeout_seconds: 30
+    retry: {enabled: false}
+    allowed_agents: []
+    allowed_channels: []
+    required_business_keys: []
+
+# Optional mapping if the backend sends canonical BusinessContext directly to the gateway.
+# In the normal framework path, the framework already maps before calling the gateway.
+parameter_mapping:
+  consultar_fatura:
+    customer_key: msisdn
+    contract_key: invoice_id
+    interaction_key: ura_call_id
+    session_key: session_id
+  consultar_pagamentos:
+    customer_key: msisdn
+    interaction_key: ura_call_id
+    session_key: session_id
+  consultar_plano:
+    customer_key: msisdn
+    resource_key: asset_id
+    contract_key: asset_id
+    session_key: session_id
+  listar_servicos:
+    customer_key: msisdn
+    session_key: session_id
+  consultar_pedido:
+    customer_key: customer_id
+    contract_key: order_id
+    session_key: session_id
+  consultar_entrega:
+    contract_key: order_id
+    session_key: session_id
+  solicitar_troca:
+    contract_key: order_id
+    session_key: session_id
+  solicitar_devolucao:
+    contract_key: order_id
+    session_key: session_id
+
+auth:
+  enabled: false
+  static_tokens:
+    runtime-local-token:
+      agents: []

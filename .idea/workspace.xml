@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.gitignore" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/agent_platform_oci.iml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/codeStyles/Project.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/codeStyles/codeStyleConfig.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/modules.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README_en.md" beforeDir="false" afterPath="$PROJECT_DIR$/README_en.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/agent_gateway/config/backends.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/apps/agent_gateway/config/backends.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/ai_gateway/Dockerfile" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/ai_gateway/README.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/ai_gateway/app/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/ai_gateway/app/main.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/ai_gateway/requirements.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/mcp_gateway/Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/apps/mcp_gateway/Dockerfile" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/mcp_gateway/app/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/apps/mcp_gateway/app/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/mcp_gateway/app/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/apps/mcp_gateway/app/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/apps/mcp_gateway/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/apps/mcp_gateway/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/deploy/k8s/mcp-gateway.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/deploy/k8s/mcp-gateway.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/MODULAR_REMAP.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/MODULAR_REMAP.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/libs/agent_framework/config/mcp_servers.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/libs/agent_framework/config/mcp_servers.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/config/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/config/settings.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/mcp/tool_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/mcp/tool_router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/run_mcp_gateway.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/run_mcp_gateway.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/specs/SPEC-001-Architecture.md" beforeDir="false" afterPath="$PROJECT_DIR$/specs/SPEC-001-Architecture.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/specs/SPEC-008-Deployment.md" beforeDir="false" afterPath="$PROJECT_DIR$/specs/SPEC-008-Deployment.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/specs/SPEC-010-Agent-Development.md" beforeDir="false" afterPath="$PROJECT_DIR$/specs/SPEC-010-Agent-Development.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/specs/SPEC-014-Templates-and-Agent-Creation-Model.md" beforeDir="false" afterPath="$PROJECT_DIR$/specs/SPEC-014-Templates-and-Agent-Creation-Model.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/templates/agent_template_backend/.env" beforeDir="false" afterPath="$PROJECT_DIR$/templates/agent_template_backend/.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/templates/agent_template_backend_day_zero/.env" beforeDir="false" afterPath="$PROJECT_DIR$/templates/agent_template_backend_day_zero/.env" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ComposerSettings">
+    <execution />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;hoshikawa2&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/hoshikawa2/agent_platform_oci.git&quot;,
+    &quot;accountId&quot;: &quot;bd799ac0-7624-42b2-999a-b96e6e11f98a&quot;
+  }
+}</component>
+  <component name="KubernetesApiPersistence"><![CDATA[{}]]></component>
+  <component name="KubernetesApiProvider"><![CDATA[{
+  "isMigrated": true
+}]]></component>
+  <component name="PhpWorkspaceProjectConfiguration" interpreter_name="PHP 8.1" />
+  <component name="ProjectCodeStyleSettingsMigration">
+    <option name="version" value="2" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;customColor&quot;: &quot;&quot;,
+  &quot;associatedIndex&quot;: 2
+}</component>
+  <component name="ProjectId" id="3FQ8m21arbKaZKgqpTYDVjVGTBf" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;configurable.group.appearance&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-jdk-9823dce3aa75-fbdcb00ec9e3-intellij.indexing.shared.core-IU-251.23774.435" />
+        <option value="bundled-js-predefined-d6986cc7102b-f27c65a3e318-JavaScript-IU-251.23774.435" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="" />
+      <created>1781996088468</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1781996088468</updated>
+      <workItem from="1781996091031" duration="1242000" />
+      <workItem from="1782038604623" duration="6404000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+</project>

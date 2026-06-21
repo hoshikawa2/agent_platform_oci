@@ -1,0 +1,56 @@
+model_governance:
+  profiles:
+    default:
+      provider: oci_openai
+      model: openai.gpt-4.1
+      temperature: 0.2
+      max_tokens: 2048
+
+    router:
+      provider: oci_openai
+      model: openai.gpt-4.1
+      temperature: 0
+      max_tokens: 500
+
+    judge:
+      provider: oci_openai
+      model: openai.gpt-4.1
+      temperature: 0
+      max_tokens: 800
+
+  operation_profiles:
+    router.intent: router
+    agent.final_answer: default
+    judge.response_quality: judge
+
+  policies:
+    tenants:
+      default:
+        allowed_providers:
+          - oci_openai
+          - oci_sdk
+          - mock
+        allowed_profiles:
+          - default
+          - router
+          - judge
+
+rate_limits:
+  default:
+    requests_per_minute: 600
+  channels:
+    whatsapp:
+      requests_per_minute: 120
+    web:
+      requests_per_minute: 300
+  agents:
+    telecom_contas:
+      requests_per_minute: 180
+
+backend_headers:
+  propagate_model_policy: true
+  propagate_trace_context: true
+
+evaluation:
+  enabled: true
+  sample_rate: 1.0

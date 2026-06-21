@@ -24,85 +24,86 @@ The Agent Platform OCI documentation is organized into numbered SPECs/SDDs, each
 
 >**/agent_platform_oci/specs**
 
-### SPEC-001 — Architecture
+### [SPEC-001 — Architecture](specs/SPEC-001-Architecture.md)
 
-Defines the overall architecture of the platform, its main components, repository structure, logical and physical architecture, core contracts, main flow, non-functional requirements, and acceptance criteria.
+Defines the overall platform architecture, its main components, repository structure, logical and physical architecture, core contracts, primary flow, non-functional requirements, and acceptance criteria.
 
-### SPEC-002 — Agent Runtime
+### [SPEC-002 — Agent Runtime](specs/SPEC-002-Agent-Runtime.md)
 
-Describes the conversational execution runtime of the agents, including LangGraph, state, memory, checkpoints, routing, supervisor, BusinessContext, MCP integration, RAG, events, and error handling.
+Describes the conversational execution runtime for agents, including LangGraph, state management, memory, checkpoints, routing, supervisor, BusinessContext, MCP integration, RAG, events, and error handling.
 
-### SPEC-003 — AI Gateway
+### [SPEC-003 — AI Gateway](specs/SPEC-003-AI-Gateway.md)
 
 Specifies the gateway responsible for centralizing LLM and embedding calls, including request/response contracts, profiles, providers, OCI authentication, fallback, rate limiting, metrics, security, and observability.
 
-### SPEC-004 — MCP Gateway
+### [SPEC-004 — MCP Gateway](specs/SPEC-004-MCP-Gateway.md)
 
-Defines the MCP integration model, including tool catalog, routing, execution, authorization, cache, retry, timeout, parameter mapping, events, metrics, and standardized tool responses.
+Defines the MCP integration model, including the tool catalog, routing, execution, authorization, caching, retries, timeouts, parameter mapping, events, metrics, and standardized tool responses.
 
-### SPEC-005 — Guardrails
+### [SPEC-005 — Guardrails](specs/SPEC-005-Guardrails.md)
 
-Describes the platform guardrails model, covering input, output, tools, RAG, and final response policies. It also defines phases, execution modes, guardrail types, LLM profiles, base codes, events, tests, and acceptance criteria.
+Describes the platform guardrail model, covering input, output, tool, RAG, and final response policies. It also defines phases, execution modes, guardrail types, LLM profiles, base codes, events, tests, and acceptance criteria.
 
-### SPEC-006 — Evals
+### [SPEC-006 — Evals](specs/SPEC-006-Evals.md)
 
-Defines the platform evaluation layer, including online evaluation, offline evaluation, regression, certification, datasets, judges, metrics, CLI, API, result persistence, and evidence publication.
+Defines the platform evaluation layer, including online evaluation, offline evaluation, regression testing, certification, datasets, judges, metrics, CLI, API, result persistence, and evidence publication.
 
-### SPEC-007 — Observability
+### [SPEC-007 — Observability](specs/SPEC-007-Observability.md)
 
 Specifies the observability model, including logs, traces, metrics, Langfuse, OpenTelemetry, IC/NOC/GRL events, dashboards, alerts, data masking, and operational evidence generation.
 
-### SPEC-008 — Deployment
+### [SPEC-008 — Deployment](specs/SPEC-008-Deployment.md)
 
-Describes the platform packaging and deployment process, including deployable components, CI/CD pipeline, Kubernetes/OKE, Docker, secrets, OCI authentication, health checks, rollback, smoke tests, and certification stage.
+Describes the platform packaging and deployment process, including deployable components, CI/CD pipelines, Kubernetes/OKE, Docker, secrets, OCI authentication, health checks, rollback, smoke tests, and certification stages.
 
-### SPEC-009 — Channel Gateway
+### [SPEC-009 — Channel Gateway](specs/SPEC-009-Channel-Gateway.md)
 
-Defines the channel gateway, responsible for normalizing external payloads into the platform’s canonical contract and translating responses for each channel. It covers operation modes, idempotency, versioning, security, errors, and anti-patterns.
+Defines the channel gateway responsible for normalizing external payloads into the platform's canonical contract and translating responses for each channel. Covers operating modes, idempotency, versioning, security, errors, and anti-patterns.
 
-### SPEC-010 — Agent Development
+### [SPEC-010 — Agent Development](specs/SPEC-010-Agent-Development.md)
 
-Describes the standard for developing agents using templates, YAML configuration, BusinessContext, MCP, guardrails, judges, RAG, memory, observability, and evals. It also differentiates the responsibilities of the framework and the agent.
+Describes the standard for agent development using templates, YAML configuration, BusinessContext, MCP, guardrails, judges, RAG, memory, observability, and evaluations. It also differentiates framework and agent responsibilities.
 
-### SPEC-011 — Governance Model
+### [SPEC-011 — Governance Model](specs/SPEC-011-Governance-Model.md)
 
-Defines the platform governance model, including ownership, roles and responsibilities, RACI, governance of agents, prompts, guardrails, judges, models, MCP, datasets, approval process, and mandatory evidence.
+Defines the platform governance model, including ownership, roles and responsibilities, RACI, agent governance, prompts, guardrails, judges, models, MCP, datasets, approval processes, and mandatory evidence.
 
-### SPEC-012 — Canonical Contracts
+### [SPEC-012 — Canonical Contracts](specs/SPEC-012-Canonical-Contracts.md)
 
-Documents the platform’s canonical contracts, such as GatewayRequest, ChannelResponse, BusinessContext, AgentState, ToolInvocation, ToolResult, LLMRequest, LLMResponse, EvaluationRun, and EventEnvelope. It also defines rules for evolving these contracts.
+Documents the platform's canonical contracts, including GatewayRequest, ChannelResponse, BusinessContext, AgentState, ToolInvocation, ToolResult, LLMRequest, LLMResponse, EvaluationRun, and EventEnvelope. It also defines contract evolution rules.
 
-### SPEC-013 — Versioning and Compatibility Model
+### [SPEC-013 — Versioning and Compatibility Model](specs/SPEC-013-Versioning-and-Compatibility-Model.md)
 
-Defines the platform versioning and compatibility model, including Semantic Versioning, versioned artifacts, contract versioning, compatibility matrix, deprecation policy, migration, and rollback.
+Defines the platform versioning and compatibility model, including Semantic Versioning, versioned artifacts, contract versioning, compatibility matrices, deprecation policies, migration, and rollback.
 
-### SPEC-014 — Templates and Agent Creation Model
+### [SPEC-014 — Templates and Agent Creation Model](specs/SPEC-014-Templates-and-Agent-Creation-Model.md)
 
-Describes the official templates and the model for creating agents from scratch. It explains what belongs to the framework, what belongs to the agent, the standard structure, and the step-by-step process to copy a template, define scope, register the agent, configure routes, tools, BusinessContext, prompts, datasets, and tests.
+Describes the official templates and the agent creation model from scratch. Explains what belongs to the framework, what belongs to the agent, the standard structure, and the step-by-step process for copying templates, defining scope, registering agents, configuring routes, tools, BusinessContext, prompts, datasets, and tests.
 
-### SPEC-015 — Adoption and Eligibility Criteria
+### [SPEC-015 — Adoption and Eligibility Criteria](specs/SPEC-015-Adoption-and-Eligibility-Criteria.md)
 
-Defines clear criteria for adopting the platform, including recommended use cases, non-recommended use cases, business entry criteria, architecture, security, quality, operation, exception process, and adoption checklist.
+Defines clear platform adoption criteria, including recommended and non-recommended use cases, business entry criteria, architecture, security, quality, operations, exception processes, and adoption checklists.
 
-### SPEC-016 — Agent Development Lifecycle
+### [SPEC-016 — Agent Development Lifecycle](specs/SPEC-016-Agent-Development-Lifecycle.md)
 
-Describes the complete agent development lifecycle, from discovery and scope definition to design, prompt, MCP, RAG, implementation, testing, evaluation, certification, homologation, and production.
+Describes the complete agent development lifecycle, from discovery and scope definition through design, prompting, MCP, RAG, implementation, testing, evaluation, certification, validation, and production.
 
-### SPEC-017 — Release Management and CI/CD
+### [SPEC-017 — Release Management and CI/CD](specs/SPEC-017-Release-Management-and-CICD.md)
 
-Defines the release and CI/CD model, including the standard pipeline, stages, release artifacts, quality gates, rollback strategy, common errors, and acceptance criteria.
+Defines the release and CI/CD model, including standard pipelines, stages, release artifacts, quality gates, rollback strategies, common errors, and acceptance criteria.
 
-### SPEC-018 — Security and Identity Model
+### [SPEC-018 — Security and Identity Model](specs/SPEC-018-Security-and-Identity-Model.md)
 
 Specifies the platform security and identity model, covering authentication, Workload Identity, authorization, secrets, data protection, MCP security, channel security, auditing, and acceptance criteria.
 
-### SPEC-019 — Evaluation and Certification Framework
+### [SPEC-019 — Evaluation and Certification Framework](specs/SPEC-019-Evaluation-and-Certification-Framework.md)
 
-Details the evaluation and certification framework, including evaluation architecture, metrics, datasets, EvaluationRun, CLI, certification process, mandatory evidence, and acceptance criteria.
+Details the evaluation and certification framework, including evaluation architecture, metrics, datasets, EvaluationRun, CLI, certification processes, mandatory evidence, and acceptance criteria.
 
-### SPEC-020 — Operational Readiness and SRE Model
+### [SPEC-020 — Operational Readiness and SRE Model](specs/SPEC-020-Operational-Readiness-and-SRE-Model.md)
 
-Defines the platform operational readiness and SRE model, including operated components, health checks, readiness, SLOs, metrics, dashboards, alerts, runbooks, incident management, capacity, and production checklist.
+Defines the platform operational readiness and SRE model, including managed components, health checks, readiness, SLOs, metrics, dashboards, alerts, runbooks, incident management, capacity planning, and production checklists.
+
 
 ---
 
@@ -7766,22 +7767,80 @@ workflow completed
 
 ---
 
-## 17. Build and local execution
+## 17. Local Build and Execution
 
-At the root of the project:
+Let's bring up the complete agent stack:
+
+```text
+Frontend (5173)
+↓
+Agent Gateway (9000)
+↓
+Agent Template Backend / Runtime (8000)
+↓
+MCP Gateway (8300)
+↓
+Telecom MCP Server (8100)
+Retail MCP Server (8200)
+```
+
+### Official Ports
+
+| Component | Port |
+|------------|--------|
+| Frontend | 5173 |
+| Agent Gateway | 9000 |
+| Backend Runtime | 8000 |
+| MCP Gateway | 8300 |
+| Telecom MCP Server | 8100 |
+| Retail MCP Server | 8200 |
+
+### Official Variables
+
+### Agent Template Backend
+
+ENABLE_MCP_TOOLS=true
+
+MCP_GATEWAY_ENABLED=true
+MCP_GATEWAY_URL=http://localhost:8300
+MCP_GATEWAY_TIMEOUT_SECONDS=60
+MCP_GATEWAY_AGENT_ID=telecom_contas
+MCP_GATEWAY_TENANT_ID=default
+
+### Agent Gateway
+
+DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+
+### MCP Gateway
+
+MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+
+### Startup Order
+
+1. Telecom MCP Server
+2. Retail MCP Server
+3. MCP Gateway
+4. Agent Template Backend
+5. Agent Gateway
+6. Frontend
+
+---
+
+From the project root:
 
 ```bash
 cd agent_platform_oci
 python -m venv .venv
 ```
 
-### 17.1. Before the commands: what does it mean to upload the backend?
+### 17.1. Before the commands: what does starting the backend mean?
 
-Bringing up the backend means starting the API that receives messages, normalizes the channel, resolves identity, opens a session, executes the workflow, and returns a response.
+Starting the backend means launching the API that receives messages, normalizes the channel, resolves identity, opens a session, executes the workflow, and returns a response.
 
-It can be uploaded even without a real MCP, as long as the configuration is in mock or the tools are not required for the test.
+It can be started even without a real MCP, as long as the configuration is in mock mode or the tools are not required for the test.
 
-### 17.2. Run local backend
+### 17.2. Run the Backend Locally
 
 Inside `agent_template_backend`:
 
@@ -7800,7 +7859,7 @@ Windows PowerShell:
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 17.3. Immediate validations
+### 17.3. Immediate Validations
 
 Check health:
 
@@ -7820,37 +7879,37 @@ List known MCP tools:
 curl http://localhost:8000/debug/mcp/tools
 ```
 
-### 17.4. How to interpret the result
+### 17.4. How to Interpret the Result
 
 ```text
-/health ok         → API is up.
-/agents lista      → agents.yaml was loaded.
+/health ok         → API started successfully.
+/agents lists agents      → agents.yaml was loaded.
 /debug/mcp/tools   → tools.yaml and mcp_servers.yaml were loaded.
 ```
 
-If `/health` works but`/agents` does not list the agent, the problem is probably in `config/agents.yaml`. If `/debug/mcp/tools` does not show the tool, the problem is probably in `tools.yaml` or `mcp_servers.yaml`.
+If `/health` works but `/agents` does not list the agent, the problem is probably in `config/agents.yaml`. If `/debug/mcp/tools` does not show the tool, the problem is probably in `tools.yaml` or `mcp_servers.yaml`.
 
 ---
 
-## 18. Uploading MCP Servers
+## 18. Starting MCP Servers
 
-### 18.1. Before the commands: when do I need to upload MCP?
+### 18.1. Before the commands: when do I need to start MCP?
 
-You need to upload MCP when the chosen intent uses `mcp_tools` and the agent depends on these tools to respond.
+You need to start MCP when the selected intent uses `mcp_tools` and the agent depends on those tools to respond.
 
-You don't need to upload MCP just to test:
+You do not need MCP running to test only:
 
 ```text
 health check
 agent registration
 basic routing
 mock LLM without tools
-simple conversational flow without external query
+simple conversational flow without external lookup
 ```
 
-### 18.2. Upload local MCP Server
+### 18.2. Start a Local MCP Server
 
-If the MCP Servers are separate Python processes, upload each one on a different port.
+If the MCP Servers are separate Python processes, start each one on a different port.
 
 Example:
 
@@ -7864,18 +7923,45 @@ Then confirm that the endpoint configured in `config/mcp_servers.yaml` is correc
 
 ```yaml
 servers:
-financeiro:
-endpoint: http://localhost:8300/mcp
+  financeiro:
+    endpoint: http://localhost:8300/mcp
 ```
 
-> **Note:** The**/scripts/ folder** has automated mcp server startup scripts for educational purposes.
-> The **/agent_template_backend folder** has 2 mcp servers configured, one on port 8100 and the other on 8200. These services are ready and configured to run if you want to test the circuit.
-> You can customize it to upload all your mcp servers.
+> **Note:** The **/scripts/** folder contains automated MCP Server startup scripts for demonstration and educational purposes.
+> The **/agent_template_backend** folder includes two MCP Servers already configured, one running on port **8100** and the other on port **8200**. These services are ready to run if you want to test the full flow.
+> You can customize the setup to start all of your MCP Servers.
 > Run: **bash ./scripts/run_mcp_servers.sh**
 
-### 18.3. Test tool through the backend
+### 18.3. Start the MCP Gateway
 
-Test through the backend, not directly through the MCP. This way, you validate the complete path:
+```bash
+cd apps/mcp_gateway
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+export MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8300 --reload
+```
+
+Validations:
+
+```bash
+curl http://localhost:8300/health
+curl http://localhost:8300/ready
+curl http://localhost:8300/v1/tools
+```
+
+Test:
+
+curl -X POST http://localhost:8300/v1/tools/consultar_fatura/invoke
+
+
+### 18.4. Test a Tool Through the Backend
+
+Test through the backend, not directly through MCP. This validates the full path:
 
 ```text
 backend → MCP Tool Router → MCP Server → response
@@ -7885,20 +7971,22 @@ backend → MCP Tool Router → MCP Server → response
 curl -X POST http://localhost:8000/debug/mcp/call/consultar_titulo_financeiro \
   -H "Content-Type: application/json" \
   -d '{
-"business_context": {
-"customer_key": "12345",
-"contract_key": "ABC-999",
-"session_key": "sessao-teste"
-},
-"original_context": {
-"session_id": "sessao-teste"
-}
-}'
+    "business_context": {
+      "customer_key": "12345",
+      "contract_key": "ABC-999",
+      "session_key": "sessao-teste"
+    },
+    "original_context": {
+      "session_id": "sessao-teste"
+    }
+  }'
 ```
 
-> **Note:** In the project, there is also a visual interface for testing:
+> **Note:** The project also includes a visual interface for testing:
 
-### 18.4. Upload Frontend for testing
+### 18.5. Start the Frontend for Testing
+
+Install before the [npm](https://nodejs.org/) and:
 
 ```bash
 cd agent_platform_oci
@@ -7909,17 +7997,44 @@ python -m http.server 5173
 Open http://localhost:5173.
 
 
-> **Note:** The frontend is ready to work with the **Agent Gateway**. In the project, see chapters 28 and 28.10 to try it out. Just remember to change the **Backend URL** to **http://localhost:8010** because 8010 is the port where the **Agent Gateway** will be listening.
+> **Note:** The frontend is designed to work with the **Agent Gateway**. In the project documentation, see chapters 28 and 28.10 for usage examples. Just remember to change **Backend URL** to **http://localhost:8010**, as 8010 is the port where the **Agent Gateway** will be listening.
 
-### 18.5. How to interpret MCP errors
+### 18.6. How to Interpret MCP Errors
 
 ```text
-Tool not found         → tools.yaml or wrong tool name.
-Server not found     → mcp_servers.yaml does not have the mcp_server indicated by the tool.
-Connection refused          → MCP Server is not running or wrong port.
-Required parameter missing → identity.yaml or mcp_parameter_mapping.yaml incorrect.
-Timeout                     → Slow MCP, wrong endpoint, VPN, DNS or real system unavailable.
+Tool not found         → tools.yaml or tool name is incorrect.
+Server not found     → mcp_servers.yaml does not contain the MCP server referenced by the tool.
+Connection refused          → MCP Server is not running or the port is incorrect.
+Missing required parameter → identity.yaml or mcp_parameter_mapping.yaml is incorrect.
+Timeout                     → Slow MCP, wrong endpoint, VPN, DNS, or target system unavailable.
 ```
+
+### 18.7. Start the Agent Gateway
+
+```bash
+cd apps/agent_gateway
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+export DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+export AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+```
+
+Validations:
+
+```bash
+curl http://localhost:9000/health
+```
+
+Test:
+
+curl -X POST http://localhost:9000/gateway/message
+
+
 
 ---
 

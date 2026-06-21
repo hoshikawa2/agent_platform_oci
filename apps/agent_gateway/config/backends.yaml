@@ -2,7 +2,7 @@ default_backend: contas
 
 backends:
   contas:
-    url: http://localhost:8001
+    url: http://localhost:8000
     description: Backend responsável por faturas, contas, pagamentos, consumo, segunda via e contestação.
     domains: [contas, fatura, pagamento, consumo, contestacao]
     keywords: [fatura, conta, boleto, pagamento, consumo, segunda via, contestar, contestação, valor, cobrança]
@@ -14,7 +14,7 @@ backends:
     default_agent_id: telecom_contas
 
   ofertas:
-    url: http://localhost:8002
+    url: http://localhost:8001
     description: Backend responsável por ofertas, planos, upgrades, retenção e contratação.
     domains: [ofertas, planos, retenção, contratação]
     keywords: [oferta, plano, contratar, upgrade, desconto, promoção, pacote, retenção, cancelar serviço]
@@ -26,7 +26,7 @@ backends:
     default_agent_id: telecom_ofertas
 
   suporte:
-    url: http://localhost:8003
+    url: http://localhost:8002
     description: Backend responsável por suporte técnico, falhas, rede, internet e atendimento operacional.
     domains: [suporte, técnico, rede, internet]
     keywords: [internet, sinal, rede, suporte, técnico, problema, falha, sem conexão, modem]

@@ -10,8 +10,8 @@ Esta entrega reorganiza o projeto para uma arquitetura corporativa modular, pres
 | `agent_gateway/` | `apps/agent_gateway/` |
 | `channel_gateway/` | `apps/channel_gateway/` |
 | `agent_frontend/` | `apps/agent_frontend/` |
-| `agent_template_backend/` | `templates/backend/` |
-| `agent_template_backend_day_zero/` | `templates/backend_day_zero/` |
+| `agent_template_backend/` | `templates/agent_template_backend/` |
+| `agent_template_backend_day_zero/` | `templates/agent_template_backend_day_zero/` |
 | `mcp_servers/` | `mcp/servers/` |
 | `agent_certification_tests/` | `evals/certification/` |
 | `agent_framework_oci_evaluator/evaluator/` | `evals/offline/evaluator/` |

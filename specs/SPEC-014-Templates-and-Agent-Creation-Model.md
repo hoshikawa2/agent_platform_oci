@@ -49,7 +49,7 @@ Sem template:
 | Template | Uso |
 | --- | --- |
 | backend | Criação de agentes com runtime. |
-| backend_day_zero | Bootstrap acelerado com exemplos. |
+| agent_template_backend_day_zero | Bootstrap acelerado com exemplos. |
 | mcp_server | Criação de MCP server. |
 | channel_adapter | Adapter de canal quando aplicável. |
 
@@ -111,7 +111,7 @@ my_agent/
 ## Passo 1 — Copiar template
 
 ```bash
-cp -R templates/backend financeiro_agent
+cp -R templates/agent_template_backend financeiro_agent
 cd financeiro_agent
 ```
 

@@ -17,7 +17,7 @@ A Agent Platform OCI é composta por componentes reutilizáveis, aplicações de
 | `mcp/servers` | Apps | MCP servers de domínio. |
 | `evals/offline` | App/Lib | Avaliação offline/batch. |
 | `evals/certification` | Suite | Certificação técnica e funcional. |
-| `templates/backend` | Template | Scaffold para novos agentes. |
+| `templates/agent_template_backend` | Template | Scaffold para novos agentes. |
 | `specs` | Documentação | Contratos SDD versionados. |
 | `deploy` | Operação | Docker, Kubernetes e Helm. |
 
@@ -40,8 +40,8 @@ agent_platform_oci/
 │   ├── offline/
 │   └── certification/
 ├── templates/
-│   ├── backend/
-│   └── backend_day_zero/
+│   ├── agent_template_backend/
+│   └── agent_template_backend_day_zero/
 ├── specs/
 ├── deploy/
 │   ├── docker/
@@ -76,7 +76,7 @@ flowchart LR
 | Agent Backend / Runtime | 8000 | Kubernetes Deployment | Horizontal com storage externo |
 | Channel Gateway | 7000 | Kubernetes Deployment | Horizontal |
 | AI Gateway | 9100 | Kubernetes Deployment | Horizontal |
-| MCP Gateway | 9200 | Kubernetes Deployment | Horizontal |
+| MCP Gateway | 8300 | Kubernetes Deployment | Horizontal |
 | MCP Servers | 8001+ | Kubernetes Deployment | Por domínio |
 | Evaluator API | 9300 | Deployment/CronJob | Por carga batch |
 | Frontend Demo | 5173 | Opcional | Não crítico |

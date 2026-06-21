@@ -25,83 +25,83 @@ A documentação da Agent Platform OCI está organizada em SPECs/SDDs numeradas,
 
 >**/agent_platform_oci/specs**
 
-### SPEC-001 — Architecture
+### [SPEC-001 — Architecture](specs/SPEC-001-Architecture.md)
 
 Define a arquitetura geral da plataforma, seus componentes principais, estrutura de repositório, arquitetura lógica e física, contratos centrais, fluxo principal, requisitos não funcionais e critérios de aceite.
 
-### SPEC-002 — Agent Runtime
+### [SPEC-002 — Agent Runtime](specs/SPEC-002-Agent-Runtime.md)
 
 Descreve o runtime de execução conversacional dos agentes, incluindo LangGraph, estado, memória, checkpoints, roteamento, supervisor, BusinessContext, integração com MCP, RAG, eventos e tratamento de erros.
 
-### SPEC-003 — AI Gateway
+### [SPEC-003 — AI Gateway](specs/SPEC-003-AI-Gateway.md)
 
 Especifica o gateway responsável por centralizar chamadas de LLM e embeddings, incluindo contratos de request/response, profiles, providers, autenticação OCI, fallback, rate limit, métricas, segurança e observabilidade.
 
-### SPEC-004 — MCP Gateway
+### [SPEC-004 — MCP Gateway](specs/SPEC-004-MCP-Gateway.md)
 
 Define o modelo de integração com MCP, incluindo catálogo de tools, roteamento, execução, autorização, cache, retry, timeout, mapeamento de parâmetros, eventos, métricas e resposta padronizada das ferramentas.
 
-### SPEC-005 — Guardrails
+### [SPEC-005 — Guardrails](specs/SPEC-005-Guardrails.md)
 
 Descreve o modelo de guardrails da plataforma, cobrindo políticas de entrada, saída, tools, RAG e resposta final. Também define fases, modos de execução, tipos de guardrails, profiles LLM, códigos base, eventos, testes e critérios de aceite.
 
-### SPEC-006 — Evals
+### [SPEC-006 — Evals](specs/SPEC-006-Evals.md)
 
 Define a camada de avaliação da plataforma, incluindo avaliação online, avaliação offline, regressão, certificação, datasets, judges, métricas, CLI, API, persistência de resultados e publicação de evidências.
 
-### SPEC-007 — Observability
+### [SPEC-007 — Observability](specs/SPEC-007-Observability.md)
 
 Especifica o modelo de observabilidade, incluindo logs, traces, métricas, Langfuse, OpenTelemetry, eventos IC/NOC/GRL, dashboards, alertas, mascaramento de dados e geração de evidências operacionais.
 
-### SPEC-008 — Deployment
+### [SPEC-008 — Deployment](specs/SPEC-008-Deployment.md)
 
 Descreve o processo de empacotamento e implantação da plataforma, incluindo componentes deployáveis, pipeline CI/CD, Kubernetes/OKE, Docker, secrets, autenticação OCI, health checks, rollback, smoke tests e etapa de certificação.
 
-### SPEC-009 — Channel Gateway
+### [SPEC-009 — Channel Gateway](specs/SPEC-009-Channel-Gateway.md)
 
 Define o gateway de canais, responsável por normalizar payloads externos para o contrato canônico da plataforma e traduzir respostas para cada canal. Cobre modos de operação, idempotência, versionamento, segurança, erros e anti-patterns.
 
-### SPEC-010 — Agent Development
+### [SPEC-010 — Agent Development](specs/SPEC-010-Agent-Development.md)
 
 Descreve o padrão para desenvolvimento de agentes usando templates, configuração YAML, BusinessContext, MCP, guardrails, judges, RAG, memória, observabilidade e evals. Também diferencia responsabilidades do framework e do agente.
 
-### SPEC-011 — Governance Model
+### [SPEC-011 — Governance Model](specs/SPEC-011-Governance-Model.md)
 
 Define o modelo de governança da plataforma, incluindo ownership, papéis e responsabilidades, RACI, governança de agentes, prompts, guardrails, judges, modelos, MCP, datasets, processo de aprovação e evidências obrigatórias.
 
-### SPEC-012 — Canonical Contracts
+### [SPEC-012 — Canonical Contracts](specs/SPEC-012-Canonical-Contracts.md)
 
 Documenta os contratos canônicos da plataforma, como GatewayRequest, ChannelResponse, BusinessContext, AgentState, ToolInvocation, ToolResult, LLMRequest, LLMResponse, EvaluationRun e EventEnvelope. Também define regras de evolução desses contratos.
 
-### SPEC-013 — Versioning and Compatibility Model
+### [SPEC-013 — Versioning and Compatibility Model](specs/SPEC-013-Versioning-and-Compatibility-Model.md)
 
 Define o modelo de versionamento e compatibilidade da plataforma, incluindo Semantic Versioning, artefatos versionados, versionamento de contratos, matriz de compatibilidade, política de depreciação, migração e rollback.
 
-### SPEC-014 — Templates and Agent Creation Model
+### [SPEC-014 — Templates and Agent Creation Model](specs/SPEC-014-Templates-and-Agent-Creation-Model.md)
 
 Descreve os templates oficiais e o modelo de criação de agentes do zero. Explica o que pertence ao framework, o que pertence ao agente, a estrutura padrão e o passo a passo para copiar template, definir escopo, registrar agente, configurar rotas, tools, BusinessContext, prompts, datasets e testes.
 
-### SPEC-015 — Adoption and Eligibility Criteria
+### [SPEC-015 — Adoption and Eligibility Criteria](specs/SPEC-015-Adoption-and-Eligibility-Criteria.md)
 
 Define os critérios claros para adoção da plataforma, incluindo casos indicados, casos não indicados, critérios de entrada de negócio, arquitetura, segurança, qualidade, operação, processo de exceção e checklist de adoção.
 
-### SPEC-016 — Agent Development Lifecycle
+### [SPEC-016 — Agent Development Lifecycle](specs/SPEC-016-Agent-Development-Lifecycle.md)
 
 Descreve o ciclo de vida completo de desenvolvimento de agentes, desde discovery e definição de escopo até design, prompt, MCP, RAG, implementação, testes, avaliação, certificação, homologação e produção.
 
-### SPEC-017 — Release Management and CI/CD
+### [SPEC-017 — Release Management and CI/CD](specs/SPEC-017-Release-Management-and-CICD.md)
 
 Define o modelo de release e CI/CD, incluindo pipeline padrão, stages, artefatos de release, gates de qualidade, estratégia de rollback, erros comuns e critérios de aceite.
 
-### SPEC-018 — Security and Identity Model
+### [SPEC-018 — Security and Identity Model](specs/SPEC-018-Security-and-Identity-Model.md)
 
 Especifica o modelo de segurança e identidade da plataforma, cobrindo autenticação, Workload Identity, autorização, secrets, proteção de dados, segurança em MCP, segurança em canais, auditoria e critérios de aceite.
 
-### SPEC-019 — Evaluation and Certification Framework
+### [SPEC-019 — Evaluation and Certification Framework](specs/SPEC-019-Evaluation-and-Certification-Framework.md)
 
 Detalha o framework de avaliação e certificação, incluindo arquitetura de avaliação, métricas, datasets, EvaluationRun, CLI, processo de certificação, evidências obrigatórias e critérios de aceite.
 
-### SPEC-020 — Operational Readiness and SRE Model
+### [SPEC-020 — Operational Readiness and SRE Model](specs/SPEC-020-Operational-Readiness-and-SRE-Model.md)
 
 Define o modelo de readiness operacional e SRE da plataforma, incluindo componentes operados, health checks, readiness, SLOs, métricas, dashboards, alertas, runbooks, gestão de incidentes, capacidade e checklist de produção.
 
@@ -7862,6 +7862,64 @@ workflow concluído
 
 ## 17. Build e execução local
 
+Vamos subir a estrutura completa de um agente:
+
+```text
+Frontend (5173)
+↓
+Agent Gateway (9000)
+↓
+Agent Template Backend / Runtime (8000)
+↓
+MCP Gateway (8300)
+↓
+Telecom MCP Server (8100)
+Retail MCP Server (8200)
+```
+
+### Portas Oficiais
+
+| Componente | Porta |
+|------------|--------|
+| Frontend | 5173 |
+| Agent Gateway | 9000 |
+| Backend Runtime | 8000 |
+| MCP Gateway | 8300 |
+| Telecom MCP Server | 8100 |
+| Retail MCP Server | 8200 |
+
+### Variáveis Oficiais
+
+### Agent Template Backend
+
+ENABLE_MCP_TOOLS=true
+
+MCP_GATEWAY_ENABLED=true
+MCP_GATEWAY_URL=http://localhost:8300
+MCP_GATEWAY_TIMEOUT_SECONDS=60
+MCP_GATEWAY_AGENT_ID=telecom_contas
+MCP_GATEWAY_TENANT_ID=default
+
+### Agent Gateway
+
+DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+
+### MCP Gateway
+
+MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+
+### Ordem de Inicialização
+
+1. Telecom MCP Server
+2. Retail MCP Server
+3. MCP Gateway
+4. Agent Template Backend
+5. Agent Gateway
+6. Frontend
+
+---
+
 Na raiz do projeto:
 
 ```bash
@@ -7967,7 +8025,34 @@ servers:
 > Você pode customizar para subir todos os seus mcp servers.
 > Execute: **bash ./scripts/run_mcp_servers.sh**
 
-### 18.3. Testar tool pelo backend
+### 18.3. Subir o MCP Gateway
+
+```bash
+cd apps/mcp_gateway
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+export MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8300 --reload
+```
+
+Validações:
+
+```bash
+curl http://localhost:8300/health
+curl http://localhost:8300/ready
+curl http://localhost:8300/v1/tools
+```
+
+Teste:
+
+curl -X POST http://localhost:8300/v1/tools/consultar_fatura/invoke
+
+
+### 18.4. Testar tool pelo backend
 
 Teste pelo backend, não diretamente pelo MCP. Assim você valida o caminho completo:
 
@@ -7992,7 +8077,7 @@ curl -X POST http://localhost:8000/debug/mcp/call/consultar_titulo_financeiro \
 
 >**Nota:** No projeto existe também uma interface visual para testar:
 
-### 18.4. Subir Frontend para testes
+### 18.5. Subir Frontend para testes
 
 Install before the [npm](https://nodejs.org/) and:
 
@@ -8007,7 +8092,7 @@ Abra http://localhost:5173.
 
 >**Nota:** O frontend está preparado para funcionar com o **Agent Gateway**. No projeto, consulte os capítulos 28 e 28.10 para experimentá-lo. Lembre-se apenas de trocar **Backend URL** para **http://localhost:8010** pois 8010 é a porta onde o **Agent Gateway** estará escutando.
 
-### 18.5. Como interpretar erros MCP
+### 18.6. Como interpretar erros MCP
 
 ```text
 Tool não encontrada         → tools.yaml ou nome da tool errado.
@@ -8016,6 +8101,32 @@ Connection refused          → MCP Server não está rodando ou porta errada.
 Parâmetro obrigatório ausente → identity.yaml ou mcp_parameter_mapping.yaml incorreto.
 Timeout                     → MCP lento, endpoint errado, VPN, DNS ou sistema real indisponível.
 ```
+
+### 18.7. Subir Agent Gateway
+
+```bash
+cd apps/agent_gateway
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+export DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+export AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+```
+
+Validações:
+
+```bash
+curl http://localhost:9000/health
+```
+
+Teste:
+
+curl -X POST http://localhost:9000/gateway/message
+
 
 ---
 

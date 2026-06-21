@@ -1,30 +1,16 @@
-# MCP servers registry.
-# transport=http keeps the legacy framework mock contract:
-#   GET  <endpoint>/tools/list
-#   POST <endpoint>/tools/call
-# transport=fastmcp uses official MCP Streamable HTTP, typically endpoint http://host:port/mcp
-# transport=sse uses official MCP SSE, typically endpoint http://host:port/sse
+# Logical MCP server registry used by the framework for tool ownership.
+# With MCP_GATEWAY_ENABLED=true, the framework does NOT call these endpoints directly;
+# it calls MCP_GATEWAY_URL and the dedicated gateway routes to the final servers.
+# Keep these logical names aligned with config/tools.yaml mcp_server values.
 servers:
-  #  telecom:
-  #    enabled: true
-  #    transport: fastmcp
-  #    endpoint: http://localhost:8001/mcp
-  #    description: Telecom FastMCP server using official MCP protocol
-  #
-  #  retail:
-  #    enabled: true
-  #    transport: fastmcp
-  #    endpoint: http://localhost:8002/mcp
-  #    description: Retail FastMCP server using official MCP protocol
-
   telecom:
     enabled: true
     transport: http
     endpoint: http://localhost:8100/mcp
-    description: Telecom legacy HTTP mock MCP server
+    description: Logical Telecom MCP server. Direct endpoint is kept only for fallback when MCP_GATEWAY_ENABLED=false.
 
   retail:
     enabled: true
     transport: http
     endpoint: http://localhost:8200/mcp
-    description: Retail legacy HTTP mock MCP server
+    description: Logical Retail MCP server. Direct endpoint is kept only for fallback when MCP_GATEWAY_ENABLED=false.

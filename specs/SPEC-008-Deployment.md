@@ -172,7 +172,7 @@ Itens considerados:
 ```bash
 curl -f http://agent-runtime:8000/health
 curl -f http://agent-gateway:9000/health
-curl -f http://mcp-gateway:9200/health
+curl -f http://mcp-gateway:8300/health
 curl -f http://ai-gateway:9100/health
 ```
 

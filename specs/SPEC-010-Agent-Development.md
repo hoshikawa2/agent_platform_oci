@@ -7,7 +7,7 @@ Esta SPEC define o padrão para criação de agentes usando templates, configura
 ## Estrutura do Template
 
 ```text
-templates/backend/
+templates/agent_template_backend/
 ├── app/
 │   ├── main.py
 │   ├── state.py

@@ -8,6 +8,7 @@ from agent_framework.identity import MCPParameterMapper
 from .registry import MCPRegistry
 from .client import MCPHttpClient
 from .models import MCPToolResult
+from agent_framework.gateways import MCPGatewayClient
 
 logger = logging.getLogger("agent_framework.mcp.tool_router")
 
@@ -30,12 +31,26 @@ class MCPToolRouter:
             settings.TOOLS_CONFIG_PATH,
         )
         self.client = MCPHttpClient(timeout_seconds=settings.MCP_TOOL_TIMEOUT_SECONDS)
+        self.gateway_enabled = bool(getattr(settings, "MCP_GATEWAY_ENABLED", False))
+        self.gateway_agent_id = getattr(settings, "MCP_GATEWAY_AGENT_ID", "telecom_contas")
+        self.gateway_tenant_id = getattr(settings, "MCP_GATEWAY_TENANT_ID", "default")
+        self.gateway_client = (
+            MCPGatewayClient(
+                base_url=getattr(settings, "MCP_GATEWAY_URL", "http://localhost:8300"),
+                token=getattr(settings, "MCP_GATEWAY_TOKEN", None),
+                timeout_seconds=getattr(settings, "MCP_GATEWAY_TIMEOUT_SECONDS", settings.MCP_TOOL_TIMEOUT_SECONDS),
+            )
+            if self.gateway_enabled
+            else None
+        )
         self.parameter_mapper = MCPParameterMapper.from_yaml(
             getattr(settings, "MCP_PARAMETER_MAPPING_PATH", "./config/mcp_parameter_mapping.yaml")
         )
         logger.info(
-            "MCPToolRouter carregado enabled=%s servers=%s tools=%s mapper=%s",
+            "MCPToolRouter carregado enabled=%s gateway_enabled=%s gateway_url=%s servers=%s tools=%s mapper=%s",
             self.enabled,
+            self.gateway_enabled,
+            getattr(settings, "MCP_GATEWAY_URL", None),
             list(self.registry.servers.keys()),
             list(self.registry.tools.keys()),
             getattr(settings, "MCP_PARAMETER_MAPPING_PATH", None),
@@ -116,27 +131,55 @@ class MCPToolRouter:
             bool(mapped_arguments.get("invoice_id") or mapped_arguments.get("current_invoice_number")),
         )
 
+        async def _execute() -> MCPToolResult:
+            if self.gateway_enabled and self.gateway_client:
+                response = await self.gateway_client.invoke_tool(
+                    tenant_id=self.gateway_tenant_id,
+                    agent_id=self.gateway_agent_id,
+                    channel=getattr(self.settings, "DEFAULT_CHANNEL", "web"),
+                    tool_name=tool_name,
+                    arguments=mapped_arguments,
+                    business_context={},
+                    metadata={"routed_by": "agent_framework.mcp.tool_router", "logical_server": server.name},
+                )
+                return MCPToolResult(
+                    tool_name=tool_name,
+                    server_name="mcp_gateway",
+                    ok=bool(response.get("ok", False)),
+                    result=response.get("data"),
+                    error=response.get("error"),
+                    metadata={
+                        "transport": "mcp_gateway",
+                        "logical_server": server.name,
+                        **(response.get("metadata") or {}),
+                        "cache": response.get("cache") or {},
+                        "latency_ms": response.get("latency_ms"),
+                    },
+                )
+            return await self.client.call_tool(server, tool_name, mapped_arguments)
+
         if self.telemetry:
             async with self.telemetry.span(
                 "mcp.tool_call",
                 tool_name=tool_name,
-                mcp_server=server.name,
+                mcp_server=("mcp_gateway" if self.gateway_enabled else server.name),
                 input=mapped_arguments,
-                tags=["mcp", "tool"],
+                tags=["mcp", "tool", "mcp_gateway" if self.gateway_enabled else "mcp_server"],
             ):
-                result = await self.client.call_tool(server, tool_name, mapped_arguments)
+                result = await _execute()
                 await self.telemetry.event(
                     "mcp.tool_call.completed",
                     {
                         "tool_name": tool_name,
-                        "server": server.name,
+                        "server": "mcp_gateway" if self.gateway_enabled else server.name,
+                        "logical_server": server.name,
                         "ok": result.ok,
                         "error": result.error,
                     },
                 )
                 return result
 
-        return await self.client.call_tool(server, tool_name, mapped_arguments)
+        return await _execute()
 
     async def call(
         self,

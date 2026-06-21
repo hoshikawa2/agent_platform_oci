@@ -170,6 +170,15 @@ class Settings(BaseSettings):
     IDENTITY_CONFIG_PATH: str = './config/identity.yaml'
     MCP_PARAMETER_MAPPING_PATH: str = './config/mcp_parameter_mapping.yaml'
     MCP_TOOL_TIMEOUT_SECONDS: int = 30
+    # When enabled, the framework routes tool calls to the dedicated MCP Gateway
+    # instead of calling individual MCP servers directly. The gateway then owns
+    # server selection, retry, cache and policy enforcement.
+    MCP_GATEWAY_ENABLED: bool = False
+    MCP_GATEWAY_URL: str = 'http://localhost:8300'
+    MCP_GATEWAY_TIMEOUT_SECONDS: int = 60
+    MCP_GATEWAY_TOKEN: str | None = None
+    MCP_GATEWAY_AGENT_ID: str = 'telecom_contas'
+    MCP_GATEWAY_TENANT_ID: str = 'default'
 
     DEFAULT_CHANNEL: str = 'web'
     # Agent Framework channel input mode.

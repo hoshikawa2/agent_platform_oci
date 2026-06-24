@@ -3,6 +3,36 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
+
+_LANGGRAPH_STEP_ORDER = {
+    "__start__": 0,
+    "input_guardrails": 1,
+    "routing_decision": 2,
+    "billing_agent": 3,
+    "product_agent": 3,
+    "orders_agent": 3,
+    "support_agent": 3,
+    "handoff": 3,
+    "supervisor_agent": 3,
+    "output_supervisor": 4,
+    "output_guardrails": 5,
+    "judge": 6,
+    "supervisor_review": 7,
+    "persist": 8,
+    "__end__": 9,
+}
+
+
+def _langgraph_step(name: str, state: dict[str, Any]) -> int:
+    explicit_steps = state.get("langgraph_steps")
+    if isinstance(explicit_steps, dict) and name in explicit_steps:
+        try:
+            return int(explicit_steps[name])
+        except (TypeError, ValueError):
+            pass
+    return _LANGGRAPH_STEP_ORDER.get(name, 50)
+
+
 class LangGraphDeepTelemetry:
     """Eventos profundos do LangGraph no padrão FIRST.
 
@@ -16,7 +46,16 @@ class LangGraphDeepTelemetry:
     async def node(self, name: str, state: dict[str, Any] | None = None):
         state=state or {}
         session_id=state.get('conversation_key') or state.get('session_id')
-        payload={'node': name, 'session_id': session_id, 'agent_id': state.get('agent_id'), 'tenant_id': state.get('tenant_id'), 'input_size': len(str(state.get('user_text') or state.get('sanitized_input') or ''))}
+        payload={
+            'node': name,
+            'langgraph_node': name,
+            'langgraph_step': _langgraph_step(name, state),
+            'framework': 'langgraph',
+            'session_id': session_id,
+            'agent_id': state.get('agent_id'),
+            'tenant_id': state.get('tenant_id'),
+            'input_size': len(str(state.get('user_text') or state.get('sanitized_input') or '')),
+        }
         start=time.time()
         await self.telemetry.event('langgraph.node.started', payload, kind='langgraph')
         async with self.telemetry.span(f'langgraph.node.{name}', **payload):

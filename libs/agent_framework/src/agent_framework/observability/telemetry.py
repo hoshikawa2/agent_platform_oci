@@ -21,9 +21,13 @@ from uuid import uuid4
 from .context import (
     context_metadata,
     get_current_observation_id,
+    get_current_span_events,
     get_observability_context,
+    record_current_span_event,
     reset_current_observation_id,
+    reset_current_span_events,
     set_current_observation_id,
+    set_current_span_events,
     set_observability_context,
 )
 from .event_bus import TelemetryEventBus
@@ -42,6 +46,18 @@ def _langfuse_type(kind: str | None) -> str:
 
 
 _LANGFUSE_TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_COMPACT_SUPPRESSED_SPAN_PREFIXES = (
+    "llm.chat_completion",
+    "workflow.agent.",
+    "workflow.handoff",
+    "workflow.input_guardrails",
+    "workflow.judge",
+    "workflow.output_guardrails",
+    "workflow.output_supervisor",
+    "workflow.persist",
+    "workflow.routing_decision",
+    "workflow.supervisor_review",
+)
 
 
 def _raw_correlation_id(attrs: dict[str, Any] | None = None) -> str | None:
@@ -100,6 +116,7 @@ def _inject_langfuse_trace_context(kwargs: dict[str, Any], attrs: dict[str, Any]
     which grouped everything in one trace while flattening the tree.
     """
     attrs = attrs or kwargs.get("metadata") or {}
+    ignore_current_parent = bool(attrs.get("_ignore_current_parent") or kwargs.get("_ignore_current_parent"))
     raw_id = _raw_correlation_id(attrs)
     trace_id = _langfuse_trace_id(raw_id)
     parent_id = (
@@ -107,7 +124,7 @@ def _inject_langfuse_trace_context(kwargs: dict[str, Any], attrs: dict[str, Any]
         or attrs.get("parent_span_id")
         or kwargs.get("parent_observation_id")
         or kwargs.get("parent_span_id")
-        or get_current_observation_id()
+        or (None if ignore_current_parent else get_current_observation_id())
     )
     if trace_id:
         trace_context = dict(kwargs.get("trace_context") or {})
@@ -121,6 +138,8 @@ def _inject_langfuse_trace_context(kwargs: dict[str, Any], attrs: dict[str, Any]
             metadata.setdefault("langfuse_trace_id", trace_id)
             if parent_id:
                 metadata.setdefault("parent_observation_id", str(parent_id))
+            metadata.pop("_ignore_current_parent", None)
+    kwargs.pop("_ignore_current_parent", None)
     return kwargs
 
 
@@ -188,6 +207,15 @@ class Telemetry:
     def is_enabled(self) -> bool:
         return bool(self.enabled and self.langfuse)
 
+    def is_compact_mode(self) -> bool:
+        mode = getattr(self.settings, "LANGFUSE_TRACE_MODE", "verbose") or "verbose"
+        return str(mode).lower() == "compact"
+
+    def _should_emit_langfuse_span(self, name: str) -> bool:
+        if not self.is_compact_mode():
+            return True
+        return not str(name).startswith(_COMPACT_SUPPRESSED_SPAN_PREFIXES)
+
     def bind_context(self, **kwargs: Any):
         return set_observability_context(**kwargs)
 
@@ -199,6 +227,9 @@ class Telemetry:
         """Cria span correlacionado em logs, Langfuse e OpenTelemetry."""
         start = time.time()
         attrs = context_metadata(attrs)
+        attrs.setdefault("_span_name", name)
+        if self.is_compact_mode() and name == "agent.gateway_message" and not attrs.get("parent_observation_id"):
+            attrs["_ignore_current_parent"] = True
         if not attrs.get("request_id"):
             attrs["request_id"] = str(uuid4())
         if not attrs.get("trace_id"):
@@ -207,19 +238,27 @@ class Telemetry:
         observation_cm = None
         observation = None
         observation_token = None
-        parent_observation_id = attrs.get("parent_observation_id") or get_current_observation_id()
+        ignore_current_parent = bool(attrs.get("_ignore_current_parent"))
+        parent_observation_id = attrs.get("parent_observation_id")
+        if not parent_observation_id and not ignore_current_parent:
+            parent_observation_id = get_current_observation_id()
         if parent_observation_id:
             attrs.setdefault("parent_observation_id", str(parent_observation_id))
         logger.info("span.start %s %s", name, _safe(attrs))
 
         otel_cm = self.otel.span(name, attrs)
         otel_span = otel_cm.__enter__()
-        if self.is_enabled():
+        emit_langfuse_span = self.is_enabled() and self._should_emit_langfuse_span(name)
+        span_events: list[dict[str, Any]] | None = [] if emit_langfuse_span and self.is_compact_mode() else None
+        span_events_token = set_current_span_events(span_events) if span_events is not None else None
+        observation_metadata = {k: v for k, v in attrs.items() if k != "input" and not str(k).startswith("_")}
+        if emit_langfuse_span:
             observation_cm = self._start_observation(
                 name=name,
                 as_type="span",
                 input=attrs.get("input"),
-                metadata={k: v for k, v in attrs.items() if k != "input"},
+                metadata=observation_metadata,
+                _ignore_current_parent=attrs.get("_ignore_current_parent"),
             )
         try:
             if observation_cm is not None:
@@ -228,7 +267,8 @@ class Telemetry:
                 if observation_id:
                     observation_token = set_current_observation_id(observation_id)
                     attrs.setdefault("observation_id", observation_id)
-                self._update_trace_from_attrs(observation, attrs)
+                if not attrs.get("parent_observation_id"):
+                    self._update_trace_from_attrs(observation, attrs)
             # Publish span.started only after the Langfuse observation is current,
             # so secondary analytics/exporters can attach it as a child instead
             # of creating a sibling/root entry.
@@ -236,7 +276,11 @@ class Telemetry:
             yield observation
             duration_ms = int((time.time() - start) * 1000)
             out = {"status": "ok", "duration_ms": duration_ms}
-            self._update_observation(observation, output=out, metadata={"duration_ms": duration_ms})
+            metadata = {**observation_metadata, "duration_ms": duration_ms}
+            if span_events:
+                metadata["aggregated_event_count"] = len(span_events)
+                metadata["aggregated_events"] = span_events
+            self._update_observation(observation, output=out, metadata=metadata)
             if otel_span is not None:
                 otel_span.set_attribute("duration_ms", duration_ms)
             await self.event_bus.publish(f"{name}.completed", {**attrs, **out}, kind="span")
@@ -244,7 +288,11 @@ class Telemetry:
         except Exception as exc:
             duration_ms = int((time.time() - start) * 1000)
             out = {"status": "error", "error": str(exc), "duration_ms": duration_ms}
-            self._update_observation(observation, level="ERROR", status_message=str(exc), output=out, metadata={"duration_ms": duration_ms})
+            metadata = {**observation_metadata, "duration_ms": duration_ms}
+            if span_events:
+                metadata["aggregated_event_count"] = len(span_events)
+                metadata["aggregated_events"] = span_events
+            self._update_observation(observation, level="ERROR", status_message=str(exc), output=out, metadata=metadata)
             if otel_span is not None:
                 try:
                     otel_span.record_exception(exc)
@@ -260,6 +308,8 @@ class Telemetry:
                 except Exception: logger.exception("Falha ao finalizar span Langfuse %s", name)
             if observation_token is not None:
                 reset_current_observation_id(observation_token)
+            if span_events_token is not None:
+                reset_current_span_events(span_events_token)
             try: otel_cm.__exit__(None, None, None)
             except Exception: logger.debug("Falha ao fechar span OTEL", exc_info=True)
 
@@ -267,6 +317,14 @@ class Telemetry:
         payload = context_metadata(payload or {})
         logger.info("event %s %s", name, _safe(payload))
         await self.event_bus.publish(name, payload, kind=kind)
+        if self.is_compact_mode():
+            if get_current_span_events() is not None:
+                record_current_span_event({
+                    "name": name,
+                    "kind": kind,
+                    "payload": payload,
+                })
+            return
         if not self.is_enabled():
             return
         # IMPORTANT: do not call ``langfuse.event(...)`` directly here. In SDK
@@ -274,7 +332,10 @@ class Telemetry:
         # a new trace row for every telemetry event. We create a correlated
         # observation instead, using request_id/trace_id as the stable trace id.
         try:
-            cm = self._start_observation(name=name, as_type=_langfuse_type(kind), metadata={**payload, "event_kind": kind})
+            metadata = {**payload, "event_kind": kind}
+            if self.is_compact_mode():
+                metadata["_ignore_current_parent"] = True
+            cm = self._start_observation(name=name, as_type=_langfuse_type(kind), metadata=metadata)
             if cm is not None:
                 with cm: pass
         except Exception:
@@ -305,7 +366,8 @@ class Telemetry:
             # trace row per LLM call when no current observation exists.
             if hasattr(self.langfuse, "start_as_current_generation"):
                 clean = {k: v for k, v in kwargs.items() if k != "as_type" and v is not None}
-                clean = _inject_langfuse_trace_context(clean, metadata)
+                if not self.is_compact_mode():
+                    clean = _inject_langfuse_trace_context(clean, metadata)
                 try:
                     with self.langfuse.start_as_current_generation(**clean) as obs:
                         self._update_observation(obs, output=output, model=model, metadata=metadata)
@@ -367,7 +429,13 @@ class Telemetry:
             clean = {k: v for k, v in kwargs.items() if v is not None}
             if "as_type" in clean:
                 clean["as_type"] = _langfuse_type(clean.get("as_type"))
-            clean = _inject_langfuse_trace_context(clean, clean.get("metadata") or {})
+            if self.is_compact_mode():
+                clean.pop("_ignore_current_parent", None)
+            else:
+                clean = _inject_langfuse_trace_context(clean, clean.get("metadata") or {})
+            metadata = clean.get("metadata")
+            if isinstance(metadata, dict):
+                clean["metadata"] = {k: v for k, v in metadata.items() if not str(k).startswith("_")}
             try:
                 return self.langfuse.start_as_current_observation(**clean)
             except (TypeError, ValueError):
@@ -416,6 +484,8 @@ class Telemetry:
     def _update_trace_from_attrs(self, observation, attrs: dict[str, Any]):
         if observation is None: return
         trace_attrs = {}
+        if attrs.get("_span_name"):
+            trace_attrs["name"] = attrs["_span_name"]
         for key in ("session_id", "user_id"):
             if attrs.get(key): trace_attrs[key] = attrs[key]
         if attrs.get("input"): trace_attrs["input"] = attrs["input"]

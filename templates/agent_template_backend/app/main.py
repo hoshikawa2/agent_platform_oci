@@ -74,6 +74,7 @@ logger.info("Framework channel input mode: %s", gateway.input_mode)
 
 @app.middleware("http")
 async def observability_context_middleware(request: Request, call_next):
+    clear_observability_context()
     request_id = request.headers.get("x-request-id") or str(uuid4())
     set_observability_context(
         request_id=request_id,
@@ -99,6 +100,8 @@ async def observability_context_middleware(request: Request, call_next):
             "duration_ms": int((time.time() - started) * 1000),
         }, kind="http")
         raise
+    finally:
+        clear_observability_context()
 
 
 class GatewayRequest(BaseModel):

@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     OCI_EMBEDDING_MODEL: str = 'cohere.embed-multilingual-v3.0'
 
     ENABLE_LANGFUSE: bool = False
+    LANGFUSE_TRACE_MODE: Literal['verbose','compact'] = 'verbose'
     LANGFUSE_PUBLIC_KEY: str | None = None
     LANGFUSE_SECRET_KEY: str | None = None
     LANGFUSE_HOST: str = 'https://cloud.langfuse.com'

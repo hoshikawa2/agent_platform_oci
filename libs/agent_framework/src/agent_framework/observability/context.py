@@ -21,6 +21,7 @@ _workflow_id: ContextVar[str | None] = ContextVar("workflow_id", default=None)
 _message_id: ContextVar[str | None] = ContextVar("message_id", default=None)
 _trace_id: ContextVar[str | None] = ContextVar("trace_id", default=None)
 _current_observation_id: ContextVar[str | None] = ContextVar("current_observation_id", default=None)
+_current_span_events: ContextVar[list[dict[str, Any]] | None] = ContextVar("current_span_events", default=None)
 
 @dataclass(slots=True)
 class ObservabilityContext:
@@ -66,6 +67,31 @@ def reset_current_observation_id(token) -> None:
         _current_observation_id.set(None)
 
 
+def get_current_span_events() -> list[dict[str, Any]] | None:
+    """Return the mutable aggregate-event bucket for the active macro span."""
+    return _current_span_events.get()
+
+
+def set_current_span_events(events: list[dict[str, Any]] | None):
+    """Set aggregate-event bucket and return ContextVar token."""
+    return _current_span_events.set(events)
+
+
+def reset_current_span_events(token) -> None:
+    """Restore previous aggregate-event bucket."""
+    try:
+        _current_span_events.reset(token)
+    except Exception:
+        _current_span_events.set(None)
+
+
+def record_current_span_event(event: dict[str, Any]) -> None:
+    """Append an event summary to the active macro span, if one exists."""
+    events = _current_span_events.get()
+    if events is not None:
+        events.append(event)
+
+
 def set_observability_context(**kwargs: Any) -> ObservabilityContext:
     if not kwargs.get("request_id") and not _request_id.get():
         kwargs["request_id"] = str(uuid4())
@@ -82,7 +108,7 @@ def set_observability_context(**kwargs: Any) -> ObservabilityContext:
 
 
 def clear_observability_context() -> None:
-    for var in (_request_id, _session_id, _user_id, _tenant_id, _agent_id, _channel, _ura_call_id, _workflow_id, _message_id, _trace_id, _current_observation_id):
+    for var in (_request_id, _session_id, _user_id, _tenant_id, _agent_id, _channel, _ura_call_id, _workflow_id, _message_id, _trace_id, _current_observation_id, _current_span_events):
         var.set(None)
 
 

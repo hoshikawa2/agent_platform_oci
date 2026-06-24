@@ -4,7 +4,7 @@ import logging
 from uuid import uuid4
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -52,7 +52,7 @@ summary_memory = create_conversation_summary_memory(settings, message_history=me
 sessions = create_session_repository(settings)
 checkpoints = create_checkpoint_repository(settings)
 cache = create_cache(settings, telemetry=telemetry)
-gateway = ChannelGateway()
+gateway = ChannelGateway(input_mode=settings.FRAMEWORK_CHANNEL_INPUT_MODE)
 analytics = create_analytics_publisher(settings)
 observer = TelemetryBackedAgentObserver(telemetry=telemetry)
 configure_global_observer({
@@ -70,9 +70,11 @@ logger.info("LLM provider carregado: %s", llm.__class__.__name__)
 logger.info("Langfuse habilitado: %s host=%s", telemetry.is_enabled(), settings.LANGFUSE_HOST)
 logger.info("Analytics habilitado: %s providers=%s", getattr(settings, "ENABLE_ANALYTICS", False), getattr(settings, "ANALYTICS_PROVIDERS", ""))
 logger.info("Agentes disponíveis: %s", [p.agent_id for p in agent_profiles.list_profiles()])
+logger.info("Framework channel input mode: %s", gateway.input_mode)
 
 @app.middleware("http")
 async def observability_context_middleware(request: Request, call_next):
+    clear_observability_context()
     request_id = request.headers.get("x-request-id") or str(uuid4())
     set_observability_context(
         request_id=request_id,
@@ -98,6 +100,8 @@ async def observability_context_middleware(request: Request, call_next):
             "duration_ms": int((time.time() - started) * 1000),
         }, kind="http")
         raise
+    finally:
+        clear_observability_context()
 
 
 class GatewayRequest(BaseModel):
@@ -138,7 +142,10 @@ def _resolve_identity(req: GatewayRequest, msg) -> tuple[AgentIdentity, dict, Bu
 
 
 async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) -> dict:
-    msg = await gateway.normalize(req.channel, req.payload)
+    try:
+        msg = await gateway.normalize(req.channel, req.payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     identity, normalized_context, business_context, missing_identity_keys = _resolve_identity(req, msg)
     agent_session_id = identity.conversation_key()
     message_id = (req.payload or {}).get("message_id") or str(uuid4())
@@ -331,6 +338,8 @@ async def health():
         "usage_repository": settings.USAGE_REPOSITORY_PROVIDER,
         "identity_config_path": settings.IDENTITY_CONFIG_PATH,
         "mcp_parameter_mapping_path": settings.MCP_PARAMETER_MAPPING_PATH,
+        "framework_channel_input_mode": settings.FRAMEWORK_CHANNEL_INPUT_MODE,
+        "legacy_channel_gateway_mode": settings.CHANNEL_GATEWAY_MODE,
     }
 
 
@@ -354,6 +363,8 @@ async def debug_env():
         "AGENTS_CONFIG_PATH": settings.AGENTS_CONFIG_PATH,
         "ROUTING_CONFIG_PATH": settings.ROUTING_CONFIG_PATH,
         "ROUTING_MODE": settings.ROUTING_MODE,
+        "FRAMEWORK_CHANNEL_INPUT_MODE": settings.FRAMEWORK_CHANNEL_INPUT_MODE,
+        "CHANNEL_GATEWAY_MODE": settings.CHANNEL_GATEWAY_MODE,
     }
 
 

@@ -187,6 +187,16 @@ class AgentWorkflow:
             input=state.get("user_text"),
         ):
             history_texts = [m.get("content", "") for m in state.get("history", [])]
+            await self.observer.emit_grl(
+                "001",
+                {
+                    "session_id": state.get("conversation_key") or state.get("session_id"),
+                    "tenant_id": state.get("tenant_id"),
+                    "agent_id": state.get("agent_id"),
+                    "phase": "input",
+                },
+                component="workflow.input_guardrails.start",
+            )
             sanitized, decisions = await self.guardrails.run_input(
                 state["user_text"],
                 {
@@ -199,6 +209,19 @@ class AgentWorkflow:
             )
             for _decision in decisions:
                 await self.guardrail_telemetry.evaluated("input", _decision)
+                await self.observer.emit_grl(
+                    "002" if _decision.allowed else "004",
+                    {
+                        "session_id": state.get("conversation_key") or state.get("session_id"),
+                        "tenant_id": state.get("tenant_id"),
+                        "agent_id": state.get("agent_id"),
+                        "phase": "input",
+                        "rail_code": getattr(_decision, "code", None),
+                        "allowed": bool(_decision.allowed),
+                        "reason": getattr(_decision, "reason", None),
+                    },
+                    component="workflow.input_guardrails.decision",
+                )
                 if not _decision.allowed:
                     await self.guardrail_telemetry.blocked("input", _decision)
             await self.telemetry.event(
@@ -209,6 +232,18 @@ class AgentWorkflow:
                     "agent_id": state.get("agent_id"),
                     "decisions": [d.model_dump() for d in decisions],
                 },
+            )
+            await self.observer.emit_grl(
+                "009",
+                {
+                    "session_id": state.get("conversation_key") or state.get("session_id"),
+                    "tenant_id": state.get("tenant_id"),
+                    "agent_id": state.get("agent_id"),
+                    "phase": "input",
+                    "blocked": any(not d.allowed for d in decisions),
+                    "decision_count": len(decisions),
+                },
+                component="workflow.input_guardrails.final",
             )
             if any(not d.allowed for d in decisions):
                 return {
@@ -285,41 +320,36 @@ class AgentWorkflow:
             }
 
     async def billing_agent(self, state):
-        async with self.langgraph_telemetry.node("billing_agent", state):
-            async with self.telemetry.span(
-                "workflow.agent.billing",
-                session_id=state.get("conversation_key") or state.get("session_id"),
-                input={"intent": state.get("intent")},
-            ):
-                return await self.billing.run(state)
+        async with self.telemetry.span(
+            "workflow.agent.billing",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.billing.run(state)
 
     async def product_agent(self, state):
-        async with self.langgraph_telemetry.node("product_agent", state):
-            async with self.telemetry.span(
-                "workflow.agent.product",
-                session_id=state.get("conversation_key") or state.get("session_id"),
-                input={"intent": state.get("intent")},
-            ):
-                return await self.product.run(state)
+        async with self.telemetry.span(
+            "workflow.agent.product",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.product.run(state)
 
     async def orders_agent(self, state):
-        async with self.langgraph_telemetry.node("orders_agent", state):
-            async with self.telemetry.span(
-                    "workflow.agent.orders",
-                    session_id=state.get("conversation_key") or state.get("session_id"),
-                    input={"intent": state.get("intent")},
-            ):
-                return await self.orders.run(state)
-
+        async with self.telemetry.span(
+            "workflow.agent.orders",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.orders.run(state)
 
     async def support_agent(self, state):
-        async with self.langgraph_telemetry.node("support_agent", state):
-            async with self.telemetry.span(
-                    "workflow.agent.support",
-                    session_id=state.get("conversation_key") or state.get("session_id"),
-                    input={"intent": state.get("intent")},
-            ):
-                return await self.support.run(state)
+        async with self.telemetry.span(
+            "workflow.agent.support",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.support.run(state)
 
     async def supervisor_agent(self, state):
         """Executa um ou mais agentes no modo supervisor e consolida a resposta.
@@ -419,6 +449,21 @@ class AgentWorkflow:
                 },
             )
 
+            await self.observer.emit_ic(
+                "IC.OUTPUT_SUPERVISOR_COMPLETED",
+                {
+                    "session_id": context["session_id"],
+                    "tenant_id": state.get("tenant_id"),
+                    "agent_id": state.get("agent_id"),
+                    "route": state.get("route"),
+                    "intent": state.get("intent"),
+                    "action": action,
+                    "approved": decision.approved,
+                    "result_count": len(decision.results),
+                },
+                component="workflow.output_supervisor",
+            )
+
             if decision.action in {RailAction.ALLOW, RailAction.SANITIZE, RailAction.OBSERVE}:
                 final_answer = decision.candidate
             elif decision.action == RailAction.HANDOVER:
@@ -457,11 +502,36 @@ class AgentWorkflow:
             session_id=state.get("conversation_key") or state.get("session_id"),
             input=state.get("answer"),
         ):
+            await self.observer.emit_grl(
+                "001",
+                {
+                    "session_id": state.get("conversation_key") or state.get("session_id"),
+                    "tenant_id": state.get("tenant_id"),
+                    "agent_id": state.get("agent_id"),
+                    "phase": "output",
+                    "route": state.get("route"),
+                    "intent": state.get("intent"),
+                },
+                component="workflow.output_guardrails.start",
+            )
             final, decisions = await self.guardrails.run_output(
                 state["answer"], state.get("context", {})
             )
             for _decision in decisions:
                 await self.guardrail_telemetry.evaluated("output", _decision)
+                await self.observer.emit_grl(
+                    "002" if _decision.allowed else "004",
+                    {
+                        "session_id": state.get("conversation_key") or state.get("session_id"),
+                        "tenant_id": state.get("tenant_id"),
+                        "agent_id": state.get("agent_id"),
+                        "phase": "output",
+                        "rail_code": getattr(_decision, "code", None),
+                        "allowed": bool(_decision.allowed),
+                        "reason": getattr(_decision, "reason", None),
+                    },
+                    component="workflow.output_guardrails.decision",
+                )
                 if not _decision.allowed:
                     await self.guardrail_telemetry.blocked("output", _decision)
             await self.telemetry.event(
@@ -472,6 +542,18 @@ class AgentWorkflow:
                     "agent_id": state.get("agent_id"),
                     "decisions": [d.model_dump() for d in decisions],
                 },
+            )
+            await self.observer.emit_grl(
+                "009",
+                {
+                    "session_id": state.get("conversation_key") or state.get("session_id"),
+                    "tenant_id": state.get("tenant_id"),
+                    "agent_id": state.get("agent_id"),
+                    "phase": "output",
+                    "blocked": any(not d.allowed for d in decisions),
+                    "decision_count": len(decisions),
+                },
+                component="workflow.output_guardrails.final",
             )
             return {
                 "final_answer": final,

@@ -320,41 +320,36 @@ class AgentWorkflow:
             }
 
     async def billing_agent(self, state):
-        async with self.langgraph_telemetry.node("billing_agent", state):
-            async with self.telemetry.span(
-                "workflow.agent.billing",
-                session_id=state.get("conversation_key") or state.get("session_id"),
-                input={"intent": state.get("intent")},
-            ):
-                return await self.billing.run(state)
+        async with self.telemetry.span(
+            "workflow.agent.billing",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.billing.run(state)
 
     async def product_agent(self, state):
-        async with self.langgraph_telemetry.node("product_agent", state):
-            async with self.telemetry.span(
-                "workflow.agent.product",
-                session_id=state.get("conversation_key") or state.get("session_id"),
-                input={"intent": state.get("intent")},
-            ):
-                return await self.product.run(state)
+        async with self.telemetry.span(
+            "workflow.agent.product",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.product.run(state)
 
     async def orders_agent(self, state):
-        async with self.langgraph_telemetry.node("orders_agent", state):
-            async with self.telemetry.span(
-                    "workflow.agent.orders",
-                    session_id=state.get("conversation_key") or state.get("session_id"),
-                    input={"intent": state.get("intent")},
-            ):
-                return await self.orders.run(state)
-
+        async with self.telemetry.span(
+            "workflow.agent.orders",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.orders.run(state)
 
     async def support_agent(self, state):
-        async with self.langgraph_telemetry.node("support_agent", state):
-            async with self.telemetry.span(
-                    "workflow.agent.support",
-                    session_id=state.get("conversation_key") or state.get("session_id"),
-                    input={"intent": state.get("intent")},
-            ):
-                return await self.support.run(state)
+        async with self.telemetry.span(
+            "workflow.agent.support",
+            session_id=state.get("conversation_key") or state.get("session_id"),
+            input={"intent": state.get("intent")},
+        ):
+            return await self.support.run(state)
 
     async def supervisor_agent(self, state):
         """Executa um ou mais agentes no modo supervisor e consolida a resposta.

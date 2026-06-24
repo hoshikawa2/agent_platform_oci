@@ -4,14 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/config/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/config/settings.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/observability/context.py" beforeDir="false" afterPath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/observability/context.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/observability/langgraph_telemetry.py" beforeDir="false" afterPath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/observability/langgraph_telemetry.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/observability/telemetry.py" beforeDir="false" afterPath="$PROJECT_DIR$/libs/agent_framework/src/agent_framework/observability/telemetry.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/templates/agent_template_backend/.env" beforeDir="false" afterPath="$PROJECT_DIR$/templates/agent_template_backend/.env" afterDir="false" />
-    </list>
+    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="bugfix Alex 2026-06-24" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -88,7 +81,7 @@
       <workItem from="1782038604623" duration="6486000" />
       <workItem from="1782047166074" duration="27000" />
       <workItem from="1782047194363" duration="961000" />
-      <workItem from="1782048494672" duration="2474000" />
+      <workItem from="1782048494672" duration="2790000" />
     </task>
     <task id="LOCAL-00001" summary="Ajustes na documentação e remanejamento dos folders">
       <option name="closed" value="true" />
@@ -122,7 +115,15 @@
       <option name="project" value="LOCAL" />
       <updated>1782048747421</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="bugfix Alex 2026-06-24">
+      <option name="closed" value="true" />
+      <created>1782321346355</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1782321346355</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -130,6 +131,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Ajustes na documentação e remanejamento dos folders" />
-    <option name="LAST_COMMIT_MESSAGE" value="Ajustes na documentação e remanejamento dos folders" />
+    <MESSAGE value="bugfix Alex 2026-06-24" />
+    <option name="LAST_COMMIT_MESSAGE" value="bugfix Alex 2026-06-24" />
   </component>
 </project>

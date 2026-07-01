@@ -342,6 +342,7 @@ RAG_TOP_K=5
 EMBEDDING_PROVIDER=mock
 
 ENABLE_LANGFUSE=false
+LANGFUSE_TRACE_MODE=compact # Opcional: verbose, compact
 LANGFUSE_HOST=http://localhost:3005
 ENABLE_OTEL=false
 OTEL_SERVICE_NAME=ai-agent-template
@@ -414,6 +415,7 @@ Para usar Langfuse:
 
 ```env
 ENABLE_LANGFUSE=true
+LANGFUSE_TRACE_MODE=compact # Opcional: verbose, compact
 LANGFUSE_PUBLIC_KEY=<public-key>
 LANGFUSE_SECRET_KEY=<secret-key>
 LANGFUSE_HOST=http://localhost:3005
@@ -8553,6 +8555,7 @@ Verifique:
 
 ```env
 ENABLE_LANGFUSE=true
+LANGFUSE_TRACE_MODE=compact # Opcional: verbose, compact
 LANGFUSE_PUBLIC_KEY=<public-key>
 LANGFUSE_SECRET_KEY=<secret-key>
 LANGFUSE_HOST=http://localhost:3005

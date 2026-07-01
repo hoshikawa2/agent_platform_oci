@@ -4,7 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="bugfix Alex 2026-06-24" />
+    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="bugfix Alex 2026-06-30">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -82,6 +84,7 @@
       <workItem from="1782047166074" duration="27000" />
       <workItem from="1782047194363" duration="961000" />
       <workItem from="1782048494672" duration="2790000" />
+      <workItem from="1782900499027" duration="911000" />
     </task>
     <task id="LOCAL-00001" summary="Ajustes na documentação e remanejamento dos folders">
       <option name="closed" value="true" />
@@ -123,7 +126,95 @@
       <option name="project" value="LOCAL" />
       <updated>1782321346355</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900906490</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900906490</updated>
+    </task>
+    <task id="LOCAL-00007" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900910793</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900910793</updated>
+    </task>
+    <task id="LOCAL-00008" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900913579</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900913579</updated>
+    </task>
+    <task id="LOCAL-00009" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900914906</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900914906</updated>
+    </task>
+    <task id="LOCAL-00010" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900923834</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900923834</updated>
+    </task>
+    <task id="LOCAL-00011" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900925229</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900925229</updated>
+    </task>
+    <task id="LOCAL-00012" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900926577</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900926577</updated>
+    </task>
+    <task id="LOCAL-00013" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900927457</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900927457</updated>
+    </task>
+    <task id="LOCAL-00014" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900928320</created>
+      <option name="number" value="00014" />
+      <option name="presentableId" value="LOCAL-00014" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900928320</updated>
+    </task>
+    <task id="LOCAL-00015" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900928490</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900928490</updated>
+    </task>
+    <task id="LOCAL-00016" summary="bugfix Alex 2026-06-30">
+      <option name="closed" value="true" />
+      <created>1782900939364</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1782900939364</updated>
+    </task>
+    <option name="localTasksCounter" value="17" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -132,6 +223,7 @@
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Ajustes na documentação e remanejamento dos folders" />
     <MESSAGE value="bugfix Alex 2026-06-24" />
-    <option name="LAST_COMMIT_MESSAGE" value="bugfix Alex 2026-06-24" />
+    <MESSAGE value="bugfix Alex 2026-06-30" />
+    <option name="LAST_COMMIT_MESSAGE" value="bugfix Alex 2026-06-30" />
   </component>
 </project>

@@ -111,6 +111,31 @@ class GatewayRequest(BaseModel):
     tenant_id: str | None = None
 
 
+def _metadata_value(payload: dict, key: str):
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata.get(key)
+    return None
+
+
+def _extract_workflow_id(payload: dict) -> str | None:
+    return (
+        payload.get("workflow_id")
+        or payload.get("workflowId")
+        or _metadata_value(payload, "workflow_id")
+        or _metadata_value(payload, "workflowId")
+    )
+
+
+def _format_root_span_name(template: str | None, values: dict) -> str:
+    template = template or "agent.gateway_message"
+    try:
+        return template.format(**{k: v or "unknown" for k, v in values.items()})
+    except Exception:
+        logger.warning("LANGFUSE_ROOT_SPAN_NAME inválido: %s", template)
+        return "agent.gateway_message"
+
+
 def _resolve_identity(req: GatewayRequest, msg) -> tuple[AgentIdentity, dict, BusinessContext, list[str]]:
     payload = req.payload or {}
     context = dict(msg.context or {})
@@ -146,9 +171,11 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
         msg = await gateway.normalize(req.channel, req.payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    payload = req.payload or {}
     identity, normalized_context, business_context, missing_identity_keys = _resolve_identity(req, msg)
     agent_session_id = identity.conversation_key()
-    message_id = (req.payload or {}).get("message_id") or str(uuid4())
+    message_id = payload.get("message_id") or str(uuid4())
+    workflow_id = _extract_workflow_id(payload)
     set_observability_context(
         session_id=agent_session_id,
         user_id=msg.user_id,
@@ -156,7 +183,8 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
         agent_id=identity.agent_id,
         channel=msg.channel,
         message_id=message_id,
-        ura_call_id=(req.payload or {}).get("ura_call_id") or normalized_context.get("ura_call_id") or business_context.interaction_key,
+        workflow_id=workflow_id,
+        ura_call_id=payload.get("ura_call_id") or normalized_context.get("ura_call_id") or business_context.interaction_key,
     )
 
     stream = sse_hub.stream_for(agent_session_id)
@@ -212,34 +240,56 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
         await sse_hub.emit(agent_session_id, "message.received", {"session_id": agent_session_id, "role": "user"}) if emit_sse else None
         history = [m.model_dump(mode="json") for m in await memory.list(agent_session_id)]
 
-        trace_input = {
+        cms_input = {
+            "channel": req.channel,
+            "tenant_id": req.tenant_id,
+            "agent_id": req.agent_id,
+            "payload": payload,
+        }
+        trace_context = {
             "text": msg.text,
             "channel": msg.channel,
             "channel_id": msg.channel_id,
             "tenant_id": identity.tenant_id,
             "agent_id": identity.agent_id,
             "conversation_key": agent_session_id,
+            "workflow_id": workflow_id,
             "message_id": message_id,
             "business_context": business_context.model_dump(),
             "identity_missing": missing_identity_keys,
         }
+        root_span_name = _format_root_span_name(
+            getattr(settings, "LANGFUSE_ROOT_SPAN_NAME", "agent.gateway_message"),
+            {
+                "workflow_id": workflow_id,
+                "channel": msg.channel,
+                "agent_id": identity.agent_id,
+                "tenant_id": identity.tenant_id,
+            },
+        )
+        root_tags = ["agent-template", msg.channel, f"agent:{identity.agent_id}", f"tenant:{identity.tenant_id}"]
+        if workflow_id:
+            root_tags.append(f"workflow:{workflow_id}")
 
         async with telemetry.span(
-            "agent.gateway_message",
+            root_span_name,
             session_id=agent_session_id,
             user_id=session.user_id,
             channel=msg.channel,
-            input=trace_input,
-            tags=["agent-template", msg.channel, f"agent:{identity.agent_id}", f"tenant:{identity.tenant_id}"],
-        ):
-            await telemetry.event("gateway.message.received", trace_input)
-            await sse_hub.emit(agent_session_id, "workflow.started", trace_input) if emit_sse else None
+            workflow_id=workflow_id,
+            input=cms_input,
+            tags=root_tags,
+            _root_span=True,
+        ) as root_span:
+            await telemetry.event("gateway.message.received", trace_context)
+            await sse_hub.emit(agent_session_id, "workflow.started", trace_context) if emit_sse else None
             result = await workflow.ainvoke(
                 {
                     "tenant_id": identity.tenant_id,
                     "agent_id": identity.agent_id,
                     "session_id": agent_session_id,
                     "conversation_key": agent_session_id,
+                    "workflow_id": workflow_id,
                     "agent_profile": normalized_context["agent_profile"],
                     "user_text": msg.text,
                     "history": history,
@@ -249,6 +299,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
                         "original_session_id": msg.session_id,
                         "session_id": agent_session_id,
                         "conversation_key": agent_session_id,
+                        "workflow_id": workflow_id,
                         "user_id": session.user_id,
                         "channel": msg.channel,
                         "message_id": message_id,
@@ -259,66 +310,68 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
                 }
             )
 
-        await checkpoints.put(agent_session_id, {"state": result, "message_id": message_id})
-        await sse_hub.emit(agent_session_id, "workflow.completed", {"session_id": agent_session_id, "route": result.get("route"), "intent": result.get("intent")}) if emit_sse else None
+            await checkpoints.put(agent_session_id, {"state": result, "message_id": message_id})
+            await sse_hub.emit(agent_session_id, "workflow.completed", {"session_id": agent_session_id, "route": result.get("route"), "intent": result.get("intent")}) if emit_sse else None
 
-        answer = result.get("final_answer") or result.get("answer") or ""
-        await memory.append(
-            agent_session_id,
-            ChatMessage(
-                role="assistant",
-                content=answer,
-                metadata={
+            answer = result.get("final_answer") or result.get("answer") or ""
+            await memory.append(
+                agent_session_id,
+                ChatMessage(
+                    role="assistant",
+                    content=answer,
+                    metadata={
+                        "tenant_id": identity.tenant_id,
+                        "agent_id": identity.agent_id,
+                        "message_id": f"assistant-{message_id}",
+                        "route": result.get("route"),
+                        "intent": result.get("intent"),
+                        "route_decision": result.get("route_decision"),
+                        "judges": result.get("judge_results"),
+                    },
+                ),
+            )
+
+            await telemetry.event(
+                "gateway.message.responded",
+                {
+                    "session_id": agent_session_id,
                     "tenant_id": identity.tenant_id,
                     "agent_id": identity.agent_id,
-                    "message_id": f"assistant-{message_id}",
+                    "route": result.get("route"),
+                    "intent": result.get("intent"),
+                    "answer_chars": len(answer),
+                },
+            )
+
+            response = ChannelResponse(
+                channel=msg.channel,
+                session_id=agent_session_id,
+                text=answer,
+                metadata={
+                    "channel_id": msg.channel_id,
+                    "tenant_id": identity.tenant_id,
+                    "agent_id": identity.agent_id,
+                    "original_session_id": msg.session_id,
+                    "conversation_key": agent_session_id,
+                    "workflow_id": workflow_id,
+                    "message_id": message_id,
                     "route": result.get("route"),
                     "intent": result.get("intent"),
                     "route_decision": result.get("route_decision"),
+                    "domain": result.get("domain"),
+                    "mcp_tools": result.get("mcp_tools"),
+                    "mcp_results": result.get("mcp_results"),
+                    "business_context": business_context.model_dump(),
+                    "identity_missing": missing_identity_keys,
                     "judges": result.get("judge_results"),
+                    "guardrails": result.get("guardrail_decisions"),
                 },
-            ),
-        )
-
-        await telemetry.event(
-            "gateway.message.responded",
-            {
-                "session_id": agent_session_id,
-                "tenant_id": identity.tenant_id,
-                "agent_id": identity.agent_id,
-                "route": result.get("route"),
-                "intent": result.get("intent"),
-                "answer_chars": len(answer),
-            },
-        )
-
-        response = ChannelResponse(
-            channel=msg.channel,
-            session_id=agent_session_id,
-            text=answer,
-            metadata={
-                "channel_id": msg.channel_id,
-                "tenant_id": identity.tenant_id,
-                "agent_id": identity.agent_id,
-                "original_session_id": msg.session_id,
-                "conversation_key": agent_session_id,
-                "message_id": message_id,
-                "route": result.get("route"),
-                "intent": result.get("intent"),
-                "route_decision": result.get("route_decision"),
-                "domain": result.get("domain"),
-                "mcp_tools": result.get("mcp_tools"),
-                "mcp_results": result.get("mcp_results"),
-                "business_context": business_context.model_dump(),
-                "identity_missing": missing_identity_keys,
-                "judges": result.get("judge_results"),
-                "guardrails": result.get("guardrail_decisions"),
-            },
-        )
-        rendered = await gateway.render(response)
-        await sse_hub.emit(agent_session_id, "message.responded", rendered) if emit_sse else None
-        await sse_hub.emit(agent_session_id, "flow.end", {"session_id": agent_session_id, "message_id": message_id}) if emit_sse else None
-        return rendered
+            )
+            rendered = await gateway.render(response)
+            root_span.set_output(rendered)
+            await sse_hub.emit(agent_session_id, "message.responded", rendered) if emit_sse else None
+            await sse_hub.emit(agent_session_id, "flow.end", {"session_id": agent_session_id, "message_id": message_id}) if emit_sse else None
+            return rendered
 
 
 @app.get("/health")

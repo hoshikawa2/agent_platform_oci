@@ -74,20 +74,23 @@ class MockLLMProvider(LLMProvider):
         profile_found = kwargs.get("profile_found")
         profiles_enabled = kwargs.get("profiles_enabled")
         profiles_path = kwargs.get("profiles_path")
-        last = messages[-1].get("content", "") if messages else ""
-        answer = f"[mock-llm] Resposta simulada para: {last[:300]}"
-        usage = {"prompt_tokens": max(1, len(str(messages))//4), "completion_tokens": max(1, len(answer)//4), "total_tokens": max(2, (len(str(messages))+len(answer))//4), "cost_usd": 0.0, "cost_brl": 0.0}
+        llm_metadata = {"provider": "mock", "profile_name": profile_name, "component": component_name, "model": model, "profile_source": profile_source, "profile_found": profile_found, "profiles_enabled": profiles_enabled, "profiles_path": profiles_path}
+        async with _maybe_generation(
+            self.telemetry,
+            name=generation_name,
+            model=model,
+            input=messages,
+            metadata=llm_metadata,
+            model_parameters={},
+        ) as generation:
+            last = messages[-1].get("content", "") if messages else ""
+            answer = f"[mock-llm] Resposta simulada para: {last[:300]}"
+            usage = {"prompt_tokens": max(1, len(str(messages))//4), "completion_tokens": max(1, len(answer)//4), "total_tokens": max(2, (len(str(messages))+len(answer))//4), "cost_usd": 0.0, "cost_brl": 0.0}
+            generation.set_output(answer)
+            generation.set_usage(usage)
+            generation.set_metadata(**usage)
         if self.usage_repository:
-            await self.usage_repository.record(UsageRecord.from_usage("mock", model, generation_name, usage, {"provider":"mock", "profile_name": profile_name, "component": component_name, "model": model, "profile_source": profile_source, "profile_found": profile_found, "profiles_enabled": profiles_enabled, "profiles_path": profiles_path}))
-        if self.telemetry:
-            await self.telemetry.generation(
-                name=generation_name,
-                model=model,
-                input=messages,
-                output=answer,
-                metadata={"provider": "mock", "profile_name": profile_name, "component": component_name, "model": model, "profile_source": profile_source, "profile_found": profile_found, "profiles_enabled": profiles_enabled, "profiles_path": profiles_path, **usage},
-                usage=usage,
-            )
+            await self.usage_repository.record(UsageRecord.from_usage("mock", model, generation_name, usage, llm_metadata))
         return answer
 
 
@@ -259,6 +262,22 @@ class OCICompatibleOpenAIProvider(LLMProvider):
         for optional_key in ("top_p", "frequency_penalty", "presence_penalty"):
             if effective.get(optional_key) is not None:
                 request_kwargs[optional_key] = effective[optional_key]
+        model_parameters = {
+            key: value
+            for key, value in request_kwargs.items()
+            if key not in {"model", "messages"} and value is not None
+        }
+        llm_metadata = {
+            "provider": provider,
+            "model": model,
+            "component": component_name,
+            "profile_name": resolved_profile_name,
+            "requested_profile_name": requested_profile_name,
+            "profile_source": profile_source,
+            "profile_found": profile_found,
+            "profiles_enabled": bool(effective.get("profiles_enabled")),
+            "profiles_path": effective.get("profiles_path"),
+        }
 
         async with _maybe_span(
                 self.telemetry,
@@ -275,46 +294,34 @@ class OCICompatibleOpenAIProvider(LLMProvider):
                 profiles_enabled=bool(effective.get("profiles_enabled")),
         ):
             try:
-                resp = await client.chat.completions.create(**request_kwargs)
-                answer = resp.choices[0].message.content or ""
+                async with _maybe_generation(
+                    self.telemetry,
+                    name=generation_name,
+                    model=model,
+                    input=messages,
+                    metadata=llm_metadata,
+                    model_parameters=model_parameters,
+                ) as generation:
+                    resp = await client.chat.completions.create(**request_kwargs)
+                    answer = resp.choices[0].message.content or ""
 
-                usage_metadata = self.token_collector.enrich(model, getattr(resp, "usage", None))
-                usage_metadata.update({
-                    "profile_name": resolved_profile_name,
-                    "requested_profile_name": requested_profile_name,
-                    "profile_source": profile_source,
-                    "profile_found": profile_found,
-                    "component": component_name,
-                    "model": model,
-                    "provider": provider,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                })
-                llm_metadata = {
-                    "provider": provider,
-                    "model": model,
-                    "component": component_name,
-                    "profile_name": resolved_profile_name,
-                    "requested_profile_name": requested_profile_name,
-                    "profile_source": profile_source,
-                    "profile_found": profile_found,
-                    "profiles_enabled": bool(effective.get("profiles_enabled")),
-                    "profiles_path": effective.get("profiles_path"),
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
+                    usage_metadata = self.token_collector.enrich(model, getattr(resp, "usage", None))
+                    usage_metadata.update({
+                        "profile_name": resolved_profile_name,
+                        "requested_profile_name": requested_profile_name,
+                        "profile_source": profile_source,
+                        "profile_found": profile_found,
+                        "component": component_name,
+                        "model": model,
+                        "provider": provider,
+                        **model_parameters,
+                    })
+                    generation.set_output(answer)
+                    generation.set_usage(usage_metadata)
+                    generation.set_metadata(**usage_metadata)
                 if self.usage_repository:
                     await self.usage_repository.record(
                         UsageRecord.from_usage(provider, model, generation_name, usage_metadata, llm_metadata)
-                    )
-                if self.telemetry:
-                    await self.telemetry.generation(
-                        name=generation_name,
-                        model=model,
-                        input=messages,
-                        output=answer,
-                        metadata={**llm_metadata, **usage_metadata},
-                        usage=usage_metadata,
                     )
 
                 return answer
@@ -550,6 +557,19 @@ class OCISDKProvider(LLMProvider):
             )
 
         service_endpoint = self._resolve_endpoint(self.settings, endpoint)
+        model_parameters = {
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        llm_metadata = {
+            "provider": "oci_sdk",
+            "model": model,
+            "endpoint_id": endpoint_id,
+            "service_endpoint": service_endpoint,
+            "component": component_name,
+            "profile_name": profile_name,
+            "auth_mode": getattr(self.settings, "OCI_AUTH_MODE", "config_file"),
+        }
 
         async with _maybe_span(
                 self.telemetry,
@@ -575,26 +595,30 @@ class OCISDKProvider(LLMProvider):
                 max_tokens=max_tokens,
             )
 
-            response = await asyncio.to_thread(client.chat, details)
-            answer = self._extract_answer(response)
+            async with _maybe_generation(
+                self.telemetry,
+                name=generation_name,
+                model=model,
+                input=messages,
+                metadata=llm_metadata,
+                model_parameters=model_parameters,
+            ) as generation:
+                response = await asyncio.to_thread(client.chat, details)
+                answer = self._extract_answer(response)
 
-            usage_metadata = {
-                "prompt_tokens": max(1, len(str(messages)) // 4),
-                "completion_tokens": max(1, len(answer) // 4),
-                "total_tokens": max(2, (len(str(messages)) + len(answer)) // 4),
-                "cost_usd": 0.0,
-                "cost_brl": 0.0,
-                "estimated_usage": True,
-                "provider": "oci_sdk",
-                "model": model,
-                "endpoint_id": endpoint_id,
-                "service_endpoint": service_endpoint,
-                "component": component_name,
-                "profile_name": profile_name,
-                "auth_mode": getattr(self.settings, "OCI_AUTH_MODE", "config_file"),
-            }
-
-            llm_metadata = dict(usage_metadata)
+                usage_metadata = {
+                    "prompt_tokens": max(1, len(str(messages)) // 4),
+                    "completion_tokens": max(1, len(answer) // 4),
+                    "total_tokens": max(2, (len(str(messages)) + len(answer)) // 4),
+                    "cost_usd": 0.0,
+                    "cost_brl": 0.0,
+                    "estimated_usage": True,
+                    **llm_metadata,
+                    **model_parameters,
+                }
+                generation.set_output(answer)
+                generation.set_usage(usage_metadata)
+                generation.set_metadata(**usage_metadata)
 
             if self.usage_repository:
                 await self.usage_repository.record(
@@ -605,16 +629,6 @@ class OCISDKProvider(LLMProvider):
                         usage_metadata,
                         llm_metadata,
                     )
-                )
-
-            if self.telemetry:
-                await self.telemetry.generation(
-                    name=generation_name,
-                    model=model,
-                    input=messages,
-                    output=answer,
-                    metadata=llm_metadata,
-                    usage=usage_metadata,
                 )
 
             return answer
@@ -650,6 +664,39 @@ class _maybe_span:
         if not self.telemetry:
             return None
         self.cm = self.telemetry.span(self.name, **self.attrs)
+        return await self.cm.__aenter__()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self.cm:
+            return await self.cm.__aexit__(exc_type, exc, tb)
+        return False
+
+
+class _NoopGeneration:
+    def set_output(self, output: Any) -> None:
+        pass
+
+    def set_usage(self, usage: dict[str, Any] | None) -> None:
+        pass
+
+    def set_metadata(self, **metadata: Any) -> None:
+        pass
+
+    def set_model_parameters(self, **model_parameters: Any) -> None:
+        pass
+
+
+class _maybe_generation:
+    def __init__(self, telemetry, **attrs: Any):
+        self.telemetry = telemetry
+        self.attrs = attrs
+        self.cm = None
+        self.noop = _NoopGeneration()
+
+    async def __aenter__(self):
+        if not self.telemetry or not hasattr(self.telemetry, "generation_span"):
+            return self.noop
+        self.cm = self.telemetry.generation_span(**self.attrs)
         return await self.cm.__aenter__()
 
     async def __aexit__(self, exc_type, exc, tb):

@@ -6,6 +6,7 @@ class AgentState(TypedDict, total=False):
     agent_id: str
     session_id: str
     conversation_key: str
+    workflow_id: str
     agent_profile: dict[str, Any]
     user_text: str
     sanitized_input: str

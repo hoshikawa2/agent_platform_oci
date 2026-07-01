@@ -100,6 +100,8 @@ class Settings(BaseSettings):
 
     ENABLE_LANGFUSE: bool = False
     LANGFUSE_TRACE_MODE: Literal['verbose','compact'] = 'verbose'
+    LANGFUSE_ROOT_SPAN_NAME: str = 'agent.gateway_message'
+    LANGFUSE_LEGACY_IO_FALLBACK: bool = True
     LANGFUSE_PUBLIC_KEY: str | None = None
     LANGFUSE_SECRET_KEY: str | None = None
     LANGFUSE_HOST: str = 'https://cloud.langfuse.com'

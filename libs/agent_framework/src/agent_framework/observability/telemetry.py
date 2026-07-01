@@ -15,6 +15,7 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -36,6 +37,24 @@ from .otel import OpenTelemetryProvider
 logger = logging.getLogger("agent_framework.telemetry")
 
 _LANGFUSE_OBSERVATION_TYPES = {"span", "generation", "agent", "tool", "chain", "retriever", "embedding", "evaluator", "guardrail"}
+_LANGFUSE_START_OBSERVATION_KWARGS = {
+    "trace_context",
+    "name",
+    "as_type",
+    "input",
+    "output",
+    "metadata",
+    "version",
+    "level",
+    "status_message",
+    "completion_start_time",
+    "model",
+    "model_parameters",
+    "usage_details",
+    "cost_details",
+    "prompt",
+    "end_on_exit",
+}
 
 def _langfuse_type(kind: str | None) -> str:
     # Langfuse SDKs do not accept arbitrary event types such as "event"; FIRST pattern
@@ -58,6 +77,7 @@ _COMPACT_SUPPRESSED_SPAN_PREFIXES = (
     "workflow.routing_decision",
     "workflow.supervisor_review",
 )
+_COMPACT_VISIBLE_EVENT_PREFIXES = ("AGA.", "NOC.")
 
 
 def _raw_correlation_id(attrs: dict[str, Any] | None = None) -> str | None:
@@ -169,6 +189,128 @@ def _extract_observation_id(observation: Any) -> str | None:
                 pass
     return None
 
+
+def _is_compact_visible_event(name: str) -> bool:
+    return str(name or "").startswith(_COMPACT_VISIBLE_EVENT_PREFIXES)
+
+
+class _SpanHandle:
+    """Mutable handle yielded by Telemetry.span for setting final output."""
+
+    def __init__(self, observation: Any | None = None) -> None:
+        self.observation = observation
+        self.output: Any = None
+        self.has_output = False
+        self.metadata: dict[str, Any] = {}
+
+    def set_observation(self, observation: Any | None) -> None:
+        self.observation = observation
+
+    def set_output(self, output: Any) -> None:
+        self.output = output
+        self.has_output = True
+
+    def set_metadata(self, **metadata: Any) -> None:
+        self.metadata.update({k: v for k, v in metadata.items() if v is not None})
+
+    def __getattr__(self, name: str) -> Any:
+        if self.observation is None:
+            raise AttributeError(name)
+        return getattr(self.observation, name)
+
+
+class _GenerationHandle:
+    """Mutable handle yielded by Telemetry.generation_span."""
+
+    def __init__(self, observation: Any | None = None) -> None:
+        self.observation = observation
+        self.output: Any = None
+        self.has_output = False
+        self.metadata: dict[str, Any] = {}
+        self.usage: dict[str, Any] | None = None
+        self.model_parameters: dict[str, Any] = {}
+
+    def set_observation(self, observation: Any | None) -> None:
+        self.observation = observation
+
+    def set_output(self, output: Any) -> None:
+        self.output = output
+        self.has_output = True
+
+    def set_usage(self, usage: dict[str, Any] | None) -> None:
+        self.usage = dict(usage or {})
+
+    def set_metadata(self, **metadata: Any) -> None:
+        self.metadata.update({k: v for k, v in metadata.items() if v is not None})
+
+    def set_model_parameters(self, **model_parameters: Any) -> None:
+        self.model_parameters.update({k: v for k, v in model_parameters.items() if v is not None})
+
+    def __getattr__(self, name: str) -> Any:
+        if self.observation is None:
+            raise AttributeError(name)
+        return getattr(self.observation, name)
+
+
+def _usage_details_from_usage(usage: dict[str, Any] | None) -> dict[str, int] | None:
+    if not isinstance(usage, dict):
+        return None
+
+    def int_value(*keys: str) -> int | None:
+        for key in keys:
+            value = usage.get(key)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    input_tokens = int_value("input", "input_tokens", "prompt_tokens")
+    output_tokens = int_value("output", "output_tokens", "completion_tokens")
+    total_tokens = int_value("total", "total_tokens")
+
+    # Langfuse self-hosted versions may sum all custom usage keys into totalUsage.
+    # Send split fields only when available; send total only when there is no split.
+    details: dict[str, int] = {}
+    if input_tokens is not None:
+        details["input"] = input_tokens
+    if output_tokens is not None:
+        details["output"] = output_tokens
+    if not details and total_tokens is not None:
+        details["total"] = total_tokens
+    return details or None
+
+
+def _cost_details_from_usage(usage: dict[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(usage, dict):
+        return None
+    details: dict[str, float] = {}
+    if usage.get("cost_usd") is not None:
+        try:
+            details["total"] = float(usage["cost_usd"])
+        except (TypeError, ValueError):
+            pass
+    if usage.get("cost_brl") is not None:
+        try:
+            details["total_brl"] = float(usage["cost_brl"])
+        except (TypeError, ValueError):
+            pass
+    return details or None
+
+
+def _clean_mapping(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    clean = {k: v for k, v in value.items() if v is not None}
+    return clean or None
+
+
+def _utc_iso_ms() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 class Telemetry:
     def __init__(self, settings):
         self.settings = settings
@@ -228,7 +370,8 @@ class Telemetry:
         start = time.time()
         attrs = context_metadata(attrs)
         attrs.setdefault("_span_name", name)
-        if self.is_compact_mode() and name == "agent.gateway_message" and not attrs.get("parent_observation_id"):
+        is_root_span = bool(attrs.get("_root_span")) or name == "agent.gateway_message"
+        if self.is_compact_mode() and is_root_span and not attrs.get("parent_observation_id"):
             attrs["_ignore_current_parent"] = True
         if not attrs.get("request_id"):
             attrs["request_id"] = str(uuid4())
@@ -237,7 +380,10 @@ class Telemetry:
         set_observability_context(request_id=attrs.get("request_id"), trace_id=attrs.get("trace_id"))
         observation_cm = None
         observation = None
+        handle = _SpanHandle()
         observation_token = None
+        propagation_cm = None
+        legacy_io_update: dict[str, Any] | None = None
         ignore_current_parent = bool(attrs.get("_ignore_current_parent"))
         parent_observation_id = attrs.get("parent_observation_id")
         if not parent_observation_id and not ignore_current_parent:
@@ -263,36 +409,61 @@ class Telemetry:
         try:
             if observation_cm is not None:
                 observation = observation_cm.__enter__()
+                handle.set_observation(observation)
                 observation_id = _extract_observation_id(observation)
                 if observation_id:
                     observation_token = set_current_observation_id(observation_id)
                     attrs.setdefault("observation_id", observation_id)
-                if not attrs.get("parent_observation_id"):
+                if is_root_span:
                     self._update_trace_from_attrs(observation, attrs)
+                    self._set_trace_io(observation, input=attrs.get("input"))
+                    propagation_cm = self._start_trace_attribute_propagation(name, attrs)
+                    if propagation_cm is not None:
+                        propagation_cm.__enter__()
             # Publish span.started only after the Langfuse observation is current,
             # so secondary analytics/exporters can attach it as a child instead
             # of creating a sibling/root entry.
             await self.event_bus.publish(f"{name}.started", attrs, kind="span")
-            yield observation
+            yield handle
             duration_ms = int((time.time() - start) * 1000)
-            out = {"status": "ok", "duration_ms": duration_ms}
-            metadata = {**observation_metadata, "duration_ms": duration_ms}
-            if span_events:
+            status = {"status": "ok", "duration_ms": duration_ms}
+            out = handle.output if handle.has_output else status
+            metadata = {**observation_metadata, **status, **handle.metadata}
+            if span_events is not None:
                 metadata["aggregated_event_count"] = len(span_events)
                 metadata["aggregated_events"] = span_events
-            self._update_observation(observation, output=out, metadata=metadata)
+            self._update_observation(observation, input=attrs.get("input"), output=out, metadata=metadata)
+            if is_root_span:
+                self._set_trace_io(observation, input=attrs.get("input"), output=out)
+                legacy_io_update = {
+                    "input": attrs.get("input"),
+                    "output": out,
+                    "metadata": metadata,
+                }
             if otel_span is not None:
                 otel_span.set_attribute("duration_ms", duration_ms)
-            await self.event_bus.publish(f"{name}.completed", {**attrs, **out}, kind="span")
+            completed_payload = {**attrs, **status}
+            if handle.has_output:
+                completed_payload["output"] = out
+            await self.event_bus.publish(f"{name}.completed", completed_payload, kind="span")
             logger.info("span.end %s duration_ms=%s", name, duration_ms)
         except Exception as exc:
             duration_ms = int((time.time() - start) * 1000)
             out = {"status": "error", "error": str(exc), "duration_ms": duration_ms}
             metadata = {**observation_metadata, "duration_ms": duration_ms}
-            if span_events:
+            if span_events is not None:
                 metadata["aggregated_event_count"] = len(span_events)
                 metadata["aggregated_events"] = span_events
-            self._update_observation(observation, level="ERROR", status_message=str(exc), output=out, metadata=metadata)
+            self._update_observation(observation, level="ERROR", status_message=str(exc), input=attrs.get("input"), output=out, metadata=metadata)
+            if is_root_span:
+                self._set_trace_io(observation, input=attrs.get("input"), output=out)
+                legacy_io_update = {
+                    "input": attrs.get("input"),
+                    "output": out,
+                    "metadata": metadata,
+                    "level": "ERROR",
+                    "status_message": str(exc),
+                }
             if otel_span is not None:
                 try:
                     otel_span.record_exception(exc)
@@ -303,9 +474,19 @@ class Telemetry:
             logger.exception("span.error %s %s", name, exc)
             raise
         finally:
+            if propagation_cm is not None:
+                try: propagation_cm.__exit__(None, None, None)
+                except Exception: logger.debug("Falha ao encerrar propagação Langfuse", exc_info=True)
             if observation_cm is not None:
                 try: observation_cm.__exit__(None, None, None)
                 except Exception: logger.exception("Falha ao finalizar span Langfuse %s", name)
+            if legacy_io_update is not None:
+                self._legacy_observation_update(
+                    observation,
+                    observation_type="span",
+                    name=name,
+                    **legacy_io_update,
+                )
             if observation_token is not None:
                 reset_current_observation_id(observation_token)
             if span_events_token is not None:
@@ -324,6 +505,16 @@ class Telemetry:
                     "kind": kind,
                     "payload": payload,
                 })
+            if not _is_compact_visible_event(name) or not self.is_enabled():
+                return
+            try:
+                metadata = {**payload, "event_kind": kind}
+                cm = self._start_observation(name=name, as_type="span", input=payload, metadata=metadata)
+                if cm is not None:
+                    with cm as obs:
+                        self._update_observation(obs, input=payload, output={"status": "ok"}, metadata=metadata)
+            except Exception:
+                logger.exception("Falha ao enviar event compacto via observation")
             return
         if not self.is_enabled():
             return
@@ -341,49 +532,170 @@ class Telemetry:
         except Exception:
             logger.exception("Falha ao enviar event via observation")
 
-    async def generation(self, name: str, model: str, input: list | dict | str, output: str,
-                         metadata: dict[str, Any] | None = None, usage: dict[str, Any] | None = None):
+    @asynccontextmanager
+    async def generation_span(
+        self,
+        name: str,
+        model: str,
+        input: list | dict | str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        usage: dict[str, Any] | None = None,
+        model_parameters: dict[str, Any] | None = None,
+    ):
         metadata = context_metadata(metadata or {})
         # Keep the actual LLM model visible both in Langfuse's generation.model field
         # and in metadata for filtering/debugging across SDK versions.
         metadata.setdefault("model", model)
         metadata.setdefault("llm_model", model)
         metadata.setdefault("component", metadata.get("profile_name") or name)
-        if usage:
-            metadata["usage"] = usage
-        logger.info("generation %s model=%s component=%s profile=%s metadata=%s", name, model, metadata.get("component"), metadata.get("profile_name"), _safe(metadata))
-        await self.event_bus.publish(name, {"model": model, "llm_model": model, "output_chars": len(output or ""), **metadata}, kind="generation")
-        if not self.is_enabled():
-            return
+        clean_model_parameters = _clean_mapping(model_parameters)
+        if clean_model_parameters:
+            metadata.setdefault("model_parameters", clean_model_parameters)
+        handle = _GenerationHandle()
+        observation_cm = None
+        observation = None
+        observation_token = None
+        legacy_io_update: dict[str, Any] | None = None
+        logger.info("generation.start %s model=%s component=%s profile=%s metadata=%s", name, model, metadata.get("component"), metadata.get("profile_name"), _safe(metadata))
         try:
-            kwargs = dict(name=name, as_type="generation", input=input, output=output, model=model, metadata=metadata)
-            if usage:
-                kwargs["usage"] = usage
-                kwargs["usage_details"] = {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "reasoning_tokens") if k in usage}
-
-            # Prefer current/correlated generation APIs. Avoid raw
-            # ``langfuse.generation(...)`` first because it can create a separate
-            # trace row per LLM call when no current observation exists.
-            if hasattr(self.langfuse, "start_as_current_generation"):
-                clean = {k: v for k, v in kwargs.items() if k != "as_type" and v is not None}
-                if not self.is_compact_mode():
-                    clean = _inject_langfuse_trace_context(clean, metadata)
+            if self.is_enabled():
                 try:
-                    with self.langfuse.start_as_current_generation(**clean) as obs:
-                        self._update_observation(obs, output=output, model=model, metadata=metadata)
-                    return
-                except TypeError:
-                    clean.pop("trace_context", None)
-                    with self.langfuse.start_as_current_generation(**clean) as obs:
-                        self._update_observation(obs, output=output, model=model, metadata=metadata)
-                    return
+                    observation_cm = self._start_observation(
+                        name=name,
+                        as_type="generation",
+                        input=input,
+                        model=model,
+                        model_parameters=clean_model_parameters,
+                        usage_details=_usage_details_from_usage(usage),
+                        cost_details=_cost_details_from_usage(usage),
+                        metadata=metadata,
+                    )
+                    if observation_cm is not None:
+                        observation = observation_cm.__enter__()
+                        handle.set_observation(observation)
+                        observation_id = _extract_observation_id(observation)
+                        if observation_id:
+                            observation_token = set_current_observation_id(observation_id)
+                except Exception:
+                    observation_cm = None
+                    observation = None
+                    logger.exception("Falha ao iniciar generation Langfuse %s", name)
+            yield handle
+            final_usage = handle.usage if handle.usage is not None else usage
+            final_model_parameters = {
+                **(clean_model_parameters or {}),
+                **handle.model_parameters,
+            } or None
+            final_metadata = {**metadata, **handle.metadata}
+            if final_usage:
+                final_metadata["usage"] = final_usage
+            output = handle.output if handle.has_output else None
+            usage_details = _usage_details_from_usage(final_usage)
+            cost_details = _cost_details_from_usage(final_usage)
+            self._update_observation(
+                observation,
+                input=input,
+                output=output,
+                model=model,
+                metadata=final_metadata,
+                model_parameters=final_model_parameters,
+                usage_details=usage_details,
+                cost_details=cost_details,
+            )
+            legacy_io_update = {
+                "input": input,
+                "output": output,
+                "model": model,
+                "metadata": final_metadata,
+                "model_parameters": final_model_parameters,
+                "usage_details": usage_details,
+                "cost_details": cost_details,
+            }
+            await self.event_bus.publish(
+                name,
+                {
+                    "model": model,
+                    "llm_model": model,
+                    "output_chars": len(output or "") if isinstance(output, str) else 0,
+                    **final_metadata,
+                },
+                kind="generation",
+            )
+            logger.info("generation.end %s model=%s", name, model)
+        except Exception as exc:
+            final_usage = handle.usage if handle.usage is not None else usage
+            final_model_parameters = {
+                **(clean_model_parameters or {}),
+                **handle.model_parameters,
+            } or None
+            final_metadata = {**metadata, **handle.metadata}
+            if final_usage:
+                final_metadata["usage"] = final_usage
+            usage_details = _usage_details_from_usage(final_usage)
+            cost_details = _cost_details_from_usage(final_usage)
+            output = handle.output if handle.has_output else None
+            self._update_observation(
+                observation,
+                level="ERROR",
+                status_message=str(exc),
+                input=input,
+                output=output,
+                model=model,
+                metadata=final_metadata,
+                model_parameters=final_model_parameters,
+                usage_details=usage_details,
+                cost_details=cost_details,
+            )
+            legacy_io_update = {
+                "input": input,
+                "output": output,
+                "model": model,
+                "metadata": final_metadata,
+                "model_parameters": final_model_parameters,
+                "usage_details": usage_details,
+                "cost_details": cost_details,
+                "level": "ERROR",
+                "status_message": str(exc),
+            }
+            await self.event_bus.publish(f"{name}.failed", {"model": model, "llm_model": model, "error": str(exc), **final_metadata}, kind="generation")
+            logger.exception("generation.error %s model=%s exc=%s", name, model, exc)
+            raise
+        finally:
+            if observation_cm is not None:
+                try: observation_cm.__exit__(None, None, None)
+                except Exception: logger.exception("Falha ao finalizar generation Langfuse %s", name)
+            if legacy_io_update is not None:
+                self._legacy_observation_update(
+                    observation,
+                    observation_type="generation",
+                    name=name,
+                    **legacy_io_update,
+                )
+            if observation_token is not None:
+                reset_current_observation_id(observation_token)
 
-            cm = self._start_observation(**kwargs)
-            if cm is not None:
-                with cm as obs:
-                    self._update_observation(obs, output=output, model=model, metadata=metadata)
-        except Exception:
-            logger.exception("Falha ao registrar generation no Langfuse")
+    async def generation(
+        self,
+        name: str,
+        model: str,
+        input: list | dict | str,
+        output: str,
+        metadata: dict[str, Any] | None = None,
+        usage: dict[str, Any] | None = None,
+        model_parameters: dict[str, Any] | None = None,
+    ):
+        async with self.generation_span(
+            name=name,
+            model=model,
+            input=input,
+            metadata=metadata,
+            usage=usage,
+            model_parameters=model_parameters,
+        ) as generation:
+            generation.set_output(output)
+            if usage:
+                generation.set_usage(usage)
 
     async def rag_event(self, name: str, query: str, results_count: int, metadata: dict[str, Any] | None = None):
         await self.event(f"rag.{name}", {"query": query, "results_count": results_count, **(metadata or {})}, kind="rag")
@@ -426,7 +738,7 @@ class Telemetry:
     def _start_observation(self, **kwargs):
         if not self.is_enabled(): return None
         if hasattr(self.langfuse, "start_as_current_observation"):
-            clean = {k: v for k, v in kwargs.items() if v is not None}
+            clean = {k: v for k, v in kwargs.items() if v is not None and k in _LANGFUSE_START_OBSERVATION_KWARGS}
             if "as_type" in clean:
                 clean["as_type"] = _langfuse_type(clean.get("as_type"))
             if self.is_compact_mode():
@@ -481,6 +793,61 @@ class Telemetry:
             if hasattr(observation, "update"): observation.update(**clean)
         except Exception: logger.debug("Observation update não suportado", exc_info=True)
 
+    def _legacy_observation_update(self, observation, *, observation_type: str, name: str, **kwargs):
+        """Compatibility fallback for Langfuse servers that drop OTEL observation I/O."""
+        if not self.is_enabled() or not bool(getattr(self.settings, "LANGFUSE_LEGACY_IO_FALLBACK", True)):
+            return
+        if observation is None:
+            return
+        obs_id = _extract_observation_id(observation)
+        trace_id = getattr(observation, "trace_id", None)
+        if not obs_id or not trace_id:
+            return
+        api = getattr(self.langfuse, "api", None)
+        ingestion = getattr(api, "ingestion", None)
+        if ingestion is None or not hasattr(ingestion, "batch"):
+            return
+
+        clean = {k: v for k, v in kwargs.items() if v is not None}
+        if not any(k in clean for k in ("input", "output", "metadata")):
+            return
+        try:
+            if hasattr(self.langfuse, "flush"):
+                self.langfuse.flush()
+
+            if observation_type == "generation":
+                from langfuse.api.ingestion.types import (
+                    IngestionEvent_GenerationUpdate,
+                    UpdateGenerationBody,
+                )
+
+                body = UpdateGenerationBody(id=str(obs_id), trace_id=str(trace_id), name=name, **clean)
+                event = IngestionEvent_GenerationUpdate(
+                    id=str(uuid4()),
+                    timestamp=_utc_iso_ms(),
+                    body=body,
+                    metadata={"source": "agent_framework", "fallback": "legacy_observation_io"},
+                )
+            else:
+                from langfuse.api.ingestion.types import IngestionEvent_SpanUpdate, UpdateSpanBody
+
+                body = UpdateSpanBody(id=str(obs_id), trace_id=str(trace_id), name=name, **clean)
+                event = IngestionEvent_SpanUpdate(
+                    id=str(uuid4()),
+                    timestamp=_utc_iso_ms(),
+                    body=body,
+                    metadata={"source": "agent_framework", "fallback": "legacy_observation_io"},
+                )
+
+            response = ingestion.batch(
+                batch=[event],
+                metadata={"source": "agent_framework", "fallback": "legacy_observation_io"},
+            )
+            if getattr(response, "errors", None):
+                logger.debug("Langfuse legacy I/O fallback retornou erros: %s", response.errors)
+        except Exception:
+            logger.debug("Falha no fallback legado de input/output Langfuse", exc_info=True)
+
     def _update_trace_from_attrs(self, observation, attrs: dict[str, Any]):
         if observation is None: return
         trace_attrs = {}
@@ -496,6 +863,43 @@ class Telemetry:
         try:
             if hasattr(observation, "update_trace"): observation.update_trace(**trace_attrs)
         except Exception: logger.debug("Trace update não suportado", exc_info=True)
+
+    def _set_trace_io(self, observation, *, input: Any | None = None, output: Any | None = None):
+        if observation is None: return
+        try:
+            if hasattr(observation, "set_trace_io"):
+                observation.set_trace_io(input=input, output=output)
+                return
+            if hasattr(observation, "update_trace"):
+                payload = {}
+                if input is not None:
+                    payload["input"] = input
+                if output is not None:
+                    payload["output"] = output
+                if payload:
+                    observation.update_trace(**payload)
+        except Exception: logger.debug("Trace input/output update não suportado", exc_info=True)
+
+    def _start_trace_attribute_propagation(self, name: str, attrs: dict[str, Any]):
+        if not self.is_enabled() or not hasattr(self.langfuse, "propagate_attributes"):
+            return None
+        metadata = {
+            k: attrs.get(k)
+            for k in ("request_id", "trace_id", "agent_id", "tenant_id", "channel", "message_id", "ura_call_id", "workflow_id")
+            if attrs.get(k)
+        }
+        tags = attrs.get("tags") if isinstance(attrs.get("tags"), list) else None
+        try:
+            return self.langfuse.propagate_attributes(
+                user_id=str(attrs["user_id"]) if attrs.get("user_id") is not None else None,
+                session_id=str(attrs["session_id"]) if attrs.get("session_id") is not None else None,
+                metadata=metadata or None,
+                tags=[str(tag) for tag in tags] if tags else None,
+                trace_name=name,
+            )
+        except Exception:
+            logger.debug("Trace attribute propagation não suportada", exc_info=True)
+            return None
 
 class _LegacyObservationContext:
     def __init__(self, observation): self.observation = observation

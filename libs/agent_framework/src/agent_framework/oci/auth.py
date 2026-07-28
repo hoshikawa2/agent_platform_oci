@@ -41,6 +41,13 @@ def get_oci_config_and_signer(settings: Any) -> tuple[dict[str, Any], Any | None
         logger.info("OCI auth resolved with resource principal region=%s", config.get("region"))
         return config, signer
 
+    if mode in {"oke_workload_identity", "oke_workload_identity"}:
+        signer = oci.auth.signers.get_oke_workload_identity_resource_principal_signer()
+        config = {"region": region or getattr(signer, "region", None)}
+        logger.info("OCI auth resolved with OKE workload identity region=%s", config.get("region"))
+        return config, signer
+
+
     raise ValueError(
-        "Unsupported OCI_AUTH_MODE=%r. Use config_file, instance_principal or resource_principal." % mode
+        "Unsupported OCI_AUTH_MODE=%r. Use config_file, instance_principal, resource_principal or oke_workload_identity." % mode
     )

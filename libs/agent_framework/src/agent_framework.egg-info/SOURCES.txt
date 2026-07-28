@@ -1,6 +1,8 @@
 pyproject.toml
 src/agent_framework/__init__.py
+src/agent_framework/gateway_policy_context.py
 src/agent_framework/observer.py
+src/agent_framework/runtime_mcp_gateway_adapter.py
 src/agent_framework.egg-info/PKG-INFO
 src/agent_framework.egg-info/SOURCES.txt
 src/agent_framework.egg-info/dependency_links.txt
@@ -11,6 +13,8 @@ src/agent_framework/analytics/composite_publisher.py
 src/agent_framework/analytics/event_builder.py
 src/agent_framework/analytics/factory.py
 src/agent_framework/analytics/publisher.py
+src/agent_framework/analytics/tim_payload_mapper.py
+src/agent_framework/analytics/tim_sequence.py
 src/agent_framework/analytics/providers/__init__.py
 src/agent_framework/analytics/providers/kafka.py
 src/agent_framework/analytics/providers/langfuse.py
@@ -32,6 +36,8 @@ src/agent_framework/config/agent_registry.py
 src/agent_framework/config/settings.py
 src/agent_framework/events/__init__.py
 src/agent_framework/events/oci_streaming.py
+src/agent_framework/gateways/__init__.py
+src/agent_framework/gateways/mcp_gateway_client.py
 src/agent_framework/global_supervisor/__init__.py
 src/agent_framework/global_supervisor/client.py
 src/agent_framework/global_supervisor/config.py
@@ -148,6 +154,7 @@ src/agent_framework/observability/langgraph_telemetry.py
 src/agent_framework/observability/llm_advisors.py
 src/agent_framework/observability/noc_contract.py
 src/agent_framework/observability/noc_events.py
+src/agent_framework/observability/noc_otel.py
 src/agent_framework/observability/observer.py
 src/agent_framework/observability/otel.py
 src/agent_framework/observability/streaming_events.py

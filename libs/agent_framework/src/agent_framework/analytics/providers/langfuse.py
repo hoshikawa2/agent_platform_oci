@@ -328,6 +328,10 @@ class LangfuseAnalyticsPublisher(AnalyticsPublisher):
             "parent_observation_id": body.get("parent_observation_id") or metadata.get("parent_observation_id") or _current_parent_observation_id(),
         })
 
+        # Keep correlation metadata on the trace, but do not turn every control
+        # event code into a trace tag. IC/NOC/GRL are represented by the child
+        # observation below; tags are not a substitute for the event span and
+        # high-cardinality event-code tags make the trace harder to inspect.
         self._update_current_trace(langfuse_metadata)
 
         # Prefer current/correlated observation API. For internal/technical events,
@@ -349,7 +353,8 @@ class LangfuseAnalyticsPublisher(AnalyticsPublisher):
                     _update_observation(observation, output={"published": True})
                 return
         except Exception:
-            logger.debug("Falha ao publicar Langfuse observation para %s", effective_event_type, exc_info=True)
+            log = logger.warning if is_internal else logger.debug
+            log("Falha ao publicar Langfuse observation para %s", effective_event_type, exc_info=True)
             if is_internal or is_technical:
                 return
 
@@ -388,12 +393,6 @@ class LangfuseAnalyticsPublisher(AnalyticsPublisher):
         try:
             kwargs: dict[str, Any] = {
                 "metadata": {k: v for k, v in metadata.items() if v is not None},
-                "tags": [tag for tag, enabled in (
-                    ("ic", metadata.get("ic")),
-                    ("noc", metadata.get("noc")),
-                    ("grl", metadata.get("grl")),
-                    (str(metadata.get("tag")), metadata.get("tag")),
-                ) if enabled],
             }
             session_id = metadata.get("sessionId") or metadata.get("session_id")
             if session_id:

@@ -77,7 +77,10 @@ _COMPACT_SUPPRESSED_SPAN_PREFIXES = (
     "workflow.routing_decision",
     "workflow.supervisor_review",
 )
-_COMPACT_VISIBLE_EVENT_PREFIXES = ("AGA.", "NOC.")
+# Control events remain first-class observations even in compact mode. Compact
+# mode suppresses low-level workflow noise, but IC/NOC payloads are operational
+# evidence and must stay inspectable as child spans in Langfuse.
+_COMPACT_VISIBLE_EVENT_PREFIXES = ("IC.", "AGA.", "NOC.")
 
 
 def _raw_correlation_id(attrs: dict[str, Any] | None = None) -> str | None:

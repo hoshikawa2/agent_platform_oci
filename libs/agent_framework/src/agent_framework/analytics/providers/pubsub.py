@@ -41,6 +41,11 @@ class PubSubAnalyticsPublisher(AnalyticsPublisher):
         self.timeout_seconds = float(timeout_seconds or os.getenv("GCP_PUBSUB_TIMEOUT_SECONDS") or 30)
         self.payload_mode = (os.getenv("PUBSUB_PAYLOAD_MODE") or os.getenv("ANALYTICS_PUBSUB_PAYLOAD_MODE") or "flat").strip().lower()
         self.exclude_noc = (os.getenv("PUBSUB_EXCLUDE_NOC") or "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+        self.excluded_event_types = {
+            item.strip().upper()
+            for item in os.getenv("PUBSUB_EXCLUDED_EVENT_TYPES", "").split(",")
+            if item.strip()
+        }
 
         from google.cloud import pubsub_v1  # type: ignore
 
@@ -72,6 +77,11 @@ class PubSubAnalyticsPublisher(AnalyticsPublisher):
         raise ValueError("Configure GCP_PUBSUB_TOPIC_PATH, AGENT_PUBSUB_TOPIC ou GCP_PROJECT_ID + GCP_PUBSUB_TOPIC")
 
     async def publish(self, event_type: str, payload: dict[str, Any]) -> None:
+        event_key = str(event_type).upper()
+        if event_key in self.excluded_event_types:
+            logger.debug("analytics.pubsub.skipped_event event_type=%s", event_type)
+            return
+
         metadata = payload.get("metadata") if isinstance(payload, dict) else None
         is_noc = str(event_type).startswith("NOC.") or (isinstance(metadata, dict) and metadata.get("noc") is True)
         if is_noc and self.exclude_noc:

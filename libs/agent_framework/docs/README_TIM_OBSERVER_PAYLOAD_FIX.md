@@ -17,6 +17,7 @@ Esta versão corrige dois gaps da migração do `agent_framework_oci`:
   - Publica flat por padrão.
   - Mantém modo legado por configuração.
   - Exclui `NOC.*` do Pub/Sub por padrão, seguindo a lib antiga.
+  - Permite excluir tipos de evento específicos do Pub/Sub por configuração.
   - Injeta `sequence` automaticamente no payload flat antes do publish.
 
 - `src/agent_framework/analytics/tim_sequence.py`
@@ -44,6 +45,10 @@ Esta versão corrige dois gaps da migração do `agent_framework_oci`:
 # Pub/Sub: padrão corrigido para TIM/Data
 PUBSUB_PAYLOAD_MODE=flat
 PUBSUB_EXCLUDE_NOC=true
+
+# Lista opcional, separada por vírgulas, de tipos de evento não publicados no Pub/Sub.
+# Os eventos continuam disponíveis para os demais destinos de observabilidade.
+PUBSUB_EXCLUDED_EVENT_TYPES=GRL.NATIVE_OUTPUT_GUARDRAILS
 
 # Sequence automático por sessão no payload Pub/Sub flat
 PUBSUB_SEQUENCE_ENABLED=true

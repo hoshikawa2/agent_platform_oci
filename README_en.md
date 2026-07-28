@@ -351,6 +351,9 @@ ENABLE_OCI_STREAMING=false
 OCI_STREAM_ENDPOINT=
 OCI_STREAM_OCID=
 OCI_STREAM_PARTITION_KEY=agent-events
+# Optional comma-separated list of events not published to Pub/Sub.
+# Events remain available to other observability destinations.
+PUBSUB_EXCLUDED_EVENT_TYPES=GRL.NATIVE_OUTPUT_GUARDRAILS
 
 ENABLE_INPUT_GUARDRAILS=true
 ENABLE_OUTPUT_GUARDRAILS=true
@@ -467,6 +470,19 @@ Authenticates using OCI Instance Principals.
 
 Authenticates using OCI Resource Principals.
 
+**OCI_AUTH_MODE**=oke_workload_identity
+
+Authenticates workloads running on OKE using OCI OKE Workload Identity and the
+OCI SDK `get_oke_workload_identity_resource_principal_signer()` signer. This
+mode is specific to Pods running on OKE and must not be confused with
+`resource_principal`, which is intended for OCI Functions and other Resource
+Principal contexts.
+
+The Pod must run with a `ServiceAccount` configured for OKE Workload Identity,
+and the associated dynamic group must have the IAM policies required for the
+Generative AI compartment. The SDK automatically uses the default ServiceAccount
+token at `/var/run/secrets/kubernetes.io/serviceaccount/token`.
+
 ### OCI_GENAI_API_KEY
 
 API Key used by the `oci_openai` provider.
@@ -480,6 +496,7 @@ API Key used by the `oci_openai` provider.
 | oci_sdk | config_file | No | OCI Config File |
 | oci_sdk | instance_principal | No | Instance Principal |
 | oci_sdk | resource_principal | No | Resource Principal |
+| oci_sdk | oke_workload_identity | No | OKE Workload Identity |
 | openai_compatible | Ignored | No | Endpoint API Key |
 
 ---

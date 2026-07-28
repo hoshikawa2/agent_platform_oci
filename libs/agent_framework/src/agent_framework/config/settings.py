@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # config_file = ~/.oci/config profile (default/local development)
     # instance_principal = OCI Instance Principal signer (Compute/OKE without API key)
     # resource_principal = OCI Resource Principal signer (Functions/resource principal contexts)
-    OCI_AUTH_MODE: Literal['config_file','instance_principal','resource_principal'] = 'config_file'
+    OCI_AUTH_MODE: Literal['config_file','instance_principal','resource_principal', 'oke_workload_identity'] = 'config_file'
     OCI_CONFIG_FILE: str = '~/.oci/config'
     OCI_PROFILE: str = 'DEFAULT'
     OCI_COMPARTMENT_ID: str | None = None

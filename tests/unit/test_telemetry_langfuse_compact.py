@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent_framework.observability.context import clear_observability_context
+from agent_framework.analytics.providers.langfuse import LangfuseAnalyticsPublisher
+from agent_framework.observability.context import clear_observability_context, set_observability_context
 from agent_framework.observability.telemetry import Telemetry
 
 
@@ -61,6 +62,7 @@ class FakeLangfuse:
     def __init__(self, *, legacy_api: bool = False):
         self.observations = []
         self.propagations = []
+        self.trace_updates = []
         self.flush_count = 0
         self.api = FakeApi() if legacy_api else None
 
@@ -71,6 +73,9 @@ class FakeLangfuse:
 
     def propagate_attributes(self, **kwargs):
         return FakePropagationContext(self, kwargs)
+
+    def update_current_trace(self, **kwargs):
+        self.trace_updates.append(kwargs)
 
     def flush(self):
         self.flush_count += 1
@@ -104,29 +109,59 @@ def telemetry_with_fake_langfuse(*, legacy_api: bool = False):
 
 
 @pytest.mark.asyncio
-async def test_compact_keeps_root_output_and_shows_only_aga_noc_events():
+async def test_compact_keeps_root_output_and_shows_ic_aga_noc_as_spans():
     clear_observability_context()
     telemetry = telemetry_with_fake_langfuse()
 
     async with telemetry.span("agent.gateway_message", session_id="s1", input={"request": "cms"}, _root_span=True) as span:
-        await telemetry.event("IC.INTERNAL", {"step": "hidden"}, kind="ic")
+        await telemetry.event("IC.INTERNAL", {"step": "visible"}, kind="ic")
         await telemetry.event("NOC.001", {"step": "visible"}, kind="noc")
         await telemetry.event("AGA.010", {"step": "visible"}, kind="ic")
         span.set_output({"answer": "ok"})
 
     names = [obs.kwargs["name"] for obs in telemetry.langfuse.observations]
-    assert names == ["agent.gateway_message", "NOC.001", "AGA.010"]
+    assert names == ["agent.gateway_message", "IC.INTERNAL", "NOC.001", "AGA.010"]
 
     root = telemetry.langfuse.observations[0]
     assert root.updates[-1]["input"] == {"request": "cms"}
     assert root.updates[-1]["output"] == {"answer": "ok"}
     assert root.trace_io_updates[-1] == {"input": {"request": "cms"}, "output": {"answer": "ok"}}
-    assert telemetry.langfuse.observations[1].kwargs.get("trace_context") is None
-    assert telemetry.langfuse.observations[2].kwargs.get("trace_context") is None
+    for observation in telemetry.langfuse.observations[1:]:
+        assert observation.kwargs.get("trace_context") is None
+        assert observation.kwargs["as_type"] == "span"
+
+    ic = telemetry.langfuse.observations[1]
+    assert ic.kwargs["input"]["step"] == "visible"
+    assert ic.updates[-1]["input"]["step"] == "visible"
+    assert ic.updates[-1]["output"] == {"status": "ok"}
     assert telemetry.langfuse.propagations[-1]["trace_name"] == "agent.gateway_message"
 
     aggregated = root.updates[-1]["metadata"]["aggregated_events"]
     assert [event["name"] for event in aggregated] == ["IC.INTERNAL", "NOC.001", "AGA.010"]
+
+
+@pytest.mark.asyncio
+async def test_analytics_control_event_is_a_span_and_not_a_trace_tag():
+    clear_observability_context()
+    set_observability_context(request_id="req-1", trace_id="req-1", session_id="s1")
+    langfuse = FakeLangfuse()
+    publisher = LangfuseAnalyticsPublisher(langfuse=langfuse)
+    envelope = {
+        "eventType": "IC.ORDER_CONFIRMED",
+        "source": "agent_framework",
+        "payload": {"tag": "IC.ORDER_CONFIRMED", "order_id": "order-1"},
+        "metadata": {"ic": True},
+    }
+
+    await publisher.publish("IC.ORDER_CONFIRMED", envelope)
+
+    assert [obs.kwargs["name"] for obs in langfuse.observations] == ["IC.ORDER_CONFIRMED"]
+    observation = langfuse.observations[0]
+    assert observation.kwargs["as_type"] == "span"
+    assert observation.kwargs["input"] == envelope
+    assert observation.updates[-1]["output"] == {"published": True}
+    assert len(langfuse.trace_updates) == 1
+    assert "tags" not in langfuse.trace_updates[0]
 
 
 @pytest.mark.asyncio

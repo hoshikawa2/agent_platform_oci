@@ -50,6 +50,10 @@ Cada evento vira uma observation/span com `name` igual ao código:
 - `NOC.001`
 - `GRL.004`
 
+No modo `LANGFUSE_TRACE_MODE=compact`, eventos `IC.*`, `AGA.*` e `NOC.*`
+continuam visíveis como spans filhos do span raiz. Eles não são substituídos por
+tags da trace. Eventos técnicos de baixo nível continuam sujeitos à compactação.
+
 A metadata recebe automaticamente:
 
 - `tag`

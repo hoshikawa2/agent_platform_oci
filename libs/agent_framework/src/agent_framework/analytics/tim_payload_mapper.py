@@ -63,6 +63,7 @@ def map_analytics_event_to_tim_flat_payload(
         # Tracking
         "eventType": event.get("eventType") or event_type,
         "traceId": _first(data, "traceId", "trace_id"),
+        "transactionId": _first(data, "transactionId", "transaction_id", "transactionID"),
         "spanId": _first(data, "spanId", "span_id"),
         "parentSpanId": _first(data, "parentSpanId", "parent_span_id"),
         "eventName": _first(data, "eventName", "name"),

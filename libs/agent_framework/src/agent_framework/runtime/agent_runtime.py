@@ -817,6 +817,16 @@ class AgentRuntimeMixin:
         state["memory_context"] = memory_context
         state["memory_context_metadata"] = memory_context.metadata
 
+        if bool(getattr(settings, "ENABLE_LONG_TERM_MEMORY", False)):
+            manager = getattr(self, "long_term_memory_manager", None)
+            if manager is None:
+                from agent_framework.memory.long_term_memory import create_long_term_memory_manager
+                manager = create_long_term_memory_manager(settings, telemetry=getattr(self, "telemetry", None))
+                self.long_term_memory_manager = manager
+            items = await manager.load(state)
+            state["long_term_memories"] = [item.to_dict() for item in items]
+            state["long_term_memory_context"] = manager.render(items)
+
         if memory_context.compressed:
             await self._emit_ic(
                 "IC.MEMORY_COMPRESSION_TRIGGERED",
@@ -891,6 +901,8 @@ class AgentRuntimeMixin:
         runtime = self.get_runtime_context(state)
         sections = []
         sections.extend(self._render_memory_sections(state))
+        if bool(getattr(getattr(self, "settings", None), "LONG_TERM_MEMORY_INJECT_CONTEXT", True)) and state.get("long_term_memory_context"):
+            sections.append(str(state["long_term_memory_context"]))
         sections.extend([
             f"Mensagem do usuário:\n{user_text if user_text is not None else runtime.sanitized_input}",
             f"Intent/rota escolhidos pelo framework:\nintent={state.get('intent')} route={state.get('route')}",

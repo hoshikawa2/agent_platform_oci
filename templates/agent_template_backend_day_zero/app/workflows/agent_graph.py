@@ -21,6 +21,7 @@ from app.state import AgentState
 from agent_framework.rag.rag_service import RagService
 from agent_framework.rag.embedding_provider import create_embedding_provider
 from agent_framework.cache.cache import create_cache
+from agent_framework.memory.long_term_memory import create_long_term_memory_manager
 
 
 class LegacyOutputGuardrailRail:
@@ -94,6 +95,7 @@ class AgentWorkflow:
         self.settings = settings
         self.tool_router = tool_router
         self.summary_memory = summary_memory
+        self.long_term_memory_manager = create_long_term_memory_manager(settings, telemetry=telemetry)
         self.guardrails = GuardrailPipeline(
             observer=self.observer,
             enable_parallel=bool(getattr(settings, "ENABLE_PARALLEL_GUARDRAILS", True)),
@@ -121,6 +123,11 @@ class AgentWorkflow:
         self.product = ProductAgent(llm, **agent_kwargs)
         self.orders = OrdersAgent(llm, **agent_kwargs)
         self.support = SupportAgent(llm, **agent_kwargs)
+
+        # The existing agent constructors intentionally keep their stable API.
+        # Long-term memory is injected as a runtime capability after creation.
+        for agent in (self.billing, self.product, self.orders, self.support):
+            agent.long_term_memory_manager = self.long_term_memory_manager
         self.graph = self._build_graph()
 
     def _node(self, name, fn):
@@ -143,6 +150,7 @@ class AgentWorkflow:
         builder.add_node("output_guardrails", self._node("output_guardrails", self.output_guardrails))
         builder.add_node("judge", self._node("judge", self.judge))
         builder.add_node("supervisor_review", self._node("supervisor_review", self.supervisor_review))
+        builder.add_node("persist_long_term_memory", self._node("persist_long_term_memory", self.persist_long_term_memory))
         builder.add_node("persist", self._node("persist", self.persist))
 
         builder.add_edge(START, "input_guardrails")
@@ -172,7 +180,8 @@ class AgentWorkflow:
         builder.add_edge("output_supervisor", "output_guardrails")
         builder.add_edge("output_guardrails", "judge")
         builder.add_edge("judge", "supervisor_review")
-        builder.add_edge("supervisor_review", "persist")
+        builder.add_edge("supervisor_review", "persist_long_term_memory")
+        builder.add_edge("persist_long_term_memory", "persist")
         builder.add_edge("persist", END)
 
         return builder.compile(checkpointer=create_langgraph_checkpointer(self.settings))
@@ -597,6 +606,10 @@ class AgentWorkflow:
                 {"session_id": state.get("session_id"), "approved": ok},
             )
             return {"final_answer": answer if ok else answer}
+
+    async def persist_long_term_memory(self, state):
+        result = await self.long_term_memory_manager.persist_turn(state)
+        return {"long_term_memory_write_result": result}
 
     async def persist(self, state):
         async with self.telemetry.span(

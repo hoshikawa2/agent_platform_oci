@@ -33,3 +33,6 @@ class AgentState(TypedDict, total=False):
     supervisor_handover_reason: str
     output_supervisor_results: list[dict[str, Any]]
     output_guardrails_already_applied: bool
+    long_term_memories: list[dict[str, Any]]
+    long_term_memory_context: str
+    long_term_memory_write_result: dict[str, Any]

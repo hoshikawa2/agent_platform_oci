@@ -105,8 +105,9 @@ Detalha o framework de avaliação e certificação, incluindo arquitetura de av
 
 Define o modelo de readiness operacional e SRE da plataforma, incluindo componentes operados, health checks, readiness, SLOs, métricas, dashboards, alertas, runbooks, gestão de incidentes, capacidade e checklist de produção.
 
+### [IMPORTANTE: Disclaimer Auth and Security](specs/Disclaimer%20Auth%20and%20Security_PT.md)
 
-
+Recomendações de melhores práticas de segurança da Oracle Cloud Infrastructure.
 ---
 
 ## 1. Visão geral da arquitetura

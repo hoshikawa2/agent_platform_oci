@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     MEMORY_INJECT_RECENT_MESSAGES: bool = True
     MEMORY_INJECT_SUMMARY: bool = True
 
+    ENABLE_LONG_TERM_MEMORY: bool = False
+    LONG_TERM_MEMORY_PROVIDER: Literal['memory','sqlite','autonomous','oracle'] = 'sqlite'
+    LONG_TERM_MEMORY_SQLITE_PATH: str | None = None
+    LONG_TERM_MEMORY_TABLE: str = 'agentfw_long_term_memory'
+    LONG_TERM_MEMORY_ORACLE_TABLE: str | None = None
+    LONG_TERM_MEMORY_MAX_CONTEXT_ITEMS: int = 20
+    LONG_TERM_MEMORY_MIN_CONFIDENCE: float = 0.70
+    LONG_TERM_MEMORY_AUTO_EXTRACT: bool = True
+    LONG_TERM_MEMORY_INJECT_CONTEXT: bool = True
+
     # LangGraph enterprise checkpointing
     ENABLE_RESILIENT_CHECKPOINTER: bool = True
     ENABLE_CHECKPOINT_INTEGRITY: bool = True

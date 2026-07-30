@@ -104,6 +104,9 @@ Details the evaluation and certification framework, including evaluation archite
 
 Defines the platform operational readiness and SRE model, including managed components, health checks, readiness, SLOs, metrics, dashboards, alerts, runbooks, incident management, capacity planning, and production checklists.
 
+### [IMPORTANT: Disclaimer Auth and Security](specs/Disclaimer%20Auth%20and%20Security_EN.md)
+
+Oracle Cloud Infrastructure Security Best Practice Recommendations.
 
 ---
 

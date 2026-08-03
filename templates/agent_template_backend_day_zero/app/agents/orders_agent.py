@@ -1,10 +1,3 @@
-"""
-DAY ZERO TEMPLATE - OrdersAgent
-
-Esqueleto mínimo já compatível com ConversationSummaryMemory.
-Substitua o prompt e a regra de negócio conforme o seu agente.
-"""
-
 from app.agents.prompting import apply_agent_profile_prompt
 from app.agents.runtime import AgentRuntimeMixin
 
@@ -35,12 +28,67 @@ class OrdersAgent(AgentRuntimeMixin):
         self.summary_memory = summary_memory
 
     async def run(self, state):
-        # OPCIONAL: habilite quando seu agente precisar de MCP/RAG.
-        tool_context = []
-        rag_context = None
-        rag_metadata = {}
+        await self._emit_ic(
+            "IC.ORDERS_AGENT_STARTED",
+            state,
+            {"business_component": "pedidos"},
+            component="agent.orders.start",
+        )
 
-        # Prepara a memória resumida antes do prompt.
+        tool_context = await self._collect_tool_context(state)
+        if tool_context:
+            await self._emit_ic(
+                "IC.ORDERS_MCP_CONTEXT_COLLECTED",
+                state,
+                {"tool_result_count": len(tool_context)},
+                component="agent.orders.mcp",
+            )
+
+        state["mcp_results"] = tool_context
+        clarification_message = self.transaction_clarification_message(state)
+        if clarification_message:
+            return {
+                "answer": f"[{self.__class__.__name__}] {clarification_message}",
+                "next_state": state.get("next_state") or "COLLECTING_PARAMETERS",
+                "mcp_results": tool_context,
+                **self.transaction_state_patch(state),
+            }
+
+        confirmation_message = self.transaction_confirmation_message(state)
+        if confirmation_message:
+            result = {
+                "answer": f"[{self.__class__.__name__}] {confirmation_message}",
+                "next_state": state.get("next_state"),
+                "mcp_results": tool_context,
+                **self.transaction_state_patch(state),
+            }
+            return result
+
+        direct_answer = self.build_direct_mcp_answer(state, tool_context, agent_label="OrdersAgent")
+        if direct_answer:
+            return {
+                "answer": direct_answer,
+                "next_state": state.get("next_state") or "ACTIVE",
+                "mcp_results": tool_context,
+                "rag": {"enabled": False, "skipped": True, "reason": "direct_mcp_answer"},
+                **self.transaction_state_patch(state),
+            }
+
+        rag_context, rag_metadata = await self._retrieve_rag_context(state)
+        if rag_metadata.get("enabled"):
+            await self._emit_ic(
+                "IC.ORDERS_RAG_CONTEXT_RETRIEVED",
+                state,
+                {
+                    "document_count": rag_metadata.get("document_count"),
+                    "graph_neighbors": rag_metadata.get("graph_neighbors"),
+                    "latency_ms": rag_metadata.get("latency_ms"),
+                },
+                component="agent.orders.rag",
+            )
+
+        # Prepara ConversationSummaryMemory antes de montar o prompt.
+        # O build_messages() do framework injeta resumo + últimas mensagens quando habilitado.
         await self.prepare_memory_context(state)
 
         messages = self.build_messages(
@@ -55,13 +103,27 @@ class OrdersAgent(AgentRuntimeMixin):
         )
 
         answer = await self._invoke_llm_cached(state, "OrdersAgent", messages)
-        return {
-            "answer": answer,
-            "next_state": "DAY_ZERO_ACTIVE",
+        result = {
+            "answer": f"[OrdersAgent] {answer}",
+            "next_state": "ORDER_ACTIVE",
             "mcp_results": tool_context,
             "rag": rag_metadata,
             "memory_context_metadata": state.get("memory_context_metadata"),
+            **self.transaction_state_patch(state),
         }
+
+        await self._emit_ic(
+            "IC.ORDERS_AGENT_COMPLETED",
+            state,
+            {
+                "answer_chars": len(result.get("answer") or ""),
+                "has_mcp_results": bool(tool_context),
+                "rag_enabled": bool(rag_metadata.get("enabled")),
+                "memory_context": state.get("memory_context_metadata"),
+            },
+            component="agent.orders.completed",
+        )
+        return result
 
     async def _collect_tool_context(self, state):
         return await self._collect_mcp_context(state)

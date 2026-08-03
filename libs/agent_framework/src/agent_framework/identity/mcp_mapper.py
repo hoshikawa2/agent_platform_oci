@@ -19,6 +19,16 @@ class MCPParameterMapper:
             return cls({})
         return cls(yaml.safe_load(p.read_text(encoding="utf-8")) or {})
 
+    def extract_rules(self, tool_name: str) -> dict[str, dict[str, Any]]:
+        """Retorna as regras declarativas de extração da tool.
+
+        O mapper não executa LLM; ele apenas expõe a configuração para o
+        runtime, que possui acesso ao modelo e à mensagem atual.
+        """
+        rule = self.tools.get(tool_name) or {}
+        raw = rule.get("extract") or {}
+        return {str(k): dict(v or {}) for k, v in raw.items() if isinstance(v, dict)}
+
     def map(self, tool_name: str, business_context: BusinessContext | dict[str, Any] | None, *, original_context: dict[str, Any] | None = None, extra_args: dict[str, Any] | None = None) -> dict[str, Any]:
         ctx = business_context if isinstance(business_context, BusinessContext) else BusinessContext.from_mapping(business_context or {})
         original_context = dict(original_context or {})
@@ -27,13 +37,16 @@ class MCPParameterMapper:
         mappings = rule.get("map") or {}
         # também aceita formato simples: customer_key: msisdn
         for src_key, target in rule.items():
-            if src_key in {"map", "defaults", "required"}:
+            if src_key in {"map", "defaults", "required", "extract"}:
                 continue
             mappings.setdefault(src_key, target)
         for canonical_key, target_field in mappings.items():
             value = getattr(ctx, canonical_key, None)
             if value not in (None, ""):
-                args[str(target_field)] = value
+                # Argumentos explícitos ou extraídos da mensagem têm precedência
+                # sobre o Business Context. Isso evita, por exemplo, que um
+                # contract_key sobrescreva um order_id informado pelo usuário.
+                args.setdefault(str(target_field), value)
         for key, value in {**self.defaults, **(rule.get("defaults") or {})}.items():
             args.setdefault(key, value)
         # preserva parâmetros específicos já capturados no canal, sem o framework conhecer seus nomes.

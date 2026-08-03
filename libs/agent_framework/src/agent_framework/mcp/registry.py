@@ -69,6 +69,7 @@ class MCPRegistry:
                     "requires": tool.requires,
                     "confirmation_required": tool.confirmation_required,
                     "execution_policy": tool.execution_policy,
+                    "selection_keywords": tool.selection_keywords,
                     "cache": tool.cache,
                 })
         return out

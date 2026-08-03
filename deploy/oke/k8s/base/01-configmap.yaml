@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-platform-config
+  namespace: agent-platform
+data:
+  APP_ENV: "oke"
+  LOG_LEVEL: "INFO"
+  CORS_ORIGINS: "*"
+  LLM_PROVIDER: "mock"
+  LLM_TEMPERATURE: "0.2"
+  LLM_MAX_TOKENS: "2048"
+  SESSION_REPOSITORY_PROVIDER: "sqlite"
+  MEMORY_REPOSITORY_PROVIDER: "sqlite"
+  CHECKPOINT_REPOSITORY_PROVIDER: "sqlite"
+  SQLITE_DB_PATH: "/data/agent_framework.db"
+  USAGE_REPOSITORY_PROVIDER: "sqlite"
+  VECTOR_STORE_PROVIDER: "sqlite"
+  GRAPH_STORE_PROVIDER: "sqlite"
+  EMBEDDING_PROVIDER: "mock"
+  ENABLE_LANGFUSE: "false"
+  ENABLE_OTEL: "false"
+  ENABLE_ANALYTICS: "false"
+  ENABLE_INPUT_GUARDRAILS: "true"
+  ENABLE_OUTPUT_GUARDRAILS: "true"
+  ENABLE_JUDGES: "true"
+  ENABLE_SUPERVISOR: "true"
+  ENABLE_OUTPUT_SUPERVISOR: "true"
+  ENABLE_PARALLEL_GUARDRAILS: "true"
+  FRAMEWORK_CHANNEL_INPUT_MODE: "embedded"
+  ENABLE_MCP_TOOLS: "true"
+  MCP_GATEWAY_ENABLED: "true"
+  MCP_GATEWAY_URL: "http://mcp-gateway.agent-platform.svc.cluster.local:8300"
+  AGENTS_CONFIG_PATH: "./config/agents.yaml"
+  ROUTING_CONFIG_PATH: "./config/routing.yaml"
+  GUARDRAILS_CONFIG_PATH: "./config/guardrails.yaml"
+  JUDGES_CONFIG_PATH: "./config/judges.yaml"
+  PROMPT_POLICY_PATH: "./config/prompt_policy.yaml"
+  IDENTITY_CONFIG_PATH: "./config/identity.yaml"
+  MCP_PARAMETER_MAPPING_PATH: "./config/mcp_parameter_mapping.yaml"
+  BACKENDS_CONFIG_PATH: "/app/config/backends.yaml"
+  CHANNEL_GATEWAY_RUNTIME_MODE: "proxy"
+  DEFAULT_AGENT_BACKEND_URL: "http://agent-template-backend.agent-platform.svc.cluster.local:8000"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-gateway-backends
+  namespace: agent-platform
+data:
+  backends.yaml: |
+    default_backend: contas
+    backends:
+      contas:
+        url: http://agent-template-backend.agent-platform.svc.cluster.local:8000
+        description: Backend principal do template de agentes.
+        domains: [contas, fatura, pagamento, consumo, contestacao]
+        keywords: [fatura, conta, boleto, pagamento, consumo, segunda via, contestar, contestação, valor, cobrança]
+        examples:
+          - Quero consultar minha fatura
+          - Minha conta veio alta
+        priority: 10
+        default_agent_id: telecom_contas
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-gateway-config
+  namespace: agent-platform
+data:
+  mcp_gateway.yaml: |
+    discovery:
+      enabled: true
+      sync_on_startup: true
+      timeout_seconds: 10
+      default_catalog_endpoints: [/.well-known/mcp-server.json, /manifest, /mcp/tools, /tools/list, /tools, /v1/tools]
+      tool_defaults:
+        version: 1.0.0
+        protocol: legacy_http
+        enabled: true
+        idempotent: true
+        cache_ttl_seconds: 300
+        timeout_seconds: 30
+        retry: {enabled: true, max_attempts: 2, backoff_ms: 250}
+        allowed_agents: []
+        allowed_channels: []
+        required_business_keys: []
+    servers: {}
+    tools: {}
+  mcp_servers.yaml: |
+    servers: {}

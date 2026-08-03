@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+class ToolPolicy(BaseModel):
+    """Política conversacional mínima aplicada antes da chamada MCP."""
+
+    operation_type: Literal["read_only", "transactional"] = "read_only"
+    require_confirmation: bool = False
+    requires: list[str] = Field(default_factory=list)
+
+
+class ToolPolicyRegistry:
+    """Carrega políticas opcionais sem tornar o novo arquivo obrigatório."""
+
+    def __init__(self, path: str | None = None):
+        self.path = path
+        self.defaults = ToolPolicy()
+        self.policies: dict[str, ToolPolicy] = {}
+        self.configured = False
+        if path:
+            self._load(path)
+
+    def _load(self, path: str) -> None:
+        config_path = Path(path)
+        if not config_path.exists():
+            return
+        with config_path.open("r", encoding="utf-8") as stream:
+            raw: dict[str, Any] = yaml.safe_load(stream) or {}
+        defaults = raw.get("defaults") or {}
+        self.defaults = self._parse(defaults, base=ToolPolicy())
+        for name, value in (raw.get("tool_policies") or {}).items():
+            self.policies[name] = self._parse(value or {}, base=self.defaults)
+        self.configured = True
+
+    @staticmethod
+    def _parse(raw: dict[str, Any], *, base: ToolPolicy) -> ToolPolicy:
+        operation_type = raw.get("operation_type", raw.get("type", base.operation_type))
+        confirmation = raw.get(
+            "require_confirmation",
+            raw.get("requires_confirmation", raw.get("confirmation_required", base.require_confirmation)),
+        )
+        return ToolPolicy(
+            operation_type=operation_type,
+            require_confirmation=bool(confirmation),
+            requires=list(raw.get("requires", base.requires) or []),
+        )
+
+    def get(self, tool_name: str) -> ToolPolicy | None:
+        """Retorna somente política explícita; ausência preserva o legado."""
+        return self.policies.get(tool_name)
+

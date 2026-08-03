@@ -10889,4 +10889,290 @@ A implementação está arquiteturalmente correta quando:
 [ ] o desenvolvedor consegue testar rota antes de testar execução real.
 ```
 
-Com esse desenho, adicionar um novo agente não exige reescrever o frontend nem copiar lógica entre backends. O desenvolvedor cria o backend especializado, registra no Agent Gateway e deixa o framework cuidar dos motores transversais.
+---
+
+### 33. Tuning-Performance — Extensões padronizadas de desempenho
+
+A pasta `Tuning-Performance` disponibiliza um conjunto adicional de implementações, configurações e exemplos destinados a melhorar o desempenho, a previsibilidade e a eficiência do Agent Framework.
+
+Essas funcionalidades não são ativadas automaticamente apenas pela cópia da pasta. Sua adoção exige a integração dos componentes correspondentes, a revisão das configurações do projeto e a adequação das regras de negócio, ferramentas MCP, prompts, estados conversacionais e políticas de execução.
+
+O objetivo do `Tuning-Performance` é oferecer uma abordagem padronizada para otimizações que normalmente seriam implementadas separadamente em cada agente ou projeto. Com isso, as equipes podem reduzir chamadas desnecessárias a modelos, evitar execuções incorretas de ferramentas, melhorar a continuidade conversacional e estabelecer um comportamento consistente para operações read-only e transacionais.
+
+#### 33.1. Route Stickiness semântica
+
+Mantém o agente atual durante mensagens de continuidade, evitando que o roteador completo seja executado novamente em todos os turnos.
+
+A decisão de continuidade pode classificar a mensagem como:
+
+* `CONTINUE`: mantém o agente e a intenção atuais;
+* `ROUTE`: executa um novo roteamento;
+* `HUMAN_HANDOFF`: encaminha a conversa para atendimento humano;
+* `END_SESSION`: encerra a sessão conversacional.
+
+A continuidade é preemptada quando a nova mensagem contém uma intenção explícita que exige outro agente, domínio ou conjunto de ferramentas. Por exemplo, uma conversa iniciada com consulta de pedido pode ser redirecionada para suporte quando o usuário solicitar uma devolução.
+
+#### 33.2. Preempção por mudança operacional
+
+Detecta mudanças entre operações consultivas e transacionais, mesmo quando elas pertencem ao mesmo domínio.
+
+Exemplo:
+
+```text
+consultar pedido 123
+→ orders_agent
+→ consultar_pedido
+
+quero devolver o pedido 123
+→ support_agent
+→ solicitar_devolucao
+```
+
+Essa proteção impede que a route stickiness mantenha a conversa em uma intenção read-only quando o usuário iniciou uma ação transacional.
+
+#### 33.3. Seleção individual de ferramentas read-only
+
+As ferramentas configuradas na intenção passam a funcionar como uma allowlist, e não como uma lista de execução automática.
+
+O runtime seleciona apenas a ferramenta compatível com a solicitação atual.
+
+Exemplo:
+
+```text
+consultar pedido 123
+→ consultar_pedido
+```
+
+```text
+qual é o rastreamento do pedido 123?
+→ consultar_entrega
+```
+
+Isso evita chamadas redundantes a múltiplas ferramentas MCP e reduz latência, carga e volume de processamento.
+
+#### 33.4. Extração híbrida de parâmetros
+
+Permite extrair parâmetros das mensagens usando uma estratégia determinística com fallback para LLM.
+
+As estratégias suportadas são:
+
+* `regex`: utiliza somente uma expressão regular;
+* `llm`: utiliza sempre o modelo;
+* `hybrid`: tenta primeiro a extração determinística e utiliza a LLM apenas quando necessário.
+
+Exemplo:
+
+```yaml
+extract:
+  order_id:
+    from: message
+    type: string
+    strategy: hybrid
+    pattern: '(?i)\b(?:pedido|order)\s*[:#-]?\s*([A-Z0-9-]+)\b'
+    group: 1
+```
+
+Para uma mensagem como `consultar pedido 123`, o identificador é obtido pelo regex, sem consumo adicional de tokens. A LLM permanece disponível para frases ambíguas ou formatos não reconhecidos.
+
+#### 33.5. Precedência segura de parâmetros MCP
+
+Os parâmetros enviados às ferramentas seguem uma precedência padronizada:
+
+```text
+1. argumento explícito da chamada
+2. valor extraído da mensagem
+3. valor semanticamente compatível do Business Context
+4. valor default
+```
+
+Valores extraídos ou fornecidos explicitamente não são sobrescritos por campos genéricos do contexto.
+
+Essa regra evita, por exemplo, que um `contract_key` seja enviado indevidamente como `order_id`.
+
+#### 33.6. Políticas para ferramentas read-only e transacionais
+
+O arquivo `tool_policies.yaml` permite classificar cada ferramenta e definir seus requisitos operacionais.
+
+Exemplo:
+
+```yaml
+tool_policies:
+  solicitar_devolucao:
+    operation_type: transactional
+    require_confirmation: true
+
+  consultar_pedido:
+    operation_type: read_only
+    require_confirmation: false
+```
+
+Ferramentas read-only podem ser executadas diretamente. Ferramentas transacionais podem exigir confirmação explícita antes da chamada MCP.
+
+#### 33.7. Confirmação transacional persistente
+
+Operações que exigem confirmação são armazenadas como uma chamada pendente.
+
+O fluxo esperado é:
+
+```text
+usuário solicita a operação
+→ parâmetros são preparados
+→ pending_tool_call é persistido
+→ transaction_status = AWAITING_CONFIRMATION
+→ usuário confirma
+→ ferramenta MCP é executada
+```
+
+A confirmação deve retomar exatamente a operação pendente, preservando ferramenta, parâmetros e contexto.
+
+Após a conclusão ou o cancelamento, o estado pendente deve ser limpo para impedir reexecuções acidentais.
+
+#### 33.8. Proteção contra confirmações fora de contexto
+
+Mensagens como `sim`, `confirmo` ou `pode continuar` somente devem executar uma ferramenta quando existir uma operação pendente.
+
+Quando não houver `pending_tool_call`, o framework deve informar que não existe nenhuma operação aguardando confirmação, em vez de reutilizar uma transação anterior ou iniciar uma nova ação com base apenas no histórico.
+
+#### 33.9. Supressão condicional do RAG
+
+O RAG pode ser ignorado quando os resultados MCP já são suficientes para responder à solicitação.
+
+Exemplo:
+
+```text
+consultar pedido 123
+→ resultado autoritativo obtido pelo MCP
+→ RAG não executado
+```
+
+O RAG continua disponível para perguntas relacionadas a políticas, regras, documentação, prazos, procedimentos ou informações não retornadas pelas ferramentas.
+
+Essa separação reduz buscas vetoriais desnecessárias e melhora o tempo de resposta.
+
+#### 33.10. Evidências MCP para o Groundedness Judge
+
+Os resultados das ferramentas MCP são enviados ao judge de groundedness como evidência factual.
+
+Isso evita que respostas baseadas em dados reais de ferramentas sejam classificadas incorretamente como alucinação.
+
+O contexto do judge pode incluir:
+
+* mensagem do usuário;
+* resposta final;
+* resultados MCP;
+* contexto RAG;
+* estado transacional;
+* política aplicada à ferramenta.
+
+#### 33.11. Execução configurável de Judges
+
+A execução dos judges pode ser controlada por amostragem.
+
+Exemplo:
+
+```yaml
+sample_rate: 0.25
+always_run_for_transactional: true
+```
+
+Nesse cenário:
+
+* aproximadamente 25% das interações comuns executam judges;
+* interações transacionais executam judges sempre.
+
+A identificação transacional considera, entre outros sinais:
+
+* `transaction_status`;
+* `tool_policy_result`;
+* `selected_tool_call`;
+* `pending_tool_call`;
+* resultados MCP de ferramentas transacionais.
+
+Essa abordagem reduz custo e latência sem remover avaliação de fluxos críticos.
+
+#### 33.12. Respostas diretas para consultas estruturadas
+
+Consultas simples podem gerar respostas determinísticas a partir do resultado MCP, sem uma nova chamada ao agente LLM.
+
+Exemplo:
+
+```text
+[OrdersAgent] Pedido 123: status ENTREGUE.
+Valor total: R$ 349,90.
+Itens: Livro de Arquitetura de IA; Cabo USB-C.
+```
+
+Essa otimização é indicada quando:
+
+* a ferramenta respondeu com sucesso;
+* os dados são estruturados;
+* não há necessidade de raciocínio adicional;
+* não há combinação complexa de fontes;
+* a mensagem não solicita uma ação transacional.
+
+#### 33.13. Respostas diretas para conclusões transacionais
+
+Resultados estruturados de operações concluídas também podem ser formatados diretamente.
+
+Exemplo:
+
+```text
+A solicitação de devolução do pedido 123 foi registrada.
+
+Protocolo: DEV-2026-001
+Status: ABERTO
+```
+
+Essa opção reduz o uso de LLM apenas para reorganizar informações já fornecidas pela ferramenta.
+
+#### 33.14. Configurações por projeto
+
+As otimizações devem ser ajustadas conforme o comportamento esperado de cada projeto.
+
+Entre os itens que normalmente precisam ser configurados estão:
+
+* keywords e prioridades das intents;
+* allowlist e regras de seleção das ferramentas;
+* expressões regulares de extração;
+* perfis LLM usados como fallback;
+* políticas read-only e transacionais;
+* mensagens de confirmação;
+* critérios de supressão do RAG;
+* amostragem dos judges;
+* respostas diretas;
+* persistência do estado transacional;
+* telemetria e eventos;
+* mecanismos de idempotência no MCP ou no serviço de negócio.
+
+#### 33.15. Considerações sobre idempotência
+
+O Agent Framework controla a experiência conversacional, a confirmação e o estado da operação pendente. Entretanto, a proteção definitiva contra operações duplicadas deve ser implementada no serviço MCP ou no serviço de negócio responsável pela transação.
+
+A necessidade de idempotência deve ser definida por ferramenta. Ela é especialmente importante para ações como:
+
+* devolução;
+* troca;
+* pagamento;
+* cancelamento;
+* criação de protocolo;
+* provisionamento;
+* operações com efeitos financeiros ou externos.
+
+O `Tuning-Performance` pode propagar identificadores e informações de contexto, mas a garantia atômica deve permanecer na camada que controla o dado transacional.
+
+#### 33.16. Benefícios esperados
+
+A adoção das funcionalidades do `Tuning-Performance` pode proporcionar:
+
+* menor latência;
+* menor consumo de tokens;
+* redução de chamadas LLM;
+* redução de chamadas MCP redundantes;
+* menor utilização desnecessária do RAG;
+* melhor continuidade entre turnos;
+* maior segurança em operações transacionais;
+* melhor rastreabilidade;
+* groundedness baseado em evidências reais;
+* comportamento consistente entre diferentes agentes e projetos.
+
+O conteúdo desta pasta deve ser tratado como uma extensão adicional do framework. Sua utilização requer implementação, configuração, testes funcionais e validação das regras de negócio antes da implantação em produção.

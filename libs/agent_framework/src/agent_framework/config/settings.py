@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     ORACLE_GRAPH_NAME: str = 'AGENTFW_GRAPH'
     ORACLE_GRAPH_AUTO_CREATE: bool = False
     RAG_TOP_K: int = 5
+    SKIP_RAG_WHEN_MCP_SUFFICIENT: bool = True
     ENABLE_RAG_QUERY_REWRITE: bool = False
     ENABLE_RAG_CONTEXT_COMPRESSION: bool = False
     ENABLE_RAG_GENERATION: bool = False
@@ -173,6 +174,15 @@ class Settings(BaseSettings):
     ROUTING_CONFIG_PATH: str = './config/routing.yaml'
     ENABLE_LLM_ROUTER: bool = False
     ROUTING_MODE: Literal['router','supervisor'] = 'router'
+    # Semantic route stickiness. Uses an LLM profile; no regex or language rules.
+    ENABLE_ROUTE_STICKINESS: bool = False
+    ROUTE_STICKINESS_LLM_PROFILE: str = 'route_continuity'
+    ROUTE_STICKINESS_CONFIDENCE_THRESHOLD: float = 0.90
+    ROUTE_STICKINESS_HISTORY_TURNS: int = 2
+    ROUTE_STICKINESS_MAX_TOKENS: int = 80
+    HUMAN_HANDOFF_MESSAGE: str = 'Vou encaminhar seu atendimento para uma pessoa.'
+    END_SESSION_MESSAGE: str = 'Atendimento encerrado. Obrigado pelo contato.'
+    SESSION_ALREADY_ENDED_MESSAGE: str = 'Este atendimento já foi encerrado. Inicie uma nova sessão para continuar.'
 
     # MCP / Tooling
     ENABLE_MCP_TOOLS: bool = True
@@ -180,6 +190,8 @@ class Settings(BaseSettings):
     MCP_CACHE_TTL_SECONDS: int = 300
     MCP_SERVERS_CONFIG_PATH: str = './config/mcp_servers.yaml'
     TOOLS_CONFIG_PATH: str = './config/tools.yaml'
+    # Opcional. Se ausente, permanecem válidas as políticas legadas de tools.yaml.
+    TOOL_POLICIES_PATH: str | None = './config/tool_policies.yaml'
     IDENTITY_CONFIG_PATH: str = './config/identity.yaml'
     MCP_PARAMETER_MAPPING_PATH: str = './config/mcp_parameter_mapping.yaml'
     MCP_TOOL_TIMEOUT_SECONDS: int = 30

@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-template-backend
+  namespace: agent-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: agent-template-backend}
+  template:
+    metadata:
+      labels: {app: agent-template-backend}
+    spec:
+      containers:
+        - name: agent-template-backend
+          image: agent-template-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: {name: agent-platform-config}
+            - secretRef: {name: agent-platform-secrets}
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 40
+            periodSeconds: 20
+          resources:
+            requests: {cpu: "250m", memory: "512Mi"}
+            limits: {cpu: "1000m", memory: "1Gi"}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-template-backend
+  namespace: agent-platform
+spec:
+  type: ClusterIP
+  selector: {app: agent-template-backend}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-template-backend
+  namespace: agent-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agent-template-backend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

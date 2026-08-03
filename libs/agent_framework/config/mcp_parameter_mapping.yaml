@@ -8,17 +8,16 @@ mcp_parameter_mapping:
         contract_key: invoice_id
         interaction_key: ura_call_id
         session_key: session_id
-
       extract:
         parametro_externo:
           from: message
           type: string
           strategy: llm
-          description: >
-            Extraia da mensagem do usuário o valor necessário para o parâmetro
-            parametro_externo. Retorne null quando a informação não estiver
-            presente no texto.
+          description: 'Extraia da mensagem do usuário o valor necessário para o parâmetro
+            parametro_externo. Retorne null quando a informação não estiver presente
+            no texto.
 
+            '
     consultar_pagamentos:
       map:
         customer_key: msisdn
@@ -37,24 +36,52 @@ mcp_parameter_mapping:
     consultar_pedido:
       map:
         customer_key: customer_id
-        contract_key: order_id
         session_key: session_id
+      extract:
+        order_id:
+          from: message
+          type: string
+          strategy: llm
+          description: Extraia somente o identificador do pedido informado explicitamente
+            pelo usuário. Retorne null quando não houver identificador de pedido na
+            mensagem.
     consultar_entrega:
       map:
-        contract_key: order_id
         session_key: session_id
+      extract:
+        order_id:
+          from: message
+          type: string
+          strategy: llm
+          description: Extraia somente o identificador do pedido informado explicitamente
+            pelo usuário. Retorne null quando não houver identificador de pedido na
+            mensagem.
     solicitar_troca:
       map:
-        contract_key: order_id
         session_key: session_id
       defaults:
         reason: Solicitação aberta pelo atendimento conversacional.
+      extract:
+        order_id:
+          from: message
+          type: string
+          strategy: llm
+          description: Extraia somente o identificador do pedido informado explicitamente
+            pelo usuário. Retorne null quando não houver identificador de pedido na
+            mensagem.
     solicitar_devolucao:
       map:
-        contract_key: order_id
         session_key: session_id
       defaults:
         reason: Solicitação aberta pelo atendimento conversacional.
+      extract:
+        order_id:
+          from: message
+          type: string
+          strategy: llm
+          description: Extraia somente o identificador do pedido informado explicitamente
+            pelo usuário. Retorne null quando não houver identificador de pedido na
+            mensagem.
     consultar_titulo_financeiro:
       map:
         customer_key: customer_id

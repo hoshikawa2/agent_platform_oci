@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
@@ -228,6 +229,13 @@ class AgentRuntimeMixin:
         rag_service = getattr(self, "rag_service", None)
         if not rag_service:
             return "", {"enabled": False}
+        settings = getattr(self, "settings", None)
+        mcp_results = state.get("mcp_results") or []
+        if bool(getattr(settings, "SKIP_RAG_WHEN_MCP_SUFFICIENT", True)) and any(r.get("ok") and r.get("result") for r in mcp_results):
+            text = str(state.get("sanitized_input") or state.get("user_text") or "").lower()
+            policy_terms = ("política", "politica", "regra", "prazo", "como funciona", "por que", "porque")
+            if not any(term in text for term in policy_terms):
+                return "", {"enabled": False, "skipped": True, "reason": "mcp_sufficient"}
         runtime = self.get_runtime_context(state)
         namespace = (
             (state.get("agent_profile") or {}).get("rag_namespace")
@@ -300,6 +308,159 @@ class AgentRuntimeMixin:
         args.update({k: v for k, v in (extra_args or {}).items() if v not in _EMPTY_VALUES})
         return args
 
+    @staticmethod
+    def _coerce_extracted_value(value: Any, declared_type: str | None) -> Any:
+        if value in _EMPTY_VALUES:
+            return None
+        kind = str(declared_type or "string").strip().lower()
+        try:
+            if kind in {"int", "integer"}:
+                return int(value)
+            if kind in {"float", "number"}:
+                return float(value)
+            if kind in {"bool", "boolean"}:
+                if isinstance(value, bool):
+                    return value
+                normalized = str(value).strip().lower()
+                if normalized in {"true", "1", "yes", "sim"}:
+                    return True
+                if normalized in {"false", "0", "no", "não", "nao"}:
+                    return False
+                return None
+            return str(value).strip()
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _llm_response_text(response: Any) -> str:
+        if response is None:
+            return ""
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict):
+            return str(response.get("content") or response.get("text") or response.get("answer") or "")
+        return str(getattr(response, "content", None) or getattr(response, "text", None) or response)
+
+    async def _extract_mcp_parameters(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Executa regras ``extract`` declaradas para a tool escolhida.
+
+        Precedência: argumento explícito > valor extraído > Business Context >
+        default. A etapa é genérica: nomes e semântica vêm exclusivamente do
+        mcp_parameter_mapping.yaml.
+        """
+        router = getattr(self, "tool_router", None)
+        if not router or not hasattr(router, "parameter_extract_rules"):
+            return dict(arguments or {})
+        rules = router.parameter_extract_rules(tool_name) or {}
+        if not rules:
+            return dict(arguments or {})
+
+        resolved = dict(arguments or {})
+        runtime = self.get_runtime_context(state)
+        message = runtime.sanitized_input or runtime.original_text or runtime.user_text
+        llm = getattr(self, "llm", None)
+
+        for field_name, rule in rules.items():
+            if resolved.get(field_name) not in _EMPTY_VALUES:
+                continue
+            if str(rule.get("from") or "message").lower() != "message":
+                continue
+            strategy = str(rule.get("strategy") or "llm").lower()
+            value: Any = None
+
+            if strategy in {"regex", "hybrid", "deterministic"}:
+                pattern = str(rule.get("pattern") or "").strip()
+                if pattern and message:
+                    try:
+                        match = re.search(pattern, str(message), flags=re.IGNORECASE)
+                        if match:
+                            group = int(rule.get("group", 1) or 1)
+                            value = match.group(group)
+                    except (re.error, IndexError, ValueError) as exc:
+                        logger.warning(
+                            "mcp.parameter.regex_extract_failed tool=%s field=%s error=%s",
+                            tool_name, field_name, exc,
+                        )
+                if value is None and strategy == "hybrid":
+                    strategy = "llm"
+                elif value is None:
+                    logger.info("mcp.parameter.regex_extracted_null tool=%s field=%s", tool_name, field_name)
+                    continue
+
+            if strategy == "month_name_pt":
+                months = {
+                    "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3,
+                    "abril": 4, "maio": 5, "junho": 6, "julho": 7,
+                    "agosto": 8, "setembro": 9, "outubro": 10,
+                    "novembro": 11, "dezembro": 12,
+                }
+                normalized = str(message or "").lower()
+                value = next((number for name, number in months.items() if name in normalized), None)
+            elif strategy == "llm":
+                if llm is None or not message:
+                    logger.warning(
+                        "mcp.parameter.llm_extract_failed tool=%s field=%s error=llm_or_message_unavailable",
+                        tool_name,
+                        field_name,
+                    )
+                    continue
+                description = str(rule.get("description") or f"Extraia o campo {field_name}.").strip()
+                prompt = (
+                    "Você é um extrator determinístico de parâmetros para uma tool MCP. "
+                    "Responda somente JSON válido, sem markdown.\n"
+                    f"Tool: {tool_name}\nCampo: {field_name}\nTipo: {rule.get('type', 'string')}\n"
+                    f"Regra: {description}\nMensagem: {message}\n"
+                    f"Formato obrigatório: {{\"{field_name}\": valor_ou_null}}"
+                )
+                try:
+                    response = await llm.ainvoke(
+                        [{"role": "user", "content": prompt}],
+                        profile_name="mcp_parameter_extraction",
+                        component_name="mcp_parameter_extraction",
+                        generation_name="llm.mcp_parameter_extraction",
+                        temperature=0.0,
+                        max_tokens=80,
+                    )
+                    raw = self._llm_response_text(response).strip()
+                    if raw.startswith("```"):
+                        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+                    payload = json.loads(raw)
+                    value = payload.get(field_name) if isinstance(payload, dict) else None
+                except Exception as exc:
+                    logger.warning(
+                        "mcp.parameter.llm_extract_failed tool=%s field=%s error=%s",
+                        tool_name,
+                        field_name,
+                        exc,
+                    )
+                    continue
+            elif strategy not in {"regex", "hybrid", "deterministic", "month_name_pt"}:
+                logger.warning(
+                    "mcp.parameter.extract_strategy_unsupported tool=%s field=%s strategy=%s",
+                    tool_name,
+                    field_name,
+                    strategy,
+                )
+                continue
+
+            coerced = self._coerce_extracted_value(value, rule.get("type"))
+            if coerced is None:
+                logger.info("mcp.parameter.llm_extracted_null tool=%s field=%s", tool_name, field_name)
+                continue
+            resolved[field_name] = coerced
+            logger.info(
+                "mcp.parameter.llm_extracted tool=%s field=%s value=%s",
+                tool_name,
+                field_name,
+                coerced,
+            )
+        return resolved
+
     def _tool_config(self, tool_name: str) -> Any:
         router = getattr(self, "tool_router", None)
         registry = getattr(router, "registry", None)
@@ -307,8 +468,28 @@ class AgentRuntimeMixin:
             return registry.get_tool(tool_name)
         return None
 
+    def _resolve_tool_execution_policy(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Resolve a política efetiva sem executar a tool."""
+        router = getattr(self, "tool_router", None)
+        if router and hasattr(router, "resolve_execution_policy"):
+            return router.resolve_execution_policy(tool_name, arguments)
+        if router and hasattr(router, "validate_execution_policy"):
+            _allowed, _reason, metadata = router.validate_execution_policy(tool_name, arguments or {})
+            return dict(metadata or {})
+        cfg = self._tool_config(tool_name)
+        tool_type = getattr(cfg, "tool_type", None) if cfg is not None else None
+        return {
+            "operation_type": "transactional" if tool_type in {"action", "transactional"} else "read_only",
+            "require_confirmation": bool(getattr(cfg, "confirmation_required", False)) if cfg is not None else False,
+            "policy_source": "tools.yaml",
+        }
+
     def _validate_tool_execution_policy(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str | None]:
-        """Aplica política genérica de execução declarada em tools.yaml."""
+        """Aplica a mesma política central usada pelo MCPToolRouter."""
+        router = getattr(self, "tool_router", None)
+        if router and hasattr(router, "validate_execution_policy"):
+            allowed, reason, _metadata = router.validate_execution_policy(tool_name, arguments)
+            return allowed, reason
         cfg = self._tool_config(tool_name)
         required: list[str] = []
         tool_type = None
@@ -599,7 +780,7 @@ class AgentRuntimeMixin:
         return result
 
     async def _call_mcp_tool(self, tool_name: str, arguments: dict[str, Any] | None, state: dict[str, Any]) -> dict[str, Any]:
-        args = arguments or {}
+        args = await self._extract_mcp_parameters(tool_name, dict(arguments or {}), state)
         telemetry = getattr(self, "telemetry", None)
 
         prepared_server, effective_args, prepare_error = self._prepare_mcp_call(tool_name, args, state)
@@ -716,6 +897,195 @@ class AgentRuntimeMixin:
             )
         return result
 
+    @staticmethod
+    def _confirmation_decision(text: str) -> str | None:
+        normalized = " ".join((text or "").strip().lower().split())
+        normalized = re.sub(r"[.!?]+$", "", normalized).strip()
+        if normalized in {"sim", "confirmo", "sim, confirmo", "pode fazer", "pode prosseguir", "sim, desejo", "sim, desejo trocar", "sim, confirmo a devolução", "sim, confirmo a troca"}:
+            return "confirm"
+        if normalized in {"não", "nao", "cancelar", "cancele", "não confirmo", "nao confirmo"}:
+            return "reject"
+        return None
+
+    @staticmethod
+    def _extract_action_arguments(text: str) -> dict[str, Any]:
+        """Extrai apenas entidades explicitamente informadas na mensagem.
+
+        Não usa a mensagem inteira como ``reason``: frases como "quero devolver
+        uma compra" expressam a ação, mas não necessariamente o motivo. Defaults
+        declarados no mapper continuam sendo aplicados por ``build_tool_arguments``.
+        """
+        raw = text or ""
+        args: dict[str, Any] = {}
+        match = re.search(
+            r"(?:pedido|ordem)\s*(?:n[ºo°.]?\s*)?(?:é\s*(?:o\s*)?|[:#=-]\s*)?([A-Za-z0-9_-]+)",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            args["order_id"] = match.group(1)
+
+        reason_match = re.search(
+            r"(?:porque|pois|motivo\s*[:=-]?|por\s+(?:arrependimento|defeito|erro|atraso)|me\s+arrependi(?:\s+da\s+compra)?|arrependimento)\s*(.*)",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if reason_match:
+            reason = reason_match.group(1).strip(" .,:;-")
+            if not reason:
+                matched_phrase = reason_match.group(0).strip(" .,:;-")
+                if re.search(r"me\s+arrependi|arrependimento", matched_phrase, flags=re.IGNORECASE):
+                    reason = "Arrependimento da compra"
+            if reason:
+                args["reason"] = reason
+        return args
+
+    def _transactional_action_match(self, text: str, tools: list[str] | None = None) -> str | None:
+        """Detecta solicitação transacional usando metadados de tools.yaml.
+
+        Quando ``tools`` é None, examina todas as tools registradas. Isso permite
+        bloquear uma resposta direta read-only mesmo quando a intent atual ainda
+        não expôs a action tool correta.
+        """
+        normalized = (text or "").lower()
+        router = getattr(self, "tool_router", None)
+        registry = getattr(router, "registry", None)
+        names = list(tools or (list(getattr(registry, "tools", {}).keys()) if registry else []))
+        for tool in names:
+            if self._resolve_tool_execution_policy(tool).get("operation_type") != "transactional":
+                continue
+            cfg = registry.get_tool(tool) if registry else None
+            keywords = list(getattr(cfg, "selection_keywords", None) or [])
+            if any(str(token).lower() in normalized for token in keywords):
+                return tool
+        return None
+
+    def _select_transactional_tool(self, tools: list[str], text: str) -> str | None:
+        return self._transactional_action_match(text, tools)
+
+    def transaction_state_patch(self, state: dict[str, Any]) -> dict[str, Any]:
+        keys = (
+            "available_mcp_tools", "selected_tool_call", "pending_tool_call",
+            "transaction_status", "confirmation_required", "confirmation_received",
+            "tool_policy_result", "missing_parameters", "next_state",
+        )
+        return {key: state.get(key) for key in keys if key in state}
+
+
+    def transaction_clarification_message(self, state: dict[str, Any]) -> str | None:
+        """Retorna pergunta determinística para parâmetros obrigatórios ausentes."""
+        if state.get("transaction_status") != "COLLECTING_PARAMETERS":
+            return None
+        missing = list(state.get("missing_parameters") or [])
+        if not missing:
+            return None
+        labels = {
+            "order_id": "o número do pedido",
+            "reason": "o motivo da solicitação",
+            "customer_id": "a identificação do cliente",
+        }
+        friendly = [labels.get(name, str(name).replace("_", " ")) for name in missing]
+        if len(friendly) == 1:
+            detail = friendly[0]
+        else:
+            detail = ", ".join(friendly[:-1]) + " e " + friendly[-1]
+        return f"Para prosseguir, informe {detail}."
+
+    @staticmethod
+    def _missing_required_arguments(policy: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
+        return [
+            str(name) for name in (policy.get("requires") or [])
+            if arguments.get(str(name)) in (None, "", [], {})
+        ]
+
+    def _set_collecting_parameters(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        policy: dict[str, Any],
+        missing: list[str],
+    ) -> None:
+        current_agent = state.get("route") or state.get("active_agent") or "support_agent"
+        collecting_state = {
+            "billing_agent": "COLLECTING_BILLING_PARAMETERS",
+            "product_agent": "COLLECTING_PRODUCT_PARAMETERS",
+            "orders_agent": "COLLECTING_ORDER_PARAMETERS",
+            "support_agent": "COLLECTING_SUPPORT_PARAMETERS",
+        }.get(current_agent, "COLLECTING_SUPPORT_PARAMETERS")
+        state.update({
+            "selected_tool_call": {"tool_name": tool_name, "arguments": arguments},
+            "pending_tool_call": {},
+            "transaction_status": "COLLECTING_PARAMETERS",
+            "confirmation_required": False,
+            "confirmation_received": False,
+            "missing_parameters": missing,
+            "next_state": collecting_state,
+            "tool_policy_result": {**policy, "tool_name": tool_name, "action": "collecting_parameters"},
+        })
+
+    def transaction_confirmation_message(self, state: dict[str, Any]) -> str | None:
+        if state.get("transaction_status") != "AWAITING_CONFIRMATION":
+            return None
+        pending = state.get("pending_tool_call") or {}
+        tool_name = pending.get("tool_name") or "a operação solicitada"
+        args = pending.get("arguments") or {}
+        order_id = args.get("order_id")
+        target = f" para o pedido {order_id}" if order_id else ""
+        labels = {
+            "solicitar_devolucao": "a solicitação de devolução",
+            "solicitar_troca": "a solicitação de troca",
+        }
+        action = labels.get(tool_name, tool_name.replace("_", " "))
+        return f"Você confirma {action}{target}? Responda 'sim' para executar ou 'não' para cancelar."
+
+    def _select_read_only_tools(self, available_tools: list[str], text: str) -> list[str]:
+        """Seleciona somente as consultas necessárias entre as tools permitidas.
+
+        `selection_keywords` vem de tools.yaml. Se nenhuma tool casar, usa a
+        primeira read-only para preservar compatibilidade sem executar todas.
+        """
+        if len(available_tools) <= 1:
+            return list(available_tools)
+        normalized = str(text or "").lower()
+        matches: list[str] = []
+        router = getattr(self, "tool_router", None)
+        registry = getattr(router, "registry", None)
+        for name in available_tools:
+            cfg = registry.get_tool(name) if registry else None
+            keywords = list(getattr(cfg, "selection_keywords", None) or [])
+            if keywords and any(str(k).lower() in normalized for k in keywords):
+                matches.append(name)
+        return matches or available_tools[:1]
+
+    def build_direct_mcp_answer(self, state: dict[str, Any], mcp_results: list[dict[str, Any]], *, agent_label: str) -> str | None:
+        """Resposta determinística para consultas estruturadas simples."""
+        ok = [r for r in mcp_results if r.get("ok") and isinstance(r.get("result"), dict)]
+        text = state.get("sanitized_input") or state.get("user_text") or ""
+        if (
+            len(ok) != 1
+            or state.get("transaction_status")
+            or self._transactional_action_match(str(text)) is not None
+        ):
+            return None
+        tool = ok[0].get("tool_name")
+        data = ok[0]["result"]
+        if tool == "consultar_pedido":
+            oid=data.get("order_id"); status=data.get("status"); total=data.get("valor_total")
+            lines=[f"[{agent_label}] Pedido {oid}: status {status}."]
+            if total is not None: lines.append(f"Valor total: R$ {float(total):.2f}.".replace('.', ','))
+            items=data.get("itens") or []
+            if items: lines.append("Itens: " + "; ".join(str(i.get("descricao") or i.get("nome") or i.get("sku")) for i in items) + ".")
+            return " ".join(lines)
+        if tool == "consultar_entrega":
+            return f"[{agent_label}] Entrega do pedido {data.get('order_id')}: transportadora {data.get('transportadora')}, rastreio {data.get('codigo_rastreio')}, previsão {data.get('previsao_entrega')}."
+        if tool == "consultar_plano":
+            return f"[{agent_label}] Seu plano é {data.get('plano')}, com {data.get('internet_gb')} GB e status {data.get('status')}."
+        if tool == "consultar_fatura":
+            return f"[{agent_label}] Fatura consultada: {data}."
+        return None
+
     async def execute_tools_for_intent(
         self,
         state: dict[str, Any],
@@ -724,36 +1094,206 @@ class AgentRuntimeMixin:
         aliases: dict[str, Iterable[str]] | None = None,
         emit_events: bool = True,
     ) -> list[dict[str, Any]]:
+        """Executa consultas e controla ações transacionais.
+
+        ``mcp_tools`` é uma allowlist. Tools read-only podem enriquecer o contexto;
+        uma tool transacional só é selecionada quando a mensagem expressa a ação.
+        Quando a política exige confirmação, a chamada é persistida no state e só
+        executada em um turno posterior confirmado.
+        """
         results: list[dict[str, Any]] = []
-        selected_tools = list(tools if tools is not None else (state.get("mcp_tools") or []))
-        for tool in selected_tools:
-            args = self.build_tool_arguments(state, tool_name=tool, intent=state.get("intent"), aliases=aliases)
-            allowed, reason = self._validate_tool_execution_policy(tool, args)
-            if not allowed:
-                result = {"ok": False, "tool_name": tool, "skipped": True, "reason": reason}
+        available_tools = list(tools if tools is not None else (state.get("mcp_tools") or []))
+        state["available_mcp_tools"] = available_tools
+        text = state.get("sanitized_input") or state.get("user_text") or ""
+
+        # Antes de confirmar, complete os parâmetros obrigatórios da ação.
+        if state.get("transaction_status") == "COLLECTING_PARAMETERS":
+            selected = dict(state.get("selected_tool_call") or {})
+            tool_name = selected.get("tool_name")
+            if tool_name:
+                previous_args = dict(selected.get("arguments") or {})
+                new_args = self.build_tool_arguments(
+                    state,
+                    tool_name=tool_name,
+                    intent=state.get("intent"),
+                    aliases=aliases,
+                    extra_args=self._extract_action_arguments(text),
+                )
+                arguments = {
+                    **previous_args,
+                    **{k: v for k, v in new_args.items() if v not in (None, "", [], {})},
+                }
+                policy = self._resolve_tool_execution_policy(tool_name, arguments)
+                missing = self._missing_required_arguments(policy, arguments)
+                if missing:
+                    self._set_collecting_parameters(
+                        state, tool_name=tool_name, arguments=arguments, policy=policy, missing=missing
+                    )
+                    return [{
+                        "ok": True,
+                        "executed": False,
+                        "tool_name": tool_name,
+                        "collecting_parameters": True,
+                        "transaction_status": "COLLECTING_PARAMETERS",
+                        "missing_parameters": missing,
+                        "metadata": policy,
+                    }]
+
+                selected = {"tool_name": tool_name, "arguments": arguments}
+                state["selected_tool_call"] = selected
+                state["missing_parameters"] = []
+                if policy.get("require_confirmation"):
+                    current_agent = state.get("route") or state.get("active_agent") or "support_agent"
+                    waiting_state = {
+                        "billing_agent": "WAITING_BILLING_CONFIRMATION",
+                        "product_agent": "WAITING_PRODUCT_CONFIRMATION",
+                        "orders_agent": "WAITING_ORDER_CONFIRMATION",
+                        "support_agent": "WAITING_SUPPORT_CONFIRMATION",
+                    }.get(current_agent, "WAITING_SUPPORT_CONFIRMATION")
+                    state.update({
+                        "pending_tool_call": selected,
+                        "transaction_status": "AWAITING_CONFIRMATION",
+                        "confirmation_required": True,
+                        "confirmation_received": False,
+                        "next_state": waiting_state,
+                        "tool_policy_result": {**policy, "tool_name": tool_name},
+                    })
+                    return [{
+                        "ok": True,
+                        "executed": False,
+                        "tool_name": tool_name,
+                        "awaiting_confirmation": True,
+                        "transaction_status": "AWAITING_CONFIRMATION",
+                        "metadata": policy,
+                    }]
+
+                arguments["confirmed"] = True
+                result = await self._call_mcp_tool(tool_name, arguments, state)
+                state.update({
+                    "transaction_status": "COMPLETED" if result.get("ok") else "FAILED",
+                    "confirmation_required": False,
+                    "confirmation_received": True,
+                    "pending_tool_call": {},
+                    "missing_parameters": [],
+                })
+                return [result]
+
+        pending = state.get("pending_tool_call") or {}
+        if pending:
+            decision = self._confirmation_decision(text)
+            if decision == "reject":
+                state.update({
+                    "transaction_status": "CANCELLED",
+                    "confirmation_received": False,
+                    "confirmation_required": False,
+                    "selected_tool_call": pending,
+                    "pending_tool_call": {},
+                    "tool_policy_result": {"action": "cancelled", "tool_name": pending.get("tool_name")},
+                })
+                return [{"ok": True, "tool_name": pending.get("tool_name"), "transaction_status": "CANCELLED", "cancelled": True}]
+            if decision == "confirm":
+                tool_name = pending.get("tool_name")
+                arguments = dict(pending.get("arguments") or {})
+                arguments["confirmed"] = True
+                state["confirmation_received"] = True
+                result = await self._call_mcp_tool(tool_name, arguments, state)
+                state.update({
+                    "transaction_status": "COMPLETED" if result.get("ok") else "FAILED",
+                    "confirmation_required": False,
+                    "selected_tool_call": pending,
+                    "pending_tool_call": {},
+                    "tool_policy_result": {"action": "executed_after_confirmation", "tool_name": tool_name},
+                })
                 results.append(result)
-                if emit_events:
-                    await self._emit_ic("IC.TOOL_SKIPPED_BY_POLICY", state, {"tool_name": tool, "reason": reason}, component="agent_runtime.tool_policy")
-                continue
+                return results
+            state["transaction_status"] = "AWAITING_CONFIRMATION"
+            state["confirmation_required"] = True
+            return [{"ok": False, "tool_name": pending.get("tool_name"), "awaiting_confirmation": True, "transaction_status": "AWAITING_CONFIRMATION"}]
+
+        read_only_tools = [
+            tool for tool in available_tools
+            if self._resolve_tool_execution_policy(tool).get("operation_type") != "transactional"
+        ]
+        read_only_tools = self._select_read_only_tools(read_only_tools, text)
+        state["selected_read_only_tools"] = read_only_tools
+        for tool in read_only_tools:
+            args = self.build_tool_arguments(state, tool_name=tool, intent=state.get("intent"), aliases=aliases)
             if emit_events:
-                await self._emit_ic("IC.MCP_TOOL_REQUESTED", state, {"tool_name": tool}, component="agent_runtime")
+                await self._emit_ic("IC.MCP_TOOL_REQUESTED", state, {"tool_name": tool, "operation_type": "read_only"}, component="agent_runtime")
             result = await self._call_mcp_tool(tool, args, state)
             results.append(result)
+
+        selected_action = self._select_transactional_tool(available_tools, text)
+        if not selected_action:
+            return results
+
+        action_args = self.build_tool_arguments(
+            state,
+            tool_name=selected_action,
+            intent=state.get("intent"),
+            aliases=aliases,
+            extra_args=self._extract_action_arguments(text),
+        )
+        policy = self._resolve_tool_execution_policy(selected_action, action_args)
+        selected = {"tool_name": selected_action, "arguments": action_args}
+        state["selected_tool_call"] = selected
+        state["tool_policy_result"] = {**policy, "tool_name": selected_action}
+
+        missing = self._missing_required_arguments(policy, action_args)
+        if missing:
+            self._set_collecting_parameters(
+                state,
+                tool_name=selected_action,
+                arguments=action_args,
+                policy=policy,
+                missing=missing,
+            )
             if emit_events:
                 await self._emit_ic(
-                    "IC.TOOL_CALLED",
+                    "IC.TRANSACTION_PARAMETERS_REQUIRED",
                     state,
-                    {
-                        "tool_name": tool,
-                        "ok": result.get("ok"),
-                        "server_name": result.get("server_name"),
-                        "error": result.get("error"),
-                        "cached": bool(result.get("cached")),
-                    },
-                    component="agent_runtime",
+                    {"tool_name": selected_action, "missing_parameters": missing, **policy},
+                    component="agent_runtime.tool_policy",
                 )
-                if not result.get("ok"):
-                    await self._emit_noc("NOC.MCP_TOOL_FAILED", state, {"tool_name": tool, "error": result.get("error")}, component="agent_runtime")
+            results.append({
+                "ok": True,
+                "executed": False,
+                "tool_name": selected_action,
+                "collecting_parameters": True,
+                "transaction_status": "COLLECTING_PARAMETERS",
+                "missing_parameters": missing,
+                "metadata": policy,
+            })
+            return results
+
+        if policy.get("require_confirmation"):
+            state.update({
+                "pending_tool_call": selected,
+                "transaction_status": "AWAITING_CONFIRMATION",
+                "confirmation_required": True,
+                "confirmation_received": False,
+            })
+            current_agent = state.get("route") or state.get("active_agent") or "support_agent"
+            state["next_state"] = {
+                "billing_agent": "WAITING_BILLING_CONFIRMATION",
+                "product_agent": "WAITING_PRODUCT_CONFIRMATION",
+                "orders_agent": "WAITING_ORDER_CONFIRMATION",
+                "support_agent": "WAITING_SUPPORT_CONFIRMATION",
+            }.get(current_agent, "WAITING_SUPPORT_CONFIRMATION")
+            if emit_events:
+                await self._emit_ic("IC.TRANSACTION_CONFIRMATION_REQUIRED", state, {"tool_name": selected_action, **policy}, component="agent_runtime.tool_policy")
+            results.append({"ok": False, "tool_name": selected_action, "awaiting_confirmation": True, "transaction_status": "AWAITING_CONFIRMATION", "metadata": policy})
+            return results
+
+        action_args["confirmed"] = True
+        result = await self._call_mcp_tool(selected_action, action_args, state)
+        state.update({
+            "transaction_status": "COMPLETED" if result.get("ok") else "FAILED",
+            "confirmation_required": False,
+            "confirmation_received": True,
+            "pending_tool_call": {},
+        })
+        results.append(result)
         return results
 
     async def _collect_mcp_context(self, state: dict[str, Any]) -> list[dict[str, Any]]:

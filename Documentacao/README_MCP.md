@@ -73,3 +73,7 @@ docker compose up --build
 ```
 
 No compose, o backend usa `config/mcp_servers.docker.yaml` para apontar para `telecom-mcp` e `retail-mcp`.
+
+## Operações read-only e transacionais
+
+Use `config/tool_policies.yaml` no backend para classificar somente as operações que precisam de tratamento adicional. A validação é aplicada no roteador central antes do MCP Gateway/Server. O arquivo é opcional e templates antigos continuam usando as políticas já presentes em `tools.yaml`. A configuração completa e o roteiro de migração estão em [README_TOOL_POLICIES.md](README_TOOL_POLICIES.md).

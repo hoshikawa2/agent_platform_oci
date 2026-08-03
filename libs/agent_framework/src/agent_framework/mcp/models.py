@@ -26,6 +26,7 @@ class MCPToolConfig(BaseModel):
     requires: list[str] = Field(default_factory=list)
     confirmation_required: bool = False
     execution_policy: dict[str, Any] = Field(default_factory=dict)
+    selection_keywords: list[str] = Field(default_factory=list)
 
     # Política declarativa de cache da tool, lida diretamente de config/tools.yaml.
     # Exemplo:

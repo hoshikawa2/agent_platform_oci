@@ -10795,4 +10795,290 @@ The implementation is architecturally correct when:
 [ ] the developer can test the route before testing the actual execution.
 ```
 
-With this design, adding a new agent does not require rewriting the frontend or copying logic between backends. The developer creates the specialized backend, registers it in the Agent Gateway, and lets the framework take care of the cross-cutting engines.
+---
+
+### 33. Tuning-Performance — Standardized Performance Extensions
+
+The `Tuning-Performance` folder provides an additional set of implementations, configurations, and examples designed to improve the performance, predictability, and efficiency of the Agent Framework.
+
+These capabilities are not enabled automatically by copying the folder. Adoption requires integrating the corresponding components, reviewing project configuration, and adapting business rules, MCP tools, prompts, conversational states, and execution policies.
+
+The purpose of `Tuning-Performance` is to provide a standardized approach to optimizations that would otherwise be implemented separately in each agent or project. It helps teams reduce unnecessary model calls, prevent incorrect tool execution, improve conversational continuity, and establish consistent behavior for read-only and transactional operations.
+
+#### 33.1. Semantic Route Stickiness
+
+Keeps the current agent active during follow-up messages, avoiding a full routing operation on every conversational turn.
+
+The continuity decision may classify the message as:
+
+* `CONTINUE`: keep the current agent and intent;
+* `ROUTE`: perform a new routing decision;
+* `HUMAN_HANDOFF`: transfer the conversation to a human agent;
+* `END_SESSION`: terminate the conversational session.
+
+Continuity can be preempted when the new message contains an explicit intent that requires a different agent, domain, or tool set. For example, a conversation that starts with an order inquiry can be redirected to support when the user requests a return.
+
+#### 33.2. Operational Shift Preemption
+
+Detects changes between read-only and transactional operations, even when they belong to the same business domain.
+
+Example:
+
+```text
+check order 123
+→ orders_agent
+→ consultar_pedido
+
+I want to return order 123
+→ support_agent
+→ solicitar_devolucao
+```
+
+This prevents route stickiness from keeping the conversation in a read-only intent after the user has initiated a transactional action.
+
+#### 33.3. Individual Read-Only Tool Selection
+
+Tools configured for an intent are treated as an allowlist instead of an automatic execution list.
+
+The runtime selects only the tool that matches the current request.
+
+Example:
+
+```text
+check order 123
+→ consultar_pedido
+```
+
+```text
+where is order 123?
+→ consultar_entrega
+```
+
+This prevents redundant MCP calls and reduces latency, load, and processing volume.
+
+#### 33.4. Hybrid Parameter Extraction
+
+Parameters can be extracted from the user message using deterministic processing with an LLM fallback.
+
+Supported strategies include:
+
+* `regex`: use only a regular expression;
+* `llm`: always use the model;
+* `hybrid`: attempt deterministic extraction first and call the LLM only when necessary.
+
+Example:
+
+```yaml
+extract:
+  order_id:
+    from: message
+    type: string
+    strategy: hybrid
+    pattern: '(?i)\b(?:pedido|order)\s*[:#-]?\s*([A-Z0-9-]+)\b'
+    group: 1
+```
+
+For a message such as `check order 123`, the identifier is extracted by regex without additional token consumption. The LLM remains available for ambiguous phrases or unsupported formats.
+
+#### 33.5. Safe MCP Parameter Precedence
+
+Parameters sent to tools follow a standardized precedence order:
+
+```text
+1. explicit tool-call argument
+2. value extracted from the message
+3. semantically compatible Business Context value
+4. default value
+```
+
+Explicit or extracted values are not overwritten by generic context fields.
+
+This prevents, for example, a `contract_key` from being incorrectly sent as an `order_id`.
+
+#### 33.6. Read-Only and Transactional Tool Policies
+
+The `tool_policies.yaml` file can classify each tool and define its operational requirements.
+
+Example:
+
+```yaml
+tool_policies:
+  solicitar_devolucao:
+    operation_type: transactional
+    require_confirmation: true
+
+  consultar_pedido:
+    operation_type: read_only
+    require_confirmation: false
+```
+
+Read-only tools can be executed directly. Transactional tools can require explicit user confirmation before the MCP call is performed.
+
+#### 33.7. Persistent Transaction Confirmation
+
+Operations that require confirmation are stored as pending tool calls.
+
+The expected flow is:
+
+```text
+user requests an operation
+→ parameters are prepared
+→ pending_tool_call is persisted
+→ transaction_status = AWAITING_CONFIRMATION
+→ user confirms
+→ MCP tool is executed
+```
+
+The confirmation resumes the exact pending operation while preserving its tool, parameters, and context.
+
+After completion or cancellation, the pending state must be cleared to prevent accidental re-execution.
+
+#### 33.8. Protection Against Out-of-Context Confirmations
+
+Messages such as `yes`, `confirm`, or `continue` should execute a tool only when a pending operation exists.
+
+When there is no `pending_tool_call`, the framework should inform the user that no operation is awaiting confirmation instead of reusing a previous transaction or creating a new action from conversation history alone.
+
+#### 33.9. Conditional RAG Suppression
+
+RAG can be skipped when MCP results already provide sufficient information to answer the request.
+
+Example:
+
+```text
+check order 123
+→ authoritative result returned by MCP
+→ RAG is not executed
+```
+
+RAG remains available for questions about policies, rules, documentation, deadlines, procedures, or information not returned by the tools.
+
+This separation reduces unnecessary vector searches and improves response time.
+
+#### 33.10. MCP Evidence for the Groundedness Judge
+
+MCP tool results are passed to the groundedness judge as factual evidence.
+
+This prevents responses based on real tool data from being incorrectly classified as hallucinations.
+
+The judge context may include:
+
+* user message;
+* final answer;
+* MCP results;
+* RAG context;
+* transactional state;
+* tool policy result.
+
+#### 33.11. Configurable Judge Execution
+
+Judge execution can be controlled through sampling.
+
+Example:
+
+```yaml
+sample_rate: 0.25
+always_run_for_transactional: true
+```
+
+In this configuration:
+
+* approximately 25% of regular interactions run judges;
+* transactional interactions always run judges.
+
+Transactional detection may consider:
+
+* `transaction_status`;
+* `tool_policy_result`;
+* `selected_tool_call`;
+* `pending_tool_call`;
+* MCP results from transactional tools.
+
+This reduces cost and latency while retaining evaluation for critical flows.
+
+#### 33.12. Direct Responses for Structured Queries
+
+Simple queries can generate deterministic responses directly from MCP results without an additional agent LLM call.
+
+Example:
+
+```text
+[OrdersAgent] Order 123: status DELIVERED.
+Total amount: $349.90.
+Items: AI Architecture Book; USB-C Cable.
+```
+
+This optimization is appropriate when:
+
+* the tool completed successfully;
+* the result is structured;
+* no additional reasoning is required;
+* there is no complex combination of sources;
+* the message is not requesting a transactional action.
+
+#### 33.13. Direct Responses for Completed Transactions
+
+Structured transactional results can also be formatted directly.
+
+Example:
+
+```text
+The return request for order 123 has been registered.
+
+Protocol: DEV-2026-001
+Status: OPEN
+```
+
+This avoids using an LLM only to reorganize information that was already returned by the tool.
+
+#### 33.14. Project-Specific Configuration
+
+These optimizations must be adapted to the expected behavior of each project.
+
+Typical configuration items include:
+
+* intent keywords and priorities;
+* tool allowlists and selection rules;
+* parameter extraction patterns;
+* fallback LLM profiles;
+* read-only and transactional policies;
+* confirmation messages;
+* RAG suppression criteria;
+* judge sampling;
+* direct-response templates;
+* transactional state persistence;
+* telemetry and events;
+* idempotency mechanisms in the MCP or business service.
+
+#### 33.15. Idempotency Considerations
+
+The Agent Framework controls the conversational experience, confirmation, and pending operation state. However, the definitive protection against duplicate operations should be implemented in the MCP service or in the downstream business service responsible for the transaction.
+
+Idempotency requirements should be defined per tool. They are especially relevant for operations such as:
+
+* returns;
+* exchanges;
+* payments;
+* cancellations;
+* protocol creation;
+* provisioning;
+* operations with financial or external side effects.
+
+`Tuning-Performance` may propagate identifiers and contextual information, but the atomic guarantee should remain in the layer that controls the transactional data.
+
+#### 33.16. Expected Benefits
+
+Adopting the `Tuning-Performance` capabilities can provide:
+
+* lower latency;
+* lower token consumption;
+* fewer LLM calls;
+* fewer redundant MCP calls;
+* reduced unnecessary RAG usage;
+* better continuity across conversational turns;
+* safer transactional operations;
+* improved traceability;
+* groundedness based on real evidence;
+* consistent behavior across agents and projects.
+
+The content of this folder should be treated as an additional framework extension. Its use requires implementation, configuration, functional testing, and business-rule validation before production deployment.

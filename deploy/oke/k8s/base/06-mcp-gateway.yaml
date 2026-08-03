@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-gateway
+  namespace: agent-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: mcp-gateway}
+  template:
+    metadata:
+      labels: {app: mcp-gateway}
+    spec:
+      containers:
+        - name: mcp-gateway
+          image: mcp-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8300
+          envFrom:
+            - secretRef: {name: agent-platform-secrets}
+          env:
+            - name: MCP_GATEWAY_CONFIG_PATH
+              value: /app/config/mcp_gateway.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /app/config/mcp_gateway.yaml
+              subPath: mcp_gateway.yaml
+            - name: config
+              mountPath: /app/config/mcp_servers.yaml
+              subPath: mcp_servers.yaml
+          readinessProbe:
+            httpGet: {path: /health, port: 8300}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8300}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: {cpu: "100m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "512Mi"}
+      volumes:
+        - name: config
+          configMap: {name: mcp-gateway-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-gateway
+  namespace: agent-platform
+  annotations:
+    service.beta.kubernetes.io/oci-load-balancer-shape: "flexible"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-min: "10"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-max: "100"
+spec:
+  type: LoadBalancer
+  selector: {app: mcp-gateway}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8300

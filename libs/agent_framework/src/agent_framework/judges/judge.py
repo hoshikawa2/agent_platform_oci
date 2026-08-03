@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -365,6 +366,8 @@ class JudgePipeline:
         self.config = _load_judges_config(self.config_path)
         self.llm = _ensure_judge_llm(llm, settings=settings) if self.enabled else llm
         self.judges = list(judges) if judges is not None else self._build_judges_from_config(self.llm)
+        self.sample_rate = max(0.0, min(1.0, float(self.config.get('sample_rate', 1.0) or 1.0)))
+        self.always_run_for_transactional = _truthy(self.config.get('always_run_for_transactional'), True)
 
     def _build_judges_from_config(self, llm: Any | None) -> list[Any]:
         if not self.enabled:
@@ -420,10 +423,70 @@ class JudgePipeline:
 
         return built
 
+    @staticmethod
+    def _is_transactional_context(ctx: dict[str, Any]) -> bool:
+        """Detect transactional turns from the finalized workflow state.
+
+        The detector intentionally accepts multiple independent signals because
+        confirmation turns may have already cleared ``pending_tool_call`` and
+        may expose the operation only through ``mcp_results`` or policy data.
+        """
+        status = str(ctx.get('transaction_status') or '').strip().upper()
+        if status in {
+            'AWAITING_CONFIRMATION', 'CONFIRMED', 'EXECUTING',
+            'COMPLETED', 'FAILED', 'CANCELLED',
+        }:
+            return True
+
+        operation_type = str(ctx.get('operation_type') or '').strip().lower()
+        if operation_type == 'transactional':
+            return True
+
+        policy = ctx.get('tool_policy_result') or {}
+        if isinstance(policy, dict) and str(policy.get('operation_type') or '').lower() == 'transactional':
+            return True
+
+        for key in ('selected_tool_call', 'pending_tool_call'):
+            call = ctx.get(key) or {}
+            if isinstance(call, dict):
+                metadata = call.get('metadata') or {}
+                if str(call.get('operation_type') or metadata.get('operation_type') or '').lower() == 'transactional':
+                    return True
+                tool_name = str(call.get('tool_name') or '')
+                if tool_name and tool_name in set(ctx.get('transactional_tools') or []):
+                    return True
+
+        for result in ctx.get('mcp_results') or []:
+            if not isinstance(result, dict):
+                continue
+            metadata = result.get('metadata') or {}
+            if str(result.get('operation_type') or metadata.get('operation_type') or '').lower() == 'transactional':
+                return True
+            if result.get('awaiting_confirmation') or result.get('transaction_status'):
+                return True
+            tool_name = str(result.get('tool_name') or '')
+            if tool_name and tool_name in set(ctx.get('transactional_tools') or []):
+                return True
+
+        return False
+
     async def evaluate_all(self, question, answer, context):
         if not self.enabled or not self.judges:
             return []
-        return [await j.evaluate(question, answer, context or {}) for j in self.judges]
+        ctx = context or {}
+        transactional = self._is_transactional_context(ctx)
+
+        # Transactional turns take precedence over sampling. Sampling is only
+        # evaluated for ordinary interactions.
+        if not (self.always_run_for_transactional and transactional):
+            if self.sample_rate <= 0.0:
+                return []
+            if self.sample_rate < 1.0:
+                digest = hashlib.sha256(f"{question}|{answer}".encode('utf-8')).hexdigest()
+                bucket = int(digest[:8], 16) / 0xFFFFFFFF
+                if bucket >= self.sample_rate:
+                    return []
+        return [await j.evaluate(question, answer, ctx) for j in self.judges]
 
 
 

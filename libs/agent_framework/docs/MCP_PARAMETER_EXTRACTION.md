@@ -173,3 +173,39 @@ O framework deve executar extração somente quando:
 ```
 
 Sem `extract` declarado, nada é extraído.
+
+## Precedência dos valores
+
+A partir desta correção, a precedência efetiva é:
+
+```text
+1. argumento explícito já presente na tool call;
+2. valor extraído da mensagem pelo bloco extract;
+3. valor proveniente do Business Context via map;
+4. defaults globais ou específicos da tool.
+```
+
+O Business Context nunca sobrescreve um argumento explícito ou extraído. Para
+identificadores que obrigatoriamente vêm da mensagem, como `order_id`, não
+configure `contract_key: order_id`.
+
+Exemplo recomendado:
+
+```yaml
+consultar_pedido:
+  map:
+    customer_key: customer_id
+    session_key: session_id
+  extract:
+    order_id:
+      from: message
+      type: string
+      strategy: llm
+      description: >
+        Extraia somente o identificador do pedido informado explicitamente pelo
+        usuário. Retorne null quando não houver identificador.
+```
+
+A extração usa a generation `llm.mcp_parameter_extraction` e o profile
+`mcp_parameter_extraction`. Identificadores devem preferencialmente usar
+`type: string` para preservar zeros à esquerda, hífens e prefixos.

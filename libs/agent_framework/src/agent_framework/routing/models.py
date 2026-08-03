@@ -37,7 +37,7 @@ class RouteDecision(BaseModel):
     intent: str
     confidence: float = 0.0
     reason: str = ""
-    method: Literal["state", "keyword", "llm", "fallback"] = "fallback"
+    method: Literal["state", "keyword", "llm", "continuity", "fallback"] = "fallback"
     next_state: str | None = None
     handoff: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)

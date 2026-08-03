@@ -8,6 +8,7 @@ from agent_framework.identity import MCPParameterMapper
 from .registry import MCPRegistry
 from .client import MCPHttpClient
 from .models import MCPToolResult
+from .tool_policy import ToolPolicyRegistry
 from agent_framework.gateways import MCPGatewayClient
 
 logger = logging.getLogger("agent_framework.mcp.tool_router")
@@ -29,6 +30,9 @@ class MCPToolRouter:
         self.registry = MCPRegistry(
             settings.MCP_SERVERS_CONFIG_PATH,
             settings.TOOLS_CONFIG_PATH,
+        )
+        self.tool_policies = ToolPolicyRegistry(
+            getattr(settings, "TOOL_POLICIES_PATH", None)
         )
         self.client = MCPHttpClient(timeout_seconds=settings.MCP_TOOL_TIMEOUT_SECONDS)
         self.gateway_enabled = bool(getattr(settings, "MCP_GATEWAY_ENABLED", False))
@@ -55,6 +59,59 @@ class MCPToolRouter:
             list(self.registry.tools.keys()),
             getattr(settings, "MCP_PARAMETER_MAPPING_PATH", None),
         )
+
+    def parameter_extract_rules(self, tool_name: str) -> dict[str, dict[str, Any]]:
+        """Expõe extract do mcp_parameter_mapping.yaml ao runtime."""
+        return self.parameter_mapper.extract_rules(tool_name)
+
+    def resolve_execution_policy(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Retorna a política efetiva sem validar confirmação ou parâmetros."""
+        legacy = self.registry.get_tool(tool_name)
+        explicit = self.tool_policies.get(tool_name)
+        legacy_type = getattr(legacy, "tool_type", None) if legacy else None
+        operation_type = "transactional" if legacy_type in {"action", "transactional"} else "read_only"
+        confirmation_required = bool(getattr(legacy, "confirmation_required", False)) if legacy else False
+        required = list(getattr(legacy, "requires", None) or []) if legacy else []
+        source = "tools.yaml"
+        if explicit is not None:
+            operation_type = explicit.operation_type
+            confirmation_required = explicit.require_confirmation
+            required.extend(explicit.requires)
+            source = "tool_policies.yaml"
+        return {
+            "operation_type": operation_type,
+            "require_confirmation": confirmation_required,
+            "requires": list(dict.fromkeys(required)),
+            "policy_source": source,
+        }
+
+    def validate_execution_policy(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> tuple[bool, str | None, dict[str, Any]]:
+        """Resolve política nova + campos legados e valida a execução.
+
+        O arquivo novo tem precedência apenas para os campos declarados por
+        ferramenta. Quando ele não existe, o comportamento anterior de
+        ``tools.yaml`` é preservado integralmente.
+        """
+        args = dict(arguments or {})
+        metadata = self.resolve_execution_policy(tool_name, args)
+        operation_type = metadata["operation_type"]
+        confirmation_required = bool(metadata["require_confirmation"])
+        required = list(metadata.get("requires") or [])
+        for field_name in dict.fromkeys(required):
+            if args.get(field_name) in (None, "", [], {}):
+                return False, f"Campo obrigatório ausente para execução da tool: {field_name}", metadata
+        confirmed = args.get("confirmed") is True or args.get("confirmation") is True
+        if confirmation_required and not confirmed:
+            return False, "Tool exige confirmação explícita antes da execução", metadata
+        return True, None, metadata
 
     def describe_tools(self, tool_names: list[str] | None = None) -> list[dict[str, Any]]:
         return self.registry.describe_tools(tool_names)
@@ -106,6 +163,16 @@ class MCPToolRouter:
         server = self.registry.get_server_for_tool(tool_name)
         if not server:
             return None, {}, MCPToolResult(tool_name=tool_name, server_name="unknown", ok=False, error="Tool/server not configured")
+
+        allowed, reason, policy = self.validate_execution_policy(tool_name, arguments)
+        if not allowed:
+            return None, {}, MCPToolResult(
+                tool_name=tool_name,
+                server_name=server.name,
+                ok=False,
+                error=reason,
+                metadata={"blocked_by_policy": True, **policy},
+            )
 
         mapped_arguments = self._mapped_arguments(
             tool_name,

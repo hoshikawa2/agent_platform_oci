@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from .config_loader import load_intents, load_router_defaults, load_state_policies
+from .continuity import SemanticRouteContinuity
 from .models import IntentDefinition, RouteDecision, RouterStatePolicy
 
 logger = logging.getLogger("agent_framework.routing")
@@ -33,6 +34,7 @@ class EnterpriseRouter:
         self.defaults = load_router_defaults(self.config_path)
         self.fallback_agent = self.defaults.get("fallback_agent", "billing_agent")
         self.enable_llm_router = bool(getattr(settings, "ENABLE_LLM_ROUTER", False))
+        self.continuity = SemanticRouteContinuity(settings, llm, telemetry)
         logger.info(
             "EnterpriseRouter carregado intents=%s state_policies=%s llm_router=%s fallback=%s",
             len(self.intents),
@@ -40,13 +42,51 @@ class EnterpriseRouter:
             self.enable_llm_router,
             self.fallback_agent,
         )
+        logger.info(
+            "Semantic route stickiness enabled=%s profile=%s threshold=%s",
+            self.continuity.enabled,
+            self.continuity.profile_name,
+            self.continuity.confidence_threshold,
+        )
 
     async def route(self, state: dict[str, Any]) -> RouteDecision:
         session = (state.get("context") or {}).get("session", {}) or {}
         current_state = state.get("next_state") or session.get("metadata", {}).get("workflow_state")
         text = state.get("sanitized_input") or state.get("user_text") or ""
 
-        decision = self._route_by_state(current_state)
+        # Estados de coleta/confirmação têm precedência absoluta. Durante esses
+        # estados, palavras como "pedido" são respostas de preenchimento de
+        # parâmetros e não uma nova intenção de tracking.
+        state_decision = self._route_by_state(current_state)
+        if state_decision:
+            await self._emit(state_decision, state)
+            return state_decision
+
+        # Mensagens que expressam de forma explícita uma intenção diferente da
+        # intent/agente ativos devem prevalecer sobre a route stickiness. Isso
+        # evita manter um fluxo read-only (por exemplo, tracking) quando o usuário
+        # muda para uma ação transacional (por exemplo, devolução).
+        keyword_candidate = self._route_by_keyword(text)
+        active_agent = str(state.get("active_agent") or "").strip()
+        previous = state.get("route_decision") or {}
+        previous_intent = str(previous.get("intent") or state.get("intent") or "").strip()
+        if (
+            active_agent
+            and keyword_candidate is not None
+            and keyword_candidate.agent != active_agent
+            and keyword_candidate.intent != previous_intent
+            and self._is_explicit_intent_shift(keyword_candidate)
+        ):
+            keyword_candidate.metadata = {
+                **(keyword_candidate.metadata or {}),
+                "route_stickiness_preempted": True,
+                "previous_agent": active_agent,
+                "previous_intent": previous_intent,
+            }
+            await self._emit(keyword_candidate, state)
+            return keyword_candidate
+
+        decision = await self.continuity.evaluate(state, intents=self.intents)
         if decision:
             await self._emit(decision, state)
             return decision
@@ -74,6 +114,17 @@ class EnterpriseRouter:
         )
         await self._emit(decision, state)
         return decision
+
+    @staticmethod
+    def _is_explicit_intent_shift(decision: RouteDecision) -> bool:
+        """Retorna True para matches explícitos que devem vencer a stickiness.
+
+        A regra é configurável porque usa a keyword já declarada no routing.yaml,
+        sem listas linguísticas fixas no código. Keywords com quatro ou mais
+        caracteres são tratadas como sinais explícitos de mudança de intenção.
+        """
+        matched = str((decision.metadata or {}).get("matched_keyword") or "").strip()
+        return len(matched) >= 4
 
     def _route_by_state(self, current_state: str | None) -> RouteDecision | None:
         if not current_state:

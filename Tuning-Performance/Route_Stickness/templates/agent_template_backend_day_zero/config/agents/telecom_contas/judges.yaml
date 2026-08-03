@@ -1,0 +1,20 @@
+enabled: true
+fail_closed: true
+profile: judge
+
+judges:
+  - name: response_quality
+    enabled: true
+    threshold: 0.7
+
+  - name: groundedness
+    enabled: true
+    threshold: 0.6
+
+  - name: sentiment
+    enabled: true
+    fail_on_negative: false
+
+  - name: tone
+    enabled: true
+    fail_closed: true

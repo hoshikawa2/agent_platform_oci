@@ -225,3 +225,7 @@ execution:
 | MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
 | Evaluator | Camada de avaliação online/offline, regressão e certificação. |
 | Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
+
+## Política mínima de operação
+
+Antes de encaminhar uma tool, o runtime deve aplicar a política opcional do backend em `config/tool_policies.yaml`. Os tipos canônicos são `read_only` e `transactional`; esta última pode exigir confirmação booleana explícita e campos obrigatórios. A ausência do arquivo não é erro e preserva os campos legados de `tools.yaml`. A política conversacional não substitui autenticação, autorização, idempotência nem atomicidade no MCP Server.

@@ -59,7 +59,7 @@ async def call_tool(call: ToolCall):
         result = {
             "order_id": args.get("order_id") or "PED-1001",
             "customer_id": args.get("customer_id") or "CLIENTE-001",
-            "status": "EM_TRANSPORTE",
+            "status": "ENTREGUE" if str(args.get("order_id") or "").upper() in {"123", "PED-ENTREGUE"} else "EM_TRANSPORTE",
             "valor_total": 349.90,
             "itens": [
                 {"sku": "LIV-001", "descricao": "Livro de Arquitetura de IA", "quantidade": 1, "valor": 199.90},

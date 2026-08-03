@@ -25,6 +25,18 @@ state_policies:
   - state: WAITING_SUPPORT_CONFIRMATION
     agent: support_agent
     description: Mantém confirmações no fluxo de suporte retail.
+  - state: COLLECTING_BILLING_PARAMETERS
+    agent: billing_agent
+    description: Mantém a coleta de parâmetros no fluxo de faturamento.
+  - state: COLLECTING_PRODUCT_PARAMETERS
+    agent: product_agent
+    description: Mantém a coleta de parâmetros no fluxo de produtos e serviços.
+  - state: COLLECTING_ORDER_PARAMETERS
+    agent: orders_agent
+    description: Mantém a coleta de parâmetros no fluxo de pedidos.
+  - state: COLLECTING_SUPPORT_PARAMETERS
+    agent: support_agent
+    description: Mantém a coleta de parâmetros no fluxo transacional de suporte retail.
 
 intents:
   - name: billing_invoice_explanation
@@ -60,7 +72,6 @@ intents:
       - listar_servicos
     keywords:
       - plano
-      - produto
       - serviço
       - pacote
       - internet
@@ -99,12 +110,15 @@ intents:
     domain: retail
     agent: support_agent
     description: Suporte, troca, devolução, garantia e problema com produto.
-    priority: 40
+    priority: 25
     mcp_tools:
       - consultar_pedido
       - solicitar_troca
       - solicitar_devolucao
     keywords:
+      - solicitar devolução
+      - devolver pedido
+      - solicitar troca
       - troca
       - devolução
       - devolver

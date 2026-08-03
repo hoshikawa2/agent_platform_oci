@@ -202,3 +202,6 @@ IC.TOOL_CALLED cached=true
 ```
 
 Quando houver `IC.MCP_CACHE_HIT`, não deve aparecer `IC.MCP_TOOL_EXECUTING` nem `IC.MCP_TOOL_EXECUTED`, porque o MCP Server não foi chamado.
+# Relação com políticas de execução
+
+Cache e política operacional são independentes. Classifique consultas e transações no arquivo opcional `config/tool_policies.yaml` do backend; mantenha `cache` no catálogo `tools.yaml`. Operações transacionais não devem ser cacheadas. Se o arquivo novo não existir, os campos legados de execução em `tools.yaml` continuam válidos.

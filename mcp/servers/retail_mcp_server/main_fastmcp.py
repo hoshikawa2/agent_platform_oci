@@ -13,7 +13,7 @@ def consultar_pedido(customer_id: str | None = None, order_id: str | None = None
     return {
         "customer_id": customer_id or "CUST-001",
         "order_id": order_id or "ORD-001",
-        "status": "EM_TRANSPORTE",
+        "status": "ENTREGUE" if str(order_id or "").upper() in {"123", "PED-ENTREGUE"} else "EM_TRANSPORTE",
         "valor_total": 399.90,
         "itens": [{"sku": "SKU-001", "nome": "Produto exemplo", "quantidade": 1}],
     }
@@ -31,23 +31,23 @@ def consultar_entrega(order_id: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
-def solicitar_troca(order_id: str | None = None, motivo: str | None = None) -> dict[str, Any]:
+def solicitar_troca(order_id: str | None = None, reason: str | None = None) -> dict[str, Any]:
     """Abre solicitação de troca para um pedido."""
     return {
         "order_id": order_id or "ORD-001",
         "protocolo": "TROCA-123456",
-        "motivo": motivo or "Não informado",
+        "reason": reason or "Não informado",
         "status": "ABERTA",
     }
 
 
 @mcp.tool()
-def solicitar_devolucao(order_id: str | None = None, motivo: str | None = None) -> dict[str, Any]:
+def solicitar_devolucao(order_id: str | None = None, reason: str | None = None) -> dict[str, Any]:
     """Abre solicitação de devolução para um pedido."""
     return {
         "order_id": order_id or "ORD-001",
         "protocolo": "DEV-123456",
-        "motivo": motivo or "Não informado",
+        "reason": reason or "Não informado",
         "status": "ABERTA",
     }
 

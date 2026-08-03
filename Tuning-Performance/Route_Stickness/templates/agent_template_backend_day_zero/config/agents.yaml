@@ -1,0 +1,38 @@
+# ============================================================================
+# DAY ZERO
+# Este arquivo foi copiado do agent_template_backend original.
+# Ajuste os exemplos abaixo para o domínio do seu novo agente.
+# ============================================================================
+default_agent_id: telecom_contas
+agents:
+  - agent_id: telecom_contas
+    name: Agente Telecom Contas
+    description: Template de atendimento para faturas, produtos e suporte de telecom.
+    prompt_policy_path: ./config/agents/telecom_contas/prompt_policy.yaml
+    routing_config_path: ./config/routing.yaml
+    guardrails_config_path: ./config/agents/telecom_contas/guardrails.yaml
+    judges_config_path: ./config/agents/telecom_contas/judges.yaml
+    mcp_servers_config_path: ./config/mcp_servers.yaml
+    tools_config_path: ./config/tools.yaml
+    metadata:
+      domain: telecom
+      system_prefix: |
+        Você está executando o agent_template telecom_contas.
+        Use somente políticas, memória, checkpoints, guardrails e judges deste agent_id.
+        Não misture histórico ou decisões de outros agentes.
+
+  - agent_id: retail_orders
+    name: Agente Retail Pedidos
+    description: Template de varejo para pedidos, produtos, troca/devolução e garantia.
+    prompt_policy_path: ./config/agents/retail_orders/prompt_policy.yaml
+    routing_config_path: ./config/routing.yaml
+    guardrails_config_path: ./config/agents/retail_orders/guardrails.yaml
+    judges_config_path: ./config/agents/retail_orders/judges.yaml
+    mcp_servers_config_path: ./config/mcp_servers.yaml
+    tools_config_path: ./config/tools.yaml
+    metadata:
+      domain: retail
+      system_prefix: |
+        Você está executando o agent_template retail_orders.
+        Use somente políticas, memória, checkpoints, guardrails e judges deste agent_id.
+        Não misture histórico ou decisões de outros agentes.

@@ -68,7 +68,7 @@ tools:
     enabled: true
     tool_type: action
     requires: [order_id, reason]
-    confirmation_required: false
+    confirmation_required: true
     cache:
       enabled: false
     args_schema:
@@ -81,7 +81,7 @@ tools:
     enabled: true
     tool_type: action
     requires: [order_id, reason]
-    confirmation_required: false
+    confirmation_required: true
     cache:
       enabled: false
     args_schema:

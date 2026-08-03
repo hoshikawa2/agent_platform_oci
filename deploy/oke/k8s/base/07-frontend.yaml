@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-frontend
+  namespace: agent-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: agent-frontend}
+  template:
+    metadata:
+      labels: {app: agent-frontend}
+    spec:
+      containers:
+        - name: agent-frontend
+          image: agent-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /health, port: 8080}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8080}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: "50m", memory: "64Mi"}
+            limits: {cpu: "250m", memory: "256Mi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-frontend
+  namespace: agent-platform
+  annotations:
+    service.beta.kubernetes.io/oci-load-balancer-shape: "flexible"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-min: "10"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-max: "100"
+spec:
+  type: LoadBalancer
+  selector: {app: agent-frontend}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

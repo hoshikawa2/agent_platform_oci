@@ -1,0 +1,53 @@
+# Roteamento enterprise configurável.
+# Este arquivo permite adicionar intents/agentes sem alterar o core do framework.
+router:
+  fallback_agent: billing_agent
+  confidence_threshold: 0.65
+  allow_handoff: true
+
+state_policies:
+  - state: WAITING_BILLING_CONFIRMATION
+    agent: billing_agent
+    description: Mantém mensagens curtas como "sim" ou "não" no fluxo de fatura.
+  - state: WAITING_PRODUCT_CONFIRMATION
+    agent: product_agent
+    description: Mantém confirmações no fluxo de produtos/serviços.
+
+intents:
+  - name: billing_invoice_explanation
+    agent: billing_agent
+    description: Dúvidas sobre fatura, cobrança, vencimento, segunda via, contestação e valores.
+    priority: 10
+    keywords:
+      - fatura
+      - conta
+      - cobrança
+      - boleto
+      - vencimento
+      - segunda via
+      - contestar
+      - valor alto
+      - invoice
+    examples:
+      - Minha fatura veio alta.
+      - Quero entender uma cobrança.
+      - Preciso da segunda via da conta.
+
+  - name: product_services_information
+    agent: product_agent
+    description: Dúvidas sobre plano, pacote, produto, serviço, VAS, internet, roaming e benefícios.
+    priority: 20
+    keywords:
+      - plano
+      - produto
+      - serviço
+      - pacote
+      - internet
+      - roaming
+      - vas
+      - benefício
+      - assinatura
+    examples:
+      - Quais serviços estão ativos no meu plano?
+      - Quero saber sobre meu pacote de internet.
+      - Tenho roaming internacional?

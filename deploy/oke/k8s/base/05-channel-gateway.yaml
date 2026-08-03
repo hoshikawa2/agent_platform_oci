@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: channel-gateway
+  namespace: agent-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: channel-gateway}
+  template:
+    metadata:
+      labels: {app: channel-gateway}
+    spec:
+      containers:
+        - name: channel-gateway
+          image: channel-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7000
+          envFrom:
+            - configMapRef: {name: agent-platform-config}
+          readinessProbe:
+            httpGet: {path: /health, port: 7000}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 7000}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: {cpu: "100m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "512Mi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: channel-gateway
+  namespace: agent-platform
+  annotations:
+    service.beta.kubernetes.io/oci-load-balancer-shape: "flexible"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-min: "10"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-max: "100"
+spec:
+  type: LoadBalancer
+  selector: {app: channel-gateway}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 7000

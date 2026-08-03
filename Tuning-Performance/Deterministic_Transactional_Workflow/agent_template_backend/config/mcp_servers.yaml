@@ -1,0 +1,30 @@
+# MCP servers registry.
+# transport=http keeps the legacy framework mock contract:
+#   GET  <endpoint>/tools/list
+#   POST <endpoint>/tools/call
+# transport=fastmcp uses official MCP Streamable HTTP, typically endpoint http://host:port/mcp
+# transport=sse uses official MCP SSE, typically endpoint http://host:port/sse
+servers:
+  #  telecom:
+  #    enabled: true
+  #    transport: fastmcp
+  #    endpoint: http://localhost:8001/mcp
+  #    description: Telecom FastMCP server using official MCP protocol
+  #
+  #  retail:
+  #    enabled: true
+  #    transport: fastmcp
+  #    endpoint: http://localhost:8002/mcp
+  #    description: Retail FastMCP server using official MCP protocol
+
+  telecom:
+    enabled: true
+    transport: http
+    endpoint: http://localhost:8100/mcp
+    description: Telecom legacy HTTP mock MCP server
+
+  retail:
+    enabled: true
+    transport: http
+    endpoint: http://localhost:8200/mcp
+    description: Retail legacy HTTP mock MCP server

@@ -82,11 +82,13 @@ class MCPToolRouter:
             confirmation_required = explicit.require_confirmation
             required.extend(explicit.requires)
             source = "tool_policies.yaml"
+        execution = explicit.execution.model_dump() if explicit is not None else {"mode": "direct_tool", "workflow": None, "version": "active"}
         return {
             "operation_type": operation_type,
             "require_confirmation": confirmation_required,
             "requires": list(dict.fromkeys(required)),
             "policy_source": source,
+            "execution": execution,
         }
 
     def validate_execution_policy(

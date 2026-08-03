@@ -7,12 +7,19 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class WorkflowExecutionPolicy(BaseModel):
+    mode: Literal["direct_tool", "workflow", "agent"] = "direct_tool"
+    workflow: str | None = None
+    version: int | Literal["active"] = "active"
+
+
 class ToolPolicy(BaseModel):
-    """Política conversacional mínima aplicada antes da chamada MCP."""
+    """Política de execução aplicada antes da chamada MCP ou workflow."""
 
     operation_type: Literal["read_only", "transactional"] = "read_only"
     require_confirmation: bool = False
     requires: list[str] = Field(default_factory=list)
+    execution: WorkflowExecutionPolicy = Field(default_factory=WorkflowExecutionPolicy)
 
 
 class ToolPolicyRegistry:
@@ -45,10 +52,14 @@ class ToolPolicyRegistry:
             "require_confirmation",
             raw.get("requires_confirmation", raw.get("confirmation_required", base.require_confirmation)),
         )
+        execution_raw = raw.get("execution") or {}
+        base_execution = base.execution.model_dump()
+        base_execution.update(execution_raw)
         return ToolPolicy(
             operation_type=operation_type,
             require_confirmation=bool(confirmation),
             requires=list(raw.get("requires", base.requires) or []),
+            execution=WorkflowExecutionPolicy.model_validate(base_execution),
         )
 
     def get(self, tool_name: str) -> ToolPolicy | None:

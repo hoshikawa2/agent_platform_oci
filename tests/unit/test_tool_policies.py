@@ -82,3 +82,17 @@ def test_requires_confirmation_alias_is_supported(tmp_path):
 
     assert policy.operation_type == "transactional"
     assert policy.require_confirmation is True
+
+
+def test_workflow_execution_policy_is_exposed(tmp_path):
+    path = tmp_path / "tool_policies.yaml"
+    path.write_text(
+        """defaults:\n  operation_type: read_only\ntool_policies:\n  refund:\n    operation_type: transactional\n    require_confirmation: true\n    execution:\n      mode: workflow\n      workflow: refund_order\n      version: 2\n""",
+        encoding="utf-8",
+    )
+    registry = ToolPolicyRegistry(str(path))
+    policy = registry.get("refund")
+    assert policy is not None
+    assert policy.execution.mode == "workflow"
+    assert policy.execution.workflow == "refund_order"
+    assert policy.execution.version == 2

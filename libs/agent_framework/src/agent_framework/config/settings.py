@@ -192,6 +192,8 @@ class Settings(BaseSettings):
     TOOLS_CONFIG_PATH: str = './config/tools.yaml'
     # Opcional. Se ausente, permanecem válidas as políticas legadas de tools.yaml.
     TOOL_POLICIES_PATH: str | None = './config/tool_policies.yaml'
+    ENABLE_TRANSACTIONAL_WORKFLOWS: bool = False
+    WORKFLOWS_PATH: str = './workflows'
     IDENTITY_CONFIG_PATH: str = './config/identity.yaml'
     MCP_PARAMETER_MAPPING_PATH: str = './config/mcp_parameter_mapping.yaml'
     MCP_TOOL_TIMEOUT_SECONDS: int = 30

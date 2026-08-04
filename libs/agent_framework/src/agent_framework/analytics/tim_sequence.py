@@ -106,17 +106,19 @@ def build_sequence_key(
     session_id: str | None,
     transaction_id: str | None = None,
 ) -> str:
-    """Build the counter key, preferring transaction isolation.
+    """Build the counter key, preferring transaction-only isolation.
 
     ``session_id`` remains as a compatibility fallback for older producers that
     do not yet send ``transactionId``. New events must use one counter per
     transaction so concurrent requests in the same session do not share a
-    sequence.
+    sequence. The agent is deliberately omitted from transaction-scoped keys:
+    one transaction can emit GRL, AGA, IC and NOC events through different
+    framework components/agents, and all of them must share the same counter.
     """
-    agent = _safe_part(agent_id or os.getenv("AGENT_NAME"), "agent")
     if transaction_id:
         transaction = _safe_part(transaction_id, "unknown_transaction")
-        return f"{_key_prefix()}:{agent}:transaction:{transaction}"
+        return f"{_key_prefix()}:transaction:{transaction}"
+    agent = _safe_part(agent_id or os.getenv("AGENT_NAME"), "agent")
     session = _safe_part(session_id, "unknown_session")
     return f"{_key_prefix()}:{agent}:session:{session}"
 
@@ -265,10 +267,10 @@ async def next_sequence(
 ) -> int | None:
     """Return the next observer sequence isolated by transaction.
 
-    The preferred scope is ``agent_id + transaction_id``. ``session_id`` is
-    used only as a backward-compatible fallback when the producer does not send
-    a transaction identifier. Redis and MongoDB increments remain atomic across
-    Kubernetes replicas.
+    The preferred scope is ``transaction_id`` only. ``agent_id + session_id``
+    is used only as a backward-compatible fallback when the producer does not
+    send a transaction identifier. Redis and MongoDB increments remain atomic
+    across Kubernetes replicas.
     """
     if not sequence_enabled() or (not transaction_id and not session_id):
         return None

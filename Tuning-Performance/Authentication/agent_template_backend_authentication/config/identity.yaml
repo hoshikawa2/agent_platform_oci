@@ -1,0 +1,55 @@
+identity:
+  version: "2"
+  required:
+    - session_key
+  keys:
+    customer_key:
+      description: Cliente/assinante/consumidor canônico.
+      sources:
+        - business_context.customer_key
+        - customer_key
+        - msisdn
+        - customer_id
+        - user_id
+        - ani
+        - from
+    contract_key:
+      description: Contrato, conta, fatura, pedido ou asset principal.
+      sources:
+        - business_context.contract_key
+        - contract_key
+        - invoice_id
+        - current_invoice_number
+        - order_id
+        - pedido_id
+        - asset_id
+    interaction_key:
+      description: Chave externa da interação/call/chat vinda do canal.
+      sources:
+        - business_context.interaction_key
+        - interaction_key
+        - ura_call_id
+        - call_id
+        - message_id
+    account_key:
+      description: Conta de cobrança/conta comercial.
+      sources:
+        - business_context.account_key
+        - account_key
+        - account_id
+        - billing_account_id
+    resource_key:
+      description: Recurso/linha/produto/asset específico.
+      sources:
+        - business_context.resource_key
+        - resource_key
+        - asset_id
+        - product_id
+        - sku
+    session_key:
+      description: Sessão técnica estável já escopada por tenant e agente.
+      sources:
+        - business_context.session_key
+        - session_key
+        - conversation_key
+        - session_id

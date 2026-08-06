@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import yaml
 from fastapi import FastAPI, Header, HTTPException
+from agent_framework.security import install_authentication
 from pydantic import BaseModel, Field
 
 
@@ -64,6 +65,7 @@ discovered_tools: dict[str, dict[str, Any]] = {}
 discovery_state: dict[str, Any] = {"last_sync": None, "errors": [], "tools": []}
 cache: dict[str, tuple[float, Any]] = {}
 app = FastAPI(title="Agent Platform OCI - MCP Gateway", version="1.1.0")
+install_authentication(app, prefix="MCP_GATEWAY_AUTH")
 
 
 def audit(name: str, payload: dict[str, Any]) -> None:

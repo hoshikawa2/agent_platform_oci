@@ -1,0 +1,39 @@
+# Nunca coloque secrets diretamente neste arquivo. Use sempre *_env.
+providers:
+  public:
+    mode: none
+
+  deny:
+    mode: deny
+
+  tia_basic:
+    mode: basic
+    client_id_env: TIA_AGENT_CLIENT_ID
+    secret_hash_env: TIA_AGENT_SECRET_HASH
+    realm: agent-contas
+
+  platform_jwt:
+    mode: jwt
+    key_env: PLATFORM_JWT_PUBLIC_KEY
+    algorithms: [RS256]
+    audience: agent-platform
+    issuer: https://identity.example.com/
+
+policies:
+  - name: health-public
+    provider: public
+    paths: [/health, /ready, /live]
+
+  - name: tia-agent-api
+    provider: tia_basic
+    paths: [/gateway/message, /gateway/message/sse, /gateway/events/*]
+    methods: [GET, POST]
+
+  - name: admin-api
+    provider: platform_jwt
+    paths: [/debug/*, /admin/*]
+    required_roles: [platform-admin]
+    required_scopes: [agent.admin]
+
+# Quando nenhuma política casar, rejeita. O default omitido também é deny.
+default_provider: deny

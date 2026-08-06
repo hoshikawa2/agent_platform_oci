@@ -18,6 +18,7 @@ from agent_framework.global_supervisor import (
 )
 from agent_framework.llm.providers import create_llm
 from agent_framework.observability.observer import AgentObserver
+from agent_framework.security import install_authentication
 
 from app.settings import settings
 
@@ -25,6 +26,7 @@ logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger("agent_gateway")
 
 app = FastAPI(title="Agent Gateway - Global Supervisor")
+install_authentication(app, prefix="AGENT_GATEWAY_AUTH")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",")],

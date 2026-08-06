@@ -65,18 +65,18 @@ def _legacy_agent_name() -> str:
 
 
 def _mongo_collection() -> str:
-    """Return the MongoDB collection used for observer sequence counters.
+    """Return the shared MongoDB collection used by every event producer.
 
-    TIM legacy deployments used an agent-specific collection name, commonly
-    ``{agent_name}_event_counters``. Keep an explicit env override for BO
-    environments that already provisioned the collection, and fall back to the
-    legacy naming convention when no collection is configured.
+    The collection must not vary by agent. A transaction can emit GRL, AGA,
+    NOC and other events from different components, and all of them must
+    increment the same counter document. Deployments may override the name,
+    but the configured value must be identical in every producer/pod.
     """
     return (
         os.getenv("PUBSUB_SEQUENCE_MONGODB_COLLECTION")
         or os.getenv("MONGODB_EVENT_COUNTERS_COLLECTION")
         or os.getenv("EVENT_COUNTERS_COLLECTION")
-        or f"{_legacy_agent_name()}_event_counters"
+        or "observer_event_counters"
     )
 
 
@@ -89,7 +89,10 @@ def _ttl_seconds() -> int:
 
 
 def _fallback_enabled() -> bool:
-    return _env_bool("PUBSUB_SEQUENCE_MEMORY_FALLBACK", True)
+    # An in-memory fallback creates duplicate sequences when multiple pods or
+    # event producers handle the same transaction. Keep it opt-in only for
+    # local/single-process development.
+    return _env_bool("PUBSUB_SEQUENCE_MEMORY_FALLBACK", False)
 
 
 def _key_prefix() -> str:
@@ -106,18 +109,20 @@ def build_sequence_key(
     session_id: str | None,
     transaction_id: str | None = None,
 ) -> str:
-    """Build the counter key, preferring transaction-only isolation.
+    """Build one counter key for the whole transaction.
 
-    ``session_id`` remains as a compatibility fallback for older producers that
-    do not yet send ``transactionId``. New events must use one counter per
-    transaction so concurrent requests in the same session do not share a
-    sequence. The agent is deliberately omitted from transaction-scoped keys:
-    one transaction can emit GRL, AGA, IC and NOC events through different
-    framework components/agents, and all of them must share the same counter.
+    ``agent_id`` is intentionally ignored for transaction-scoped counters.
+    A single transaction may emit events from different agents/components
+    (for example GRL and AGA), and those events must share one monotonic
+    sequence. ``session_id`` is retained only as a compatibility fallback when
+    no transaction identifier is present.
     """
     if transaction_id:
         transaction = _safe_part(transaction_id, "unknown_transaction")
         return f"{_key_prefix()}:transaction:{transaction}"
+
+    # Legacy fallback. Including the agent here avoids changing old session-only
+    # behavior, but new integrations should always provide transactionId.
     agent = _safe_part(agent_id or os.getenv("AGENT_NAME"), "agent")
     session = _safe_part(session_id, "unknown_session")
     return f"{_key_prefix()}:{agent}:session:{session}"
@@ -267,10 +272,10 @@ async def next_sequence(
 ) -> int | None:
     """Return the next observer sequence isolated by transaction.
 
-    The preferred scope is ``transaction_id`` only. ``agent_id + session_id``
-    is used only as a backward-compatible fallback when the producer does not
-    send a transaction identifier. Redis and MongoDB increments remain atomic
-    across Kubernetes replicas.
+    The preferred scope is only ``transaction_id``. Agent/event family must
+    never participate in the key because one transaction can emit events from
+    several components. ``session_id`` is used only as a backward-compatible
+    fallback. Redis and MongoDB increments remain atomic across replicas.
     """
     if not sequence_enabled() or (not transaction_id and not session_id):
         return None

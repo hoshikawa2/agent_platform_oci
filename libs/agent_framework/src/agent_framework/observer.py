@@ -14,9 +14,10 @@ rails, bridges e comandos de negócio sem quebrar o turno do cliente.
 """
 
 import asyncio
+import atexit
 import logging
 import os
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import Any
 
 from agent_framework.analytics.factory import create_analytics_publisher
@@ -27,6 +28,74 @@ logger = logging.getLogger("agent_framework.observer")
 _GLOBAL_OBSERVER: AgentObserver | None = None
 _GLOBAL_CONFIG: dict[str, Any] = {}
 _LOCK = Lock()
+
+
+class _SyncEventLoopBridge:
+    """Own one reusable event loop for synchronous observer calls.
+
+    The legacy ``event()`` API is frequently invoked from worker threads that
+    do not own an asyncio loop. Creating a fresh loop with ``asyncio.run()``
+    for every such call makes the same global observer reachable from multiple
+    temporary loops. This bridge keeps those synchronous calls on one stable
+    loop and submits work through asyncio's thread-safe API.
+    """
+
+    def __init__(self) -> None:
+        self._start_lock = Lock()
+        self._ready = Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: Thread | None = None
+
+    def _thread_main(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+
+    def _ensure_started(self) -> asyncio.AbstractEventLoop:
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            return loop
+        with self._start_lock:
+            loop = self._loop
+            if loop is None or not loop.is_running():
+                self._ready.clear()
+                self._thread = Thread(
+                    target=self._thread_main,
+                    name="agent-framework-observer-loop",
+                    daemon=True,
+                )
+                self._thread.start()
+                self._ready.wait()
+        assert self._loop is not None
+        return self._loop
+
+    def run(self, coro: Any) -> Any:
+        loop = self._ensure_started()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+    def close(self) -> None:
+        loop = self._loop
+        thread = self._thread
+        if loop is None or not loop.is_running():
+            return
+        loop.call_soon_threadsafe(loop.stop)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+
+_SYNC_EVENT_LOOP = _SyncEventLoopBridge()
+atexit.register(_SYNC_EVENT_LOOP.close)
 
 
 def _truthy(value: Any, default: bool = False) -> bool:
@@ -202,7 +271,12 @@ def event(
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(aevent(name, data=data, metadata=metadata, event_test=event_test))
+        # Do not create a temporary event loop in every worker thread. Route
+        # synchronous compatibility calls to one stable observer loop using
+        # asyncio's thread-safe submission primitive.
+        return _SYNC_EVENT_LOOP.run(
+            aevent(name, data=data, metadata=metadata, event_test=event_test)
+        )
 
     task = loop.create_task(aevent(name, data=data, metadata=metadata, event_test=event_test))
     task.add_done_callback(_log_task_exception)

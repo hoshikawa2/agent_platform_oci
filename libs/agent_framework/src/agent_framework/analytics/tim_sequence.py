@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -12,7 +13,7 @@ logger = logging.getLogger("agent_framework.analytics.tim_sequence")
 # In-process fallback. This is not cross-process/global, but keeps telemetry alive
 # when the configured shared sequence backend is unavailable, matching the
 # framework principle that observability must not break business execution.
-_memory_lock = asyncio.Lock()
+_memory_lock = threading.Lock()
 _memory_counters: dict[str, int] = defaultdict(int)
 
 SequenceProvider = Literal["auto", "redis", "mongodb", "mongo", "memory", "none"]
@@ -152,7 +153,7 @@ async def _next_sequence_redis(key: str, ttl_seconds: int) -> int | None:
 
 
 _mongo_index_checked = False
-_mongo_index_lock = asyncio.Lock()
+_mongo_index_lock = threading.Lock()
 
 
 def _next_sequence_mongodb_sync(
@@ -204,35 +205,41 @@ def _next_sequence_mongodb_sync(
         client.close()
 
 
-async def _ensure_mongo_ttl_index_once(ttl_seconds: int) -> None:
-    """Best-effort TTL index creation for Mongo sequence docs.
+def _ensure_mongo_ttl_index_once_sync(ttl_seconds: int) -> None:
+    """Best-effort TTL index initialization, safe across threads/event loops.
 
-    The sequence still works without this index. If the application user lacks
-    index privileges, we only log and continue.
+    ``asyncio.Lock`` must not be shared by independent event loops. Observer
+    compatibility calls may originate in worker threads, so this one-time
+    process-local guard deliberately uses ``threading.Lock``. The blocking
+    Mongo operation is executed by the async wrapper in a worker thread.
     """
     global _mongo_index_checked
     if _mongo_index_checked or ttl_seconds <= 0 or not _mongo_uri():
         return
 
-    async with _mongo_index_lock:
+    with _mongo_index_lock:
         if _mongo_index_checked:
             return
         try:
             from pymongo import MongoClient  # type: ignore
 
-            def _create() -> None:
-                client = MongoClient(_mongo_uri())
-                try:
-                    collection = client[_mongo_database()][_mongo_collection()]
-                    collection.create_index("expiresAt", expireAfterSeconds=0, background=True)
-                finally:
-                    client.close()
-
-            await asyncio.to_thread(_create)
+            client = MongoClient(_mongo_uri())
+            try:
+                collection = client[_mongo_database()][_mongo_collection()]
+                collection.create_index("expiresAt", expireAfterSeconds=0, background=True)
+            finally:
+                client.close()
         except Exception:
             logger.warning("tim_sequence.mongodb_ttl_index_failed", exc_info=True)
         finally:
+            # The index is an observability housekeeping concern, not a
+            # prerequisite for sequence generation. Do not retry on every
+            # event if the application user lacks index privileges.
             _mongo_index_checked = True
+
+
+async def _ensure_mongo_ttl_index_once(ttl_seconds: int) -> None:
+    await asyncio.to_thread(_ensure_mongo_ttl_index_once_sync, ttl_seconds)
 
 
 async def _next_sequence_mongodb(
@@ -260,7 +267,9 @@ async def _next_sequence_mongodb(
 
 
 async def _next_sequence_memory(key: str) -> int:
-    async with _memory_lock:
+    # Tiny in-process critical section; a thread lock is intentional because
+    # this fallback can be reached from more than one asyncio event loop.
+    with _memory_lock:
         _memory_counters[key] += 1
         return _memory_counters[key]
 

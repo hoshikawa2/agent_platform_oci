@@ -175,6 +175,20 @@ def _next_sequence_mongodb_sync(
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=ttl_seconds) if ttl_seconds > 0 else None
 
+        # update: dict[str, Any] = {
+        #     "$inc": {"sequence": 1},
+        #     "$set": {
+        #         "agentId": agent_id or os.getenv("AGENT_NAME") or "agent",
+        #         "sessionId": session_id,
+        #         "transactionId": transaction_id,
+        #         "sequenceScope": "transaction" if transaction_id else "session",
+        #         "updatedAt": now,
+        #     },
+        #     "$setOnInsert": {
+        #         "_id": key,
+        #         "createdAt": now,
+        #     },
+        # }
         update: dict[str, Any] = {
             "$inc": {"sequence": 1},
             "$set": {
@@ -185,7 +199,6 @@ def _next_sequence_mongodb_sync(
                 "updatedAt": now,
             },
             "$setOnInsert": {
-                "_id": key,
                 "createdAt": now,
             },
         }

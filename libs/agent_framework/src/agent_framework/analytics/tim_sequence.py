@@ -335,7 +335,12 @@ async def next_sequence(
 
 
 async def ensure_sequence(payload: dict[str, Any]) -> dict[str, Any]:
-    """Inject sequence if missing, preserving explicit values from metadata/body."""
+    """Inject sequence if missing, preserving explicit values from metadata/body.
+
+    Used by the flat Pub/Sub schema, where sessionId/agentId sit at the root.
+    For the nested analytics envelope (OCI Streaming) use
+    :func:`ensure_sequence_envelope`.
+    """
     if not isinstance(payload, dict):
         return payload
     if payload.get("sequence") is not None:
@@ -351,3 +356,41 @@ async def ensure_sequence(payload: dict[str, Any]) -> dict[str, Any]:
     if seq is not None:
         payload["sequence"] = seq
     return payload
+
+
+async def ensure_sequence_envelope(event: dict[str, Any]) -> dict[str, Any]:
+    """Inject sequence into a ``build_analytics_event`` envelope.
+
+    The envelope shape is ``{eventType, source, eventDate, payload, metadata}``.
+    Unlike the flat Pub/Sub payload, sessionId/agentId are not at the root: they
+    live inside ``payload`` and/or ``metadata``. We read them from the merged
+    ``{**payload, **metadata}`` view, mirroring the flat mapper
+    (tim_payload_mapper.map_analytics_event_to_tim_flat_payload) and the legacy
+    observer (observer/api.py: metadata.sessionId -> sessionId).
+
+    The counter is written at the envelope root, as a sibling of ``eventType`` —
+    the faithful analog of the legacy flat payload where ``sequence`` sat next to
+    ``eventType``/``traceId``. The outer transport contract ``{type, payload}`` is
+    left untouched; only this inner field is added.
+    """
+    if not isinstance(event, dict):
+        return event
+    if event.get("sequence") is not None:
+        return event
+    body = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    data = {**body, **metadata}
+    session_id = data.get("sessionId") or data.get("session_id")
+    # Os adapters do BO emitem snake_case; o contrato TIM usa transactionId e
+    # payloads antigos trazem transactionID. Sem as tres grafias o contador cai
+    # em escopo de sessao e perde o isolamento por transacao.
+    transaction_id = (
+        data.get("transactionId")
+        or data.get("transaction_id")
+        or data.get("transactionID")
+    )
+    agent_id = data.get("agentId") or data.get("agent_id") or os.getenv("AGENT_NAME")
+    seq = await next_sequence(agent_id, session_id, transaction_id)
+    if seq is not None:
+        event["sequence"] = seq
+    return event

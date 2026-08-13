@@ -69,6 +69,16 @@ def create_analytics_publisher(settings: Any | None = None) -> AnalyticsPublishe
             logger.exception("analytics.provider_init_failed provider=%s", provider)
 
     if not publishers:
+        # Sem este log, "analytics ligado mas todos os providers falharam" fica
+        # indistinguivel de "analytics desligado": o publisher no-op descarta
+        # IC/NOC/GRL em silencio ate o processo ser reiniciado.
+        logger.error(
+            "analytics.no_publisher_available providers=%s enable_analytics=%s "
+            "enable_langfuse=%s; telemetria sera descartada ate o proximo restart",
+            ",".join(providers),
+            analytics_enabled,
+            langfuse_enabled,
+        )
         return NoopAnalyticsPublisher()
     if len(publishers) == 1:
         return publishers[0]

@@ -453,6 +453,7 @@ class OCISDKProvider(LLMProvider):
             compartment_id: str,
             temperature: float,
             max_tokens: int,
+            reasoning_effort: str | None = None,
     ):
         from oci.generative_ai_inference import models
 
@@ -482,6 +483,11 @@ class OCISDKProvider(LLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+
+            # gpt-oss reasoning budget. Only set when the SDK exposes the field
+            # (older versions don't) so we never break the request building.
+            if reasoning_effort and hasattr(chat_request, "reasoning_effort"):
+                chat_request.reasoning_effort = str(reasoning_effort).upper()
 
             return models.ChatDetails(
                 compartment_id=compartment_id,
@@ -528,6 +534,12 @@ class OCISDKProvider(LLMProvider):
             if content:
                 return str(content)
 
+            # Choices present but no content (e.g. a reasoning model that burned
+            # its budget and stopped on finish_reason=length). Return "" — never
+            # the raw response object — so callers see empty content and fail
+            # cleanly instead of treating the serialized dump as the answer.
+            return ""
+
         return str(chat_response)
 
     async def ainvoke(self, messages, **kwargs):
@@ -540,6 +552,7 @@ class OCISDKProvider(LLMProvider):
 
         temperature = kwargs.get("temperature", getattr(self.settings, "LLM_TEMPERATURE", 0.2))
         max_tokens = kwargs.get("max_tokens", getattr(self.settings, "LLM_MAX_TOKENS", 2048))
+        reasoning_effort = kwargs.get("reasoning_effort") or getattr(self.settings, "LLM_REASONING_EFFORT", None)
 
         compartment_id = (
                 kwargs.get("compartment_id")
@@ -583,6 +596,7 @@ class OCISDKProvider(LLMProvider):
                 auth_mode=getattr(self.settings, "OCI_AUTH_MODE", "config_file"),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
         ):
             client = self._get_client(service_endpoint)
 
@@ -593,6 +607,7 @@ class OCISDKProvider(LLMProvider):
                 compartment_id=compartment_id,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
             )
 
             async with _maybe_generation(

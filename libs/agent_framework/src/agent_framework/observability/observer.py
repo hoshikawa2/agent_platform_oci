@@ -8,22 +8,6 @@ from agent_framework.observability.noc_otel import emit_noc_event
 
 logger = logging.getLogger("agent_framework.observability.observer")
 
-
-def _normalize_ic_code(code: str) -> str:
-    code = str(code).strip()
-    return code if code.startswith(("IC.", "AGA.", "NOC.", "GRL.")) else f"IC.{code}"
-
-
-def _normalize_noc_code(code: str) -> str:
-    code = str(code).strip()
-    return code if code.startswith("NOC.") else f"NOC.{code}"
-
-
-def _normalize_grl_code(code: str) -> str:
-    code = str(code).strip()
-    return code if code.startswith("GRL.") else f"GRL.{code}"
-
-
 def _apply_control_defaults(event_type: str, payload: dict[str, Any] | None, metadata: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
     body = dict(payload or {})
     meta = dict(metadata or {})
@@ -85,12 +69,12 @@ class AgentObserver:
 
     async def emit_ic(self, code: str, payload: dict[str, Any] | None = None, **metadata: Any) -> dict[str, Any]:
         meta = {**dict(metadata), "ic": True}
-        return await self.emit(_normalize_ic_code(code), payload, metadata=meta)
+        return await self.emit(code, payload, metadata=meta)
 
     async def emit_noc(self, code: str, payload: dict[str, Any] | None = None, **metadata: Any) -> dict[str, Any]:
         meta = {**dict(metadata), "noc": True}
-        return await self.emit(_normalize_noc_code(code), payload, metadata=meta)
+        return await self.emit(code, payload, metadata=meta)
 
     async def emit_grl(self, code: str, payload: dict[str, Any] | None = None, **metadata: Any) -> dict[str, Any]:
         meta = {**dict(metadata), "grl": True}
-        return await self.emit(_normalize_grl_code(code), payload, metadata=meta)
+        return await self.emit(code, payload, metadata=meta)

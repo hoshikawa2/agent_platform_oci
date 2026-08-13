@@ -374,9 +374,13 @@ class ResilientCheckpointRepository(LangGraphCheckpointRepository):
                 continue
 
         if first_integrity_error:
-            raise CheckpointRecoveryError(
-                f"Nenhum checkpoint válido encontrado para thread_id={thread_id}"
-            ) from first_integrity_error
+            # No valid checkpoint: return None so the run starts clean instead of crashing ainvoke.
+            logger.error(
+                "checkpoint.recovery.no_valid_checkpoint thread_id=%s starting_fresh error=%s",
+                thread_id,
+                first_integrity_error,
+            )
+            return None
 
         if invalid_count:
             logger.warning(

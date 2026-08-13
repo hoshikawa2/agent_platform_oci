@@ -32,21 +32,59 @@ from .llm_client import GuardrailLLMClient
 logger = logging.getLogger(__name__)
 
 
+# Blocklist deterministica de baixo calao / ofensa pessoal (PT-BR + EN).
+# Cobre flexoes (plural/genero) via \w* nos radicais. E o piso de deteccao do
+# TOXOUT quando o LLM de guardrail nao esta disponivel (fail-safe), garantindo
+# a regra "agente responde com palavra de baixo calao -> bloqueia + operador".
 _TOXIC_PATTERNS = (
-    r"\b(idiota|imbecil|burro|estúpido|inútil|maldito|miserável|incompetente)\b",
-    r"\b(idiots?|stupid|useless|moron)\b",
+    r"\b(idiot|imbecil|burr[oa]|est[uú]pid|in[uú]til|incompetent|maldit|miser[aá]vel|"
+    r"ot[aá]ri|babac|escrot|cuz[aã]o|vagabund|desgra[çc]ad|palha[çc]ad|cretin|canalh)\w*",
+    r"\b(merd|bost|porcari|porra|caralh|foda[\s\-]?se|fdp|"
+    r"filho?\s+da\s+put|put[ao]|lixo)\w*",
+    r"\b(idiots?|stupid|useless|moron|crap|shit|asshole|bastard)\b",
 )
 
 
 _PII_RULES: tuple[tuple[str, str], ...] = (
     # CPF formatado (xxx.xxx.xxx-xx).
     (r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", "[CPF_MASCARADO]"),
-    # Cartao com 16 digitos contiguos.
-    (r"\b\d{16}\b", "[CARTAO_MASCARADO]"),
 )
+# Cartao: 16 digitos contiguos, mas so mascarados quando parecem cartao de fato
+# (Luhn + BIN). Sem isso, qualquer numero de 16 digitos — como o ID Anatel — era
+# tratado como cartao e corrompido na resposta.
+_CARD_PATTERN = r"\b\d{16}\b"
+_CARD_MASK = "[CARTAO_MASCARADO]"
 # Senha em padrao "senha: xxx" / "senha=xxx" — usa grupo capturado como prefixo.
 _PII_PASSWORD_PATTERN = r"(?i)(senha\s*[:=]?\s*)\S+"
 _PII_PASSWORD_REPL = r"\1[SENHA_MASCARADA]"
+
+
+def _luhn_ok(digits: str) -> bool:
+    """Checksum de Luhn — cartoes reais sempre passam; IDs arbitrarios raramente."""
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = ord(ch) - 48
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _looks_like_card(digits: str) -> bool:
+    """True so se 16 digitos passam em Luhn E tem BIN de bandeira (3-6 ou
+    Mastercard serie 2: 2221-2720). Exclui IDs nao-cartao como o ID Anatel."""
+    if not _luhn_ok(digits):
+        return False
+    if digits[0] in ("3", "4", "5", "6"):
+        return True
+    return 2221 <= int(digits[:4]) <= 2720
+
+
+def _mask_card(match: "re.Match") -> str:
+    digits = match.group(0)
+    return _CARD_MASK if _looks_like_card(digits) else digits
 
 
 _TOXOUT_CANONICAL_MESSAGE = (
@@ -91,6 +129,7 @@ def _mask_pii_local(text: str) -> str:
     masked = text
     for pattern, replacement in _PII_RULES:
         masked = re.sub(pattern, replacement, masked)
+    masked = re.sub(_CARD_PATTERN, _mask_card, masked)
     masked = re.sub(_PII_PASSWORD_PATTERN, _PII_PASSWORD_REPL, masked)
     return masked
 

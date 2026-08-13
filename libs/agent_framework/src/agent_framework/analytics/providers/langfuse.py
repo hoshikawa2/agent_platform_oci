@@ -338,12 +338,16 @@ class LangfuseAnalyticsPublisher(AnalyticsPublisher):
         # do not fall back to standalone span/trace APIs if this fails.
         try:
             if hasattr(self.langfuse, "start_as_current_observation"):
-                kwargs = _with_trace_context({
+                kwargs = {
                     "name": str(effective_event_type),
                     "as_type": "span",
                     "input": envelope,
                     "metadata": langfuse_metadata,
-                }, langfuse_metadata)
+                }
+                # trace_context rebuilds the parent as a remote span (SDK cross-process
+                # propagation); skip it when a real span is already active locally.
+                if not _current_parent_observation_id():
+                    kwargs = _with_trace_context(kwargs, langfuse_metadata)
                 try:
                     cm = self.langfuse.start_as_current_observation(**kwargs)
                 except (TypeError, ValueError):

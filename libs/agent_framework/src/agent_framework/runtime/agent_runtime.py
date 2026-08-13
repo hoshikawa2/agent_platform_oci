@@ -1218,10 +1218,31 @@ class AgentRuntimeMixin:
         state["selected_read_only_tools"] = read_only_tools
         for tool in read_only_tools:
             args = self.build_tool_arguments(state, tool_name=tool, intent=state.get("intent"), aliases=aliases)
+            allowed, reason = self._validate_tool_execution_policy(tool, args)
+            if not allowed:
+                results.append({"ok": False, "tool_name": tool, "skipped": True, "reason": reason})
+                if emit_events:
+                    await self._emit_ic("IC.TOOL_SKIPPED_BY_POLICY", state, {"tool_name": tool, "reason": reason}, component="agent_runtime.tool_policy")
+                continue
             if emit_events:
                 await self._emit_ic("IC.MCP_TOOL_REQUESTED", state, {"tool_name": tool, "operation_type": "read_only"}, component="agent_runtime")
             result = await self._call_mcp_tool(tool, args, state)
             results.append(result)
+            if emit_events:
+                await self._emit_ic(
+                    "IC.TOOL_CALLED",
+                    state,
+                    {
+                        "tool_name": tool,
+                        "ok": result.get("ok"),
+                        "server_name": result.get("server_name"),
+                        "error": result.get("error"),
+                        "cached": bool(result.get("cached")),
+                    },
+                    component="agent_runtime",
+                )
+                if not result.get("ok"):
+                    await self._emit_noc("NOC.MCP_TOOL_FAILED", state, {"tool_name": tool, "error": result.get("error")}, component="agent_runtime")
 
         selected_action = self._select_transactional_tool(available_tools, text)
         if not selected_action:

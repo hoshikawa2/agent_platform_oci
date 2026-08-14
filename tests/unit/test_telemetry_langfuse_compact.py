@@ -227,3 +227,63 @@ async def test_legacy_io_fallback_updates_same_root_and_generation_observations(
     assert root_event.body.input == {"request": "cms"}
     assert root_event.body.output == {"answer": "ok"}
     assert len(telemetry.langfuse.observations) == 2
+
+@pytest.mark.asyncio
+async def test_langfuse_v4_module_level_propagation_sets_native_session_context():
+    """SDK v4 propagation must receive the business session id natively."""
+    clear_observability_context()
+    telemetry = telemetry_with_fake_langfuse()
+    calls = []
+
+    def v4_propagate_attributes(**kwargs):
+        calls.append(kwargs)
+        return FakePropagationContext(telemetry.langfuse, kwargs)
+
+    # Simulates ``from langfuse import propagate_attributes`` from SDK v4.
+    telemetry._langfuse_propagate_attributes = v4_propagate_attributes
+
+    async with telemetry.span(
+        "agent.gateway_message",
+        session_id="default:telecom_contas:session-123",
+        user_id="11999999999",
+        agent_id="telecom_contas",
+        tenant_id="default",
+        input={"message": "hello"},
+        tags=["agent:telecom_contas"],
+        _root_span=True,
+    ):
+        await telemetry.event("IC.TEST", {"ok": True}, kind="ic")
+
+    assert len(calls) == 1
+    assert calls[0]["session_id"] == "default:telecom_contas:session-123"
+    assert calls[0]["user_id"] == "11999999999"
+    assert calls[0]["trace_name"] == "agent.gateway_message"
+    assert calls[0]["metadata"]["agent_id"] == "telecom_contas"
+    assert calls[0]["metadata"]["tenant_id"] == "default"
+    assert calls[0]["tags"] == ["agent:telecom_contas"]
+
+    # Keep the legacy update as a compatibility fallback, but the v4 path above
+    # is now the authoritative way to materialize native sessionId.
+    root = telemetry.langfuse.observations[0]
+    assert any(
+        update.get("session_id") == "default:telecom_contas:session-123"
+        for update in root.trace_updates
+    )
+
+
+def test_trace_attribute_propagation_keeps_legacy_client_method_fallback():
+    telemetry = telemetry_with_fake_langfuse()
+    telemetry._langfuse_propagate_attributes = None
+
+    cm = telemetry._start_trace_attribute_propagation(
+        "agent.gateway_message",
+        {
+            "session_id": "legacy-session",
+            "user_id": "legacy-user",
+            "agent_id": "legacy-agent",
+        },
+    )
+    assert cm is not None
+    with cm:
+        pass
+    assert telemetry.langfuse.propagations[-1]["session_id"] == "legacy-session"

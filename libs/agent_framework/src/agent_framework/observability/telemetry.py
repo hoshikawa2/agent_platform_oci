@@ -318,6 +318,11 @@ class Telemetry:
     def __init__(self, settings):
         self.settings = settings
         self.langfuse = None
+        # Langfuse SDK v4 exposes propagate_attributes as a module-level
+        # context manager (from langfuse import propagate_attributes), not as
+        # a Langfuse client method. Keep the callable on the Telemetry instance
+        # so the framework can support v4 while preserving legacy fallbacks.
+        self._langfuse_propagate_attributes = None
         self.enabled = bool(getattr(settings, "ENABLE_LANGFUSE", False))
         self.event_bus = TelemetryEventBus()
         self.otel = OpenTelemetryProvider(settings)
@@ -342,7 +347,12 @@ class Telemetry:
             return
         try:
             from langfuse import Langfuse
+            try:
+                from langfuse import propagate_attributes as langfuse_propagate_attributes
+            except ImportError:
+                langfuse_propagate_attributes = None
             self.langfuse = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+            self._langfuse_propagate_attributes = langfuse_propagate_attributes
             logger.info("Langfuse habilitado host=%s", host)
         except Exception as exc:
             logger.exception("Falha ao inicializar Langfuse: %s", exc)
@@ -884,25 +894,47 @@ class Telemetry:
         except Exception: logger.debug("Trace input/output update não suportado", exc_info=True)
 
     def _start_trace_attribute_propagation(self, name: str, attrs: dict[str, Any]):
-        if not self.is_enabled() or not hasattr(self.langfuse, "propagate_attributes"):
+        """Propagate native Langfuse trace attributes, including session_id.
+
+        Langfuse Python SDK v4 moved ``propagate_attributes`` to a module-level
+        context manager. Calling ``observation.update_trace(session_id=...)`` is
+        not sufficient/recommended in v4 and, in practice, left ``sessionId``
+        unset on traces even though the framework metadata contained
+        ``session_id``.
+
+        Prefer the v4 module-level callable imported during initialization. A
+        client-method fallback is retained for older/custom SDK versions.
+        """
+        if not self.is_enabled():
             return None
+
         metadata = {
             k: attrs.get(k)
             for k in ("request_id", "trace_id", "agent_id", "tenant_id", "channel", "message_id", "ura_call_id", "workflow_id")
             if attrs.get(k)
         }
         tags = attrs.get("tags") if isinstance(attrs.get("tags"), list) else None
+        kwargs = {
+            "user_id": str(attrs["user_id"]) if attrs.get("user_id") is not None else None,
+            "session_id": str(attrs["session_id"]) if attrs.get("session_id") is not None else None,
+            "metadata": metadata or None,
+            "tags": [str(tag) for tag in tags] if tags else None,
+            "trace_name": name,
+        }
+
         try:
-            return self.langfuse.propagate_attributes(
-                user_id=str(attrs["user_id"]) if attrs.get("user_id") is not None else None,
-                session_id=str(attrs["session_id"]) if attrs.get("session_id") is not None else None,
-                metadata=metadata or None,
-                tags=[str(tag) for tag in tags] if tags else None,
-                trace_name=name,
-            )
+            # Langfuse SDK v4: ``from langfuse import propagate_attributes``.
+            if callable(self._langfuse_propagate_attributes):
+                return self._langfuse_propagate_attributes(**kwargs)
+
+            # Backward compatibility for SDK builds/wrappers that exposed the
+            # propagation context manager on the client instance.
+            legacy_propagate = getattr(self.langfuse, "propagate_attributes", None)
+            if callable(legacy_propagate):
+                return legacy_propagate(**kwargs)
         except Exception:
             logger.debug("Trace attribute propagation não suportada", exc_info=True)
-            return None
+        return None
 
 class _LegacyObservationContext:
     def __init__(self, observation): self.observation = observation

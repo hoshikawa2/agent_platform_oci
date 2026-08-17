@@ -1,0 +1,190 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-load-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-template-backend
+  namespace: agent-load-test
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 2
+  selector:
+    matchLabels:
+      app: agent-template-backend
+  template:
+    metadata:
+      labels:
+        app: agent-template-backend
+      annotations:
+        loadtest.runtime-checksum: "RUNTIME_CHECKSUM_PLACEHOLDER"
+    spec:
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: agent-template-backend
+      containers:
+        - name: agent-template-backend
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: agent-backend-runtime
+          env:
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-client
+                  key: LANGFUSE_PUBLIC_KEY
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-client
+                  key: LANGFUSE_SECRET_KEY
+            - name: LANGFUSE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-client
+                  key: LANGFUSE_HOST
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 45
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 5
+            failureThreshold: 36
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "768Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          volumeMounts:
+            - name: wallet
+              mountPath: /app/wallet
+              readOnly: true
+      volumes:
+        - name: wallet
+          secret:
+            secretName: agent-backend-wallet
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-template-backend
+  namespace: agent-load-test
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  selector:
+    app: agent-template-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-template-backend-lb
+  namespace: agent-load-test
+#spec:
+#  type: LoadBalancer
+#  sessionAffinity: None
+#  selector:
+#    app: agent-template-backend
+#  ports:
+#    - name: http
+#      port: 8000
+#      targetPort: 8000
+spec:
+  type: NodePort
+  selector:
+    app: agent-template-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: NODE_PORT_PLACEHOLDER
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-template-backend
+  namespace: agent-load-test
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agent-template-backend
+  minReplicas: 4
+  maxReplicas: 30
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+        - type: Pods
+          value: 8
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agent-template-backend
+  namespace: agent-load-test
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: agent-template-backend

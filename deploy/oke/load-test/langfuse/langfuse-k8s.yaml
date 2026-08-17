@@ -1,0 +1,633 @@
+# OKE load-test Langfuse manifest v11 - web HOSTNAME bind fix
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: langfuse
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-data
+  namespace: langfuse
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: langfuse
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-data
+  namespace: langfuse
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-logs
+  namespace: langfuse
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: langfuse
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-common
+  namespace: langfuse
+data:
+  NEXTAUTH_URL: http://localhost:3005
+  POSTGRES_USER: postgres
+  POSTGRES_DB: postgres
+  TELEMETRY_ENABLED: 'false'
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: 'true'
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse.langfuse.svc.cluster.local:9000
+  CLICKHOUSE_URL: http://clickhouse.langfuse.svc.cluster.local:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_CLUSTER_ENABLED: 'false'
+  REDIS_HOST: redis.langfuse.svc.cluster.local
+  REDIS_PORT: '6379'
+  REDIS_TLS_ENABLED: 'false'
+  LANGFUSE_USE_AZURE_BLOB: 'false'
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio.langfuse.svc.cluster.local:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: 'true'
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio.langfuse.svc.cluster.local:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: 'true'
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+  LANGFUSE_S3_BATCH_EXPORT_ENABLED: 'false'
+  LANGFUSE_S3_BATCH_EXPORT_BUCKET: langfuse
+  LANGFUSE_S3_BATCH_EXPORT_PREFIX: exports/
+  LANGFUSE_S3_BATCH_EXPORT_REGION: auto
+  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: http://minio.langfuse.svc.cluster.local:9000
+  LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: http://localhost:9090
+  LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: 'true'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+      - name: mongo
+        image: docker.io/library/mongo:8.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: mongo
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          value: mongopassword
+        - name: MONGO_INITDB_DATABASE
+          value: agent_memory
+        ports:
+        - name: mongo
+          containerPort: 27017
+        volumeMounts:
+        - name: data
+          mountPath: /data/db
+        startupProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - 'mongosh --quiet --host 127.0.0.1 --port 27017 -u mongo -p mongopassword
+              --authenticationDatabase admin --eval ''db.adminCommand({ ping: 1 }).ok''
+              | grep 1'
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - 'mongosh --quiet --host 127.0.0.1 --port 27017 -u mongo -p mongopassword
+              --authenticationDatabase admin --eval ''db.adminCommand({ ping: 1 }).ok''
+              | grep 1'
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: mongo-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: langfuse
+spec:
+  selector:
+    app: mongo
+  ports:
+  - name: mongo
+    port: 27017
+    targetPort: 27017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: docker.io/library/postgres:17
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_DB
+          value: postgres
+        - name: TZ
+          value: UTC
+        - name: PGTZ
+          value: UTC
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-runtime
+              key: LANGFUSE_POSTGRES_PASSWORD
+        ports:
+        - name: postgres
+          containerPort: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        startupProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - pg_isready -U postgres
+          periodSeconds: 3
+          failureThreshold: 40
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - pg_isready -U postgres
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: langfuse
+spec:
+  selector:
+    app: postgres
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: docker.io/library/redis:7
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        args:
+        - exec redis-server --requirepass "$LANGFUSE_REDIS_PASSWORD" --maxmemory-policy
+          noeviction
+        env:
+        - name: LANGFUSE_REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-runtime
+              key: LANGFUSE_REDIS_PASSWORD
+        ports:
+        - name: redis
+          containerPort: 6379
+        startupProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - redis-cli -a "$LANGFUSE_REDIS_PASSWORD" ping | grep PONG
+          periodSeconds: 3
+          failureThreshold: 30
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - redis-cli -a "$LANGFUSE_REDIS_PASSWORD" ping | grep PONG
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: langfuse
+spec:
+  selector:
+    app: redis
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      securityContext:
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+      - name: clickhouse
+        image: docker.io/clickhouse/clickhouse-server:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 101
+          runAsGroup: 101
+        env:
+        - name: CLICKHOUSE_DB
+          value: default
+        - name: CLICKHOUSE_USER
+          value: clickhouse
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-runtime
+              key: LANGFUSE_CLICKHOUSE_PASSWORD
+        ports:
+        - name: http
+          containerPort: 8123
+        - name: native
+          containerPort: 9000
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/clickhouse
+        - name: logs
+          mountPath: /var/log/clickhouse-server
+        startupProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          periodSeconds: 5
+          failureThreshold: 40
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: clickhouse-data
+      - name: logs
+        persistentVolumeClaim:
+          claimName: clickhouse-logs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: langfuse
+spec:
+  selector:
+    app: clickhouse
+  ports:
+  - name: http
+    port: 8123
+    targetPort: 8123
+  - name: native
+    port: 9000
+    targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: docker.io/minio/minio:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        args:
+        - mkdir -p /data/langfuse && exec minio server --address ":9000" --console-address
+          ":9001" /data
+        env:
+        - name: MINIO_ROOT_USER
+          value: minio
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-runtime
+              key: LANGFUSE_MINIO_PASSWORD
+        ports:
+        - name: api
+          containerPort: 9000
+        - name: console
+          containerPort: 9001
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        startupProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          periodSeconds: 3
+          failureThreshold: 40
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: minio-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: langfuse
+spec:
+  selector:
+    app: minio
+  ports:
+  - name: api
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-worker
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langfuse-worker
+  template:
+    metadata:
+      labels:
+        app: langfuse-worker
+    spec:
+      initContainers:
+      - name: wait-dependencies
+        image: docker.io/library/busybox:1.36
+        command:
+        - sh
+        - -c
+        args:
+        - until nc -z postgres.langfuse.svc.cluster.local 5432 && nc -z redis.langfuse.svc.cluster.local
+          6379 && nc -z clickhouse.langfuse.svc.cluster.local 8123 && nc -z minio.langfuse.svc.cluster.local
+          9000; do echo 'waiting for Langfuse dependencies via FQDN'; sleep 3; done
+      containers:
+      - name: worker
+        image: docker.io/langfuse/langfuse-worker:3
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: langfuse-common
+        - secretRef:
+            name: langfuse-runtime
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: '2'
+            memory: 4Gi
+        env:
+        - name: NODE_OPTIONS
+          value: --max-old-space-size=3072
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-web
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langfuse-web
+  template:
+    metadata:
+      labels:
+        app: langfuse-web
+    spec:
+      initContainers:
+      - name: wait-dependencies
+        image: docker.io/library/busybox:1.36
+        command:
+        - sh
+        - -c
+        args:
+        - until nc -z postgres.langfuse.svc.cluster.local 5432 && nc -z redis.langfuse.svc.cluster.local
+          6379 && nc -z clickhouse.langfuse.svc.cluster.local 8123 && nc -z minio.langfuse.svc.cluster.local
+          9000; do echo 'waiting for Langfuse dependencies via FQDN'; sleep 3; done
+      containers:
+      - name: web
+        image: docker.io/langfuse/langfuse:3
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 3000
+        envFrom:
+        - configMapRef:
+            name: langfuse-common
+        - secretRef:
+            name: langfuse-runtime
+        startupProbe:
+          httpGet:
+            path: /api/public/health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          httpGet:
+            path: /api/public/health
+            port: 3000
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: '2'
+            memory: 4Gi
+        env:
+        - name: HOSTNAME
+          value: 0.0.0.0
+        - name: NODE_OPTIONS
+          value: --max-old-space-size=3072
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-web
+  namespace: langfuse
+spec:
+  selector:
+    app: langfuse-web
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-ui
+  namespace: langfuse
+spec:
+  type: ClusterIP
+  selector:
+    app: langfuse-web
+  ports:
+  - name: http
+    port: 3005
+    targetPort: 3000

@@ -328,6 +328,47 @@ class ProactiveOfferRail(Guardrail):
         )
 
 
+def _sanitize_low_risk_phraseology(text: str, reason: str) -> str | None:
+    """Remove apenas fechamentos/redirecionamentos de baixo risco.
+
+    FRASEOLOGIA continua fail-closed para conteúdo material. Para B4 e ofertas
+    genéricas de continuação, porém, bloquear toda uma resposta grounded piora a
+    UX; nesses casos removemos somente a sentença ofensora.
+    """
+    normalized_reason = (reason or "").casefold()
+    low_risk = any(token in normalized_reason for token in (
+        "viola b4", "outro canal", "atendimento especializado",
+        "realizar alguma ação", "oferta de ação", "orienta o cliente",
+    ))
+    if not low_risk:
+        return None
+
+    forbidden = (
+        "entre em contato", "fale com um atendente", "procure uma loja",
+        "acesse o app", "acesse o site", "atendimento especializado",
+        "área de planos", "area de planos", "é só me avisar",
+        "e so me avisar", "realizar alguma ação", "realizar alguma acao",
+        "gerenciar esses serviços", "gerenciar esses servicos",
+    )
+    sentences = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+    kept: list[str] = []
+    removed = False
+    for sentence in sentences:
+        normalized = sentence.casefold()
+        proactive = (
+            ("se quiser" in normalized or "caso queira" in normalized or "se desejar" in normalized)
+            and any(token in normalized for token in ("realizar", "gerenciar", "cancelar", "contratar", "alterar", "ação", "acao"))
+        )
+        if proactive or any(token in normalized for token in forbidden):
+            removed = True
+            continue
+        kept.append(sentence.strip())
+    sanitized = " ".join(x for x in kept if x).strip()
+    if removed and sanitized:
+        return sanitized
+    return None
+
+
 class PhraseologyRail(Guardrail):
     """FRASEOLOGIA calibrado: bloqueia fraseados proibidos do agente."""
     code = "FRASEOLOGIA"
@@ -339,9 +380,26 @@ class PhraseologyRail(Guardrail):
             _llm(ctx), "FRASEOLOGIA", {"text": text or "", "context": ctx},
             profile_name="grl", component_name="guardrail.fraseologia", generation_name="guardrail.fraseologia",
         )
+        allowed = bool(out.get("allowed", True))
+        reason = str(out.get("reason") or out.get("label") or "FRASEOLOGIA avaliado")
+        if not allowed:
+            sanitized = _sanitize_low_risk_phraseology(text or "", reason)
+            if sanitized:
+                return RailDecision(
+                    code=self.code,
+                    allowed=True,
+                    reason=f"FRASEOLOGIA sanitizada: {reason}",
+                    sanitized_text=sanitized,
+                    metadata={
+                        "mechanism": "llm_rail+deterministic_sanitize",
+                        "data": out,
+                        "calibrated": True,
+                        "original_allowed": False,
+                    },
+                )
         return RailDecision(
-            code=self.code, allowed=bool(out.get("allowed", True)),
-            reason=str(out.get("reason") or out.get("label") or "FRASEOLOGIA avaliado"),
+            code=self.code, allowed=allowed,
+            reason=reason,
             sanitized_text=text, metadata={"mechanism": "llm_rail", "data": out, "calibrated": True},
         )
 

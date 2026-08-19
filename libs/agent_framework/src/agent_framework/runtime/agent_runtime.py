@@ -1167,7 +1167,25 @@ class AgentRuntimeMixin:
         return None
 
     def _select_transactional_tool(self, tools: list[str], text: str) -> str | None:
-        return self._transactional_action_match(text, tools)
+        """Seleciona a ação transacional da intent atual.
+
+        O match por ``selection_keywords`` continua tendo precedência. Porém, depois
+        que o EnterpriseRouter já restringiu ``tools`` às capabilities da intent,
+        uma única tool transacional é uma escolha determinística e segura. Isso
+        evita perder frases naturais como ``quero cancelar TIM Fashion Mensal`` ou
+        ``não contratei esse serviço`` só porque elas não repetem literalmente uma
+        keyword de ``tools.yaml``.
+        """
+        matched = self._transactional_action_match(text, tools)
+        if matched:
+            return matched
+
+        transactional = [
+            tool
+            for tool in tools
+            if self._resolve_tool_execution_policy(tool).get("operation_type") == "transactional"
+        ]
+        return transactional[0] if len(transactional) == 1 else None
 
     @staticmethod
     def _agent_state_prefix(agent_name: str | None) -> str:
@@ -1521,6 +1539,11 @@ class AgentRuntimeMixin:
                     **previous_args,
                     **{k: v for k, v in new_args.items() if v not in (None, "", [], {})},
                 }
+                # Execute parameter extraction before deciding whether the workflow
+                # must enter COLLECTING_PARAMETERS. Otherwise parameters declared
+                # with strategy=llm in mcp_parameter_mapping.yaml are invisible to
+                # the deterministic transaction state machine.
+                arguments = await self._extract_mcp_parameters(tool_name, arguments, state)
                 policy = self._resolve_tool_execution_policy(tool_name, arguments)
                 missing = self._missing_required_arguments(policy, arguments)
                 if missing:
@@ -1653,6 +1676,9 @@ class AgentRuntimeMixin:
             aliases=aliases,
             extra_args=self._extract_action_arguments(text),
         )
+        # Extract parameters (including LLM-declared extraction rules) before
+        # validating required fields and before persisting the pending call.
+        action_args = await self._extract_mcp_parameters(selected_action, action_args, state)
         policy = self._resolve_tool_execution_policy(selected_action, action_args)
         selected = {"tool_name": selected_action, "arguments": action_args}
         state["selected_tool_call"] = selected

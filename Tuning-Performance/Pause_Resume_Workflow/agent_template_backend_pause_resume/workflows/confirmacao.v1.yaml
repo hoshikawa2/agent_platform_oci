@@ -1,0 +1,32 @@
+name: confirmacao
+version: 1
+start: preparar
+nodes:
+  - id: preparar
+    action: preparar_operacao
+    input:
+      assunto: $.input.assunto
+  - id: perguntar
+    action: montar_pergunta
+    input:
+      assunto: $.vars.preparar.assunto
+    pause:
+      enabled: true
+      return_from: $.output.mensagem
+      expected_input:
+        key: resposta_usuario
+        allowed_values: [SIM, NAO]
+        normalize: upper_strip
+      resume_from: decidir
+  - id: decidir
+    action: registrar_decisao
+    input:
+      resposta: $.input.resposta_usuario
+      assunto: $.vars.preparar.assunto
+edges:
+  - from: preparar
+    to: perguntar
+  - from: perguntar
+    to: END
+  - from: decidir
+    to: END

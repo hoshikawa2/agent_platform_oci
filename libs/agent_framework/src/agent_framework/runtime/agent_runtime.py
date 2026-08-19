@@ -222,16 +222,149 @@ class AgentRuntimeMixin:
         except Exception:
             return
 
+    async def _emit_business_event(
+        self,
+        code: str,
+        state: dict[str, Any],
+        payload: dict[str, Any] | None = None,
+        component: str | None = None,
+    ) -> None:
+        """Publica um evento de domínio pelo observer central do framework.
+
+        O domínio apenas declara ``code``/``payload``; transporte, sequence e
+        fan-out (Langfuse/PubSub/OCI Streaming/etc.) continuam no framework.
+        """
+        observer = getattr(self, "observer", None)
+        if not observer or not code:
+            return
+        try:
+            await observer.emit(
+                str(code),
+                self._event_base(state, payload),
+                metadata={"business_event": True, "component": component or f"agent.{getattr(self, 'name', 'unknown')}"},
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _iter_business_events(value: Any):
+        """Percorre envelopes MCP/workflow e encontra ``business_events``.
+
+        Aceita string ou ``{code,payload,component}``. Duplicatas são eliminadas
+        pelo chamador para impedir publicação repetida do mesmo efeito lógico.
+        """
+        if isinstance(value, dict):
+            events = value.get("business_events")
+            if isinstance(events, (list, tuple)):
+                for event in events:
+                    if isinstance(event, str):
+                        yield {"code": event, "payload": {}, "component": None}
+                    elif isinstance(event, dict) and event.get("code"):
+                        yield {
+                            "code": str(event.get("code")),
+                            "payload": dict(event.get("payload") or {}),
+                            "component": event.get("component"),
+                        }
+            for key, nested in value.items():
+                if key != "business_events":
+                    yield from AgentRuntimeMixin._iter_business_events(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                yield from AgentRuntimeMixin._iter_business_events(nested)
+
+    async def _publish_business_events(self, result: dict[str, Any], state: dict[str, Any]) -> None:
+        # Resultados de cache representam um efeito já executado e não podem
+        # republicar eventos corporativos de negócio.
+        if not isinstance(result, dict) or bool(result.get("cached")):
+            return
+        seen: set[str] = set()
+        for event in self._iter_business_events(result):
+            fingerprint = json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            await self._emit_business_event(
+                event["code"], state, event.get("payload") or {}, component=event.get("component")
+            )
+
     # ------------------------------------------------------------------
     # RAG
     # ------------------------------------------------------------------
+    @staticmethod
+    def _iter_mapping_values(value: Any):
+        if isinstance(value, Mapping):
+            yield value
+            for nested in value.values():
+                yield from AgentRuntimeMixin._iter_mapping_values(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                yield from AgentRuntimeMixin._iter_mapping_values(nested)
+
+    @classmethod
+    def _mcp_rag_directive(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, str]:
+        """Lê uma solicitação de RAG declarada pela tool/workflow de domínio.
+
+        O domínio pode devolver ``requires_rag=true`` e opcionalmente
+        ``rag_query``/``rag_queries``. A execução e a política de RAG continuam
+        pertencendo ao framework; a tool apenas declara que evidência documental
+        adicional é necessária para completar a resposta.
+        """
+        required = False
+        queries: list[str] = []
+        for item in mcp_results or []:
+            if not isinstance(item, dict) or not item.get("ok"):
+                continue
+            for mapping in cls._iter_mapping_values(item.get("result")):
+                if bool(mapping.get("requires_rag")):
+                    required = True
+                query = str(mapping.get("rag_query") or "").strip()
+                if query:
+                    queries.append(query)
+                values = mapping.get("rag_queries")
+                if isinstance(values, (list, tuple)):
+                    queries.extend(str(v).strip() for v in values if str(v).strip())
+        # Preserva ordem e remove duplicados sem normalizar a consulta do domínio.
+        deduped = list(dict.fromkeys(queries))
+        return required, "\n".join(deduped)
+
+
+    @classmethod
+    def _mcp_llm_composition_directive(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+        """Lê instruções de composição declaradas por tools/workflows.
+
+        O domínio pode devolver ``requires_llm_composition=true`` e uma
+        ``response_instruction`` (ou ``response_instructions``). O framework
+        continua responsável por executar o LLM; a tool apenas declara como a
+        evidência operacional deve ser transformada em linguagem ao cliente.
+        """
+        required = False
+        instructions: list[str] = []
+        for item in mcp_results or []:
+            if not isinstance(item, dict) or not item.get("ok"):
+                continue
+            for mapping in cls._iter_mapping_values(item.get("result")):
+                if bool(mapping.get("requires_llm_composition")):
+                    required = True
+                instruction = str(mapping.get("response_instruction") or "").strip()
+                if instruction:
+                    instructions.append(instruction)
+                values = mapping.get("response_instructions")
+                if isinstance(values, (list, tuple)):
+                    instructions.extend(str(v).strip() for v in values if str(v).strip())
+        return required, list(dict.fromkeys(instructions))
+
     async def _retrieve_rag_context(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         rag_service = getattr(self, "rag_service", None)
         if not rag_service:
             return "", {"enabled": False}
         settings = getattr(self, "settings", None)
         mcp_results = state.get("mcp_results") or []
-        if bool(getattr(settings, "SKIP_RAG_WHEN_MCP_SUFFICIENT", True)) and any(r.get("ok") and r.get("result") for r in mcp_results):
+        requires_rag, rag_query_override = self._mcp_rag_directive(mcp_results)
+        if (
+            not requires_rag
+            and bool(getattr(settings, "SKIP_RAG_WHEN_MCP_SUFFICIENT", True))
+            and any(r.get("ok") and r.get("result") for r in mcp_results)
+        ):
             text = str(state.get("sanitized_input") or state.get("user_text") or "").lower()
             policy_terms = ("política", "politica", "regra", "prazo", "como funciona", "por que", "porque")
             if not any(term in text for term in policy_terms):
@@ -251,14 +384,58 @@ class AgentRuntimeMixin:
         )
         settings = getattr(self, "settings", None)
         rewrite = bool(getattr(settings, "ENABLE_RAG_QUERY_REWRITE", False))
-        result = await rag_service.retrieve(runtime.sanitized_input, namespace=namespace, graph_node=graph_node, rewrite=rewrite)
+        rag_query = rag_query_override or runtime.sanitized_input
+        try:
+            result = await rag_service.retrieve(rag_query, namespace=namespace, graph_node=graph_node, rewrite=rewrite)
+        except Exception as exc:
+            # RAG é evidência auxiliar. Falha técnica não deve derrubar a jornada
+            # conversacional inteira; o domínio/LLM pode continuar com as demais
+            # evidências já disponíveis. Mantemos metadata estruturada para
+            # observabilidade e para decisões posteriores.
+            return "", {
+                "enabled": False,
+                "failed": True,
+                "technical_error": True,
+                "technical_error_in_rag": True,
+                "error": str(exc),
+                "namespace": namespace,
+                "query": rag_query,
+                "query_overridden_by_tool": bool(rag_query_override),
+                "required_by_tool": bool(requires_rag),
+            }
         if bool(getattr(settings, "ENABLE_RAG_CONTEXT_COMPRESSION", False)) and hasattr(rag_service, "compress_context"):
             context = await rag_service.compress_context(result, question=runtime.sanitized_input)
         else:
             context = result.as_prompt_context()
+
+        guardrail_pipeline = getattr(self, "guardrail_pipeline", None)
+        retrieval_decisions: list[dict[str, Any]] = []
+        if guardrail_pipeline is not None and context:
+            guarded_context, decisions = await guardrail_pipeline.run_retrieval(
+                context,
+                {
+                    "state": state,
+                    "query": runtime.sanitized_input,
+                    "namespace": namespace,
+                    "rag_result": result,
+                },
+            )
+            retrieval_decisions = [d.model_dump() if hasattr(d, "model_dump") else dict(d) for d in decisions]
+            state.setdefault("guardrails", []).extend(retrieval_decisions)
+            if any(not bool(getattr(d, "allowed", True)) for d in decisions):
+                return "", {
+                    "enabled": False,
+                    "blocked": True,
+                    "reason": "retrieval_guardrail",
+                    "guardrails": retrieval_decisions,
+                }
+            context = guarded_context
         return context, {
             "enabled": True,
             "namespace": namespace,
+            "query": rag_query,
+            "query_overridden_by_tool": bool(rag_query_override),
+            "required_by_tool": bool(requires_rag),
             "latency_ms": result.latency_ms,
             "document_count": len(result.documents),
             "graph_neighbors": len(result.graph_neighbors),
@@ -266,6 +443,7 @@ class AgentRuntimeMixin:
             "top_scores": [d.score for d in result.documents[:5]],
             "rewritten": result.metadata.get("rewritten"),
             "effective_query": result.query,
+            "guardrails": retrieval_decisions,
         }
 
     # ------------------------------------------------------------------
@@ -777,6 +955,7 @@ class AgentRuntimeMixin:
             },
             component="agent_runtime.mcp",
         )
+        await self._publish_business_events(result, state)
         return result
 
     async def _call_mcp_tool(self, tool_name: str, arguments: dict[str, Any] | None, state: dict[str, Any]) -> dict[str, Any]:
@@ -792,6 +971,33 @@ class AgentRuntimeMixin:
                 component="agent_runtime.mcp",
             )
             return prepare_error
+
+        guardrail_pipeline = getattr(self, "guardrail_pipeline", None)
+        if guardrail_pipeline is not None:
+            _, decisions = await guardrail_pipeline.run_tool(
+                tool_name,
+                effective_args,
+                {"state": state, "intent": state.get("intent"), "route": state.get("route")},
+            )
+            serialized = [d.model_dump() if hasattr(d, "model_dump") else dict(d) for d in decisions]
+            state.setdefault("guardrails", []).extend(serialized)
+            blocked = next((d for d in decisions if not bool(getattr(d, "allowed", True))), None)
+            if blocked is not None:
+                reason = getattr(blocked, "reason", None) or "Tool bloqueada por guardrail"
+                await self._emit_grl(
+                    getattr(blocked, "code", "TOOL_VAL"),
+                    state,
+                    {"tool_name": tool_name, "reason": reason},
+                    component="agent_runtime.tool_guardrail",
+                )
+                return {
+                    "ok": False,
+                    "tool_name": tool_name,
+                    "skipped": True,
+                    "guardrail_blocked": True,
+                    "error": reason,
+                    "guardrails": serialized,
+                }
 
         # A política de cache continua vindo do tools.yaml. A chave, porém, usa
         # os argumentos EFETIVOS do MCP, ou seja, depois do mcp_parameter_mapping.
@@ -963,17 +1169,186 @@ class AgentRuntimeMixin:
     def _select_transactional_tool(self, tools: list[str], text: str) -> str | None:
         return self._transactional_action_match(text, tools)
 
+    @staticmethod
+    def _agent_state_prefix(agent_name: str | None) -> str:
+        raw = str(agent_name or "support_agent").strip().upper()
+        raw = re.sub(r"_AGENT$", "", raw)
+        raw = re.sub(r"[^A-Z0-9]+", "_", raw).strip("_") or "SUPPORT"
+        return raw
+
+    def _collecting_state_name(self, state: dict[str, Any]) -> str:
+        current = state.get("route") or state.get("active_agent") or getattr(self, "name", None)
+        return f"COLLECTING_{self._agent_state_prefix(current)}_PARAMETERS"
+
+    def _waiting_state_name(self, state: dict[str, Any]) -> str:
+        current = state.get("route") or state.get("active_agent") or getattr(self, "name", None)
+        return f"WAITING_{self._agent_state_prefix(current)}_CONFIRMATION"
+
+    @staticmethod
+    def _workflow_resume_decision(text: str) -> str:
+        normalized = " ".join((text or "").strip().lower().split())
+        normalized = re.sub(r"[.!?]+$", "", normalized).strip()
+        yes = {"sim", "s", "claro", "isso", "correto", "pode", "pode sim", "entendi", "conseguiu", "resolveu"}
+        no = {"não", "nao", "n", "não resolveu", "nao resolveu", "não entendi", "nao entendi", "não", "negativo"}
+        if normalized in yes or normalized.startswith("sim "):
+            return "SIM"
+        if normalized in no or normalized.startswith("não ") or normalized.startswith("nao "):
+            return "NAO"
+        return "OUTRO"
+
+    @staticmethod
+    def _workflow_payload_from_tool_result(result: dict[str, Any]) -> dict[str, Any] | None:
+        data = result.get("result") if isinstance(result, dict) else None
+        if not isinstance(data, dict):
+            return None
+        # MCP HTTP envelope may contain another result layer.
+        nested = data.get("result")
+        if isinstance(nested, dict) and nested.get("status") in {"PAUSED", "COMPLETED", "FAILED"}:
+            return nested
+        if data.get("status") in {"PAUSED", "COMPLETED", "FAILED"}:
+            return data
+        return None
+
+    def _capture_pending_domain_workflow(self, state: dict[str, Any], tool_result: dict[str, Any]) -> None:
+        workflow = self._workflow_payload_from_tool_result(tool_result)
+        if not workflow:
+            return
+        metadata = workflow.get("metadata") if isinstance(workflow.get("metadata"), dict) else {}
+        workflow_name = str(metadata.get("workflow_name") or workflow.get("workflow_name") or "").strip()
+        if workflow_name and workflow.get("status") in {"PAUSED", "COMPLETED"}:
+            executed = [str(x) for x in (state.get("business_workflows_executed") or []) if str(x).strip()]
+            if workflow_name not in executed:
+                executed.append(workflow_name)
+            state["business_workflows_executed"] = executed
+        if workflow.get("status") != "PAUSED":
+            return
+        state["pending_domain_workflow"] = {
+            "workflow_name": metadata.get("workflow_name") or workflow.get("workflow_name"),
+            "execution_id": metadata.get("workflow_execution_id") or workflow.get("execution_id"),
+            "resume_tool": metadata.get("resume_tool") or "retomar_workflow",
+            "pause": workflow.get("pause") or {},
+        }
+        state["transaction_status"] = "WORKFLOW_PAUSED"
+
+    async def _resume_pending_domain_workflow(self, state: dict[str, Any], text: str) -> dict[str, Any] | None:
+        pending = state.get("pending_domain_workflow")
+        if not isinstance(pending, dict) or not pending.get("execution_id"):
+            return None
+        tool_name = str(pending.get("resume_tool") or "retomar_workflow")
+        arguments = {
+            "workflow_name": pending.get("workflow_name"),
+            "execution_id": pending.get("execution_id"),
+            "resposta_usuario": self._workflow_resume_decision(text),
+        }
+        result = await self._call_mcp_tool(tool_name, arguments, state)
+        workflow = self._workflow_payload_from_tool_result(result)
+        self._capture_pending_domain_workflow(state, result)
+        if workflow and workflow.get("status") == "PAUSED":
+            pass
+        else:
+            state.pop("pending_domain_workflow", None)
+            if state.get("transaction_status") == "WORKFLOW_PAUSED":
+                state["transaction_status"] = None
+        return result
+
+
+    @staticmethod
+    def _tool_clarification_payload_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
+        data = result.get("result") if isinstance(result, dict) else None
+        if not isinstance(data, dict):
+            return None
+        nested = data.get("result")
+        if isinstance(nested, dict) and nested.get("status") == "NEEDS_CLARIFICATION":
+            data = nested
+        if data.get("status") != "NEEDS_CLARIFICATION":
+            return None
+        return data
+
+    def _capture_pending_tool_clarification(
+        self,
+        state: dict[str, Any],
+        tool_result: dict[str, Any],
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> None:
+        payload = self._tool_clarification_payload_from_result(tool_result)
+        if not payload:
+            return
+        options = payload.get("options") if isinstance(payload.get("options"), list) else []
+        state["pending_tool_clarification"] = {
+            "tool_name": tool_name,
+            "arguments": dict(arguments or {}),
+            "parameter": str(payload.get("parameter") or "subject"),
+            "question": str(payload.get("question") or "Qual opção você quis dizer?"),
+            "options": [dict(x) for x in options if isinstance(x, dict)],
+        }
+        state["transaction_status"] = "TOOL_RESULT_CLARIFICATION"
+
+    @staticmethod
+    def _choose_tool_clarification_option(text: str, options: list[dict[str, Any]]) -> dict[str, Any] | None:
+        normalized = " ".join(str(text or "").strip().lower().split())
+        if not normalized:
+            return None
+        number = re.fullmatch(r"(?:op[cç][aã]o\s*)?(\d+)", normalized)
+        if number:
+            idx = int(number.group(1)) - 1
+            if 0 <= idx < len(options):
+                return options[idx]
+        for option in options:
+            label = str(option.get("label") or option.get("value") or "").strip().lower()
+            value = str(option.get("value") or option.get("label") or "").strip().lower()
+            if normalized in {label, value} or (label and label in normalized) or (value and value in normalized):
+                return option
+        return None
+
+    async def _resume_pending_tool_clarification(self, state: dict[str, Any], text: str) -> dict[str, Any] | None:
+        pending = state.get("pending_tool_clarification")
+        if not isinstance(pending, dict):
+            return None
+        options = pending.get("options") if isinstance(pending.get("options"), list) else []
+        selected = self._choose_tool_clarification_option(text, options)
+        if selected is None:
+            return {
+                "ok": True,
+                "executed": False,
+                "tool_name": pending.get("tool_name"),
+                "needs_clarification": True,
+                "question": pending.get("question"),
+                "options": options,
+            }
+        tool_name = str(pending.get("tool_name") or "")
+        arguments = dict(pending.get("arguments") or {})
+        parameter = str(pending.get("parameter") or "subject")
+        arguments[parameter] = selected.get("value") if selected.get("value") not in (None, "") else selected.get("label")
+        arguments["clarification_resolved"] = True
+        state.pop("pending_tool_clarification", None)
+        result = await self._call_mcp_tool(tool_name, arguments, state)
+        self._capture_pending_domain_workflow(state, result)
+        self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
+        if not state.get("pending_domain_workflow") and not state.get("pending_tool_clarification"):
+            state["transaction_status"] = "COMPLETED" if result.get("ok") else "FAILED"
+        return result
+
     def transaction_state_patch(self, state: dict[str, Any]) -> dict[str, Any]:
         keys = (
             "available_mcp_tools", "selected_tool_call", "pending_tool_call",
             "transaction_status", "confirmation_required", "confirmation_received",
-            "tool_policy_result", "missing_parameters", "next_state",
+            "tool_policy_result", "missing_parameters", "next_state", "pending_domain_workflow", "pending_tool_clarification",
+            "business_workflows_executed",
         )
         return {key: state.get(key) for key in keys if key in state}
 
 
     def transaction_clarification_message(self, state: dict[str, Any]) -> str | None:
-        """Retorna pergunta determinística para parâmetros obrigatórios ausentes."""
+        """Retorna pergunta determinística para parâmetros ou resultado ambíguo."""
+        if state.get("transaction_status") == "TOOL_RESULT_CLARIFICATION":
+            pending = state.get("pending_tool_clarification") or {}
+            question = str(pending.get("question") or "Qual opção você quis dizer?").strip()
+            options = pending.get("options") if isinstance(pending.get("options"), list) else []
+            rendered = [f"{idx}. {str(opt.get('label') or opt.get('value') or '').strip()}" for idx, opt in enumerate(options, start=1)]
+            rendered = [x for x in rendered if not x.endswith('. ')]
+            return question + (("\n" + "\n".join(rendered)) if rendered else "")
         if state.get("transaction_status") != "COLLECTING_PARAMETERS":
             return None
         missing = list(state.get("missing_parameters") or [])
@@ -1007,13 +1382,7 @@ class AgentRuntimeMixin:
         policy: dict[str, Any],
         missing: list[str],
     ) -> None:
-        current_agent = state.get("route") or state.get("active_agent") or "support_agent"
-        collecting_state = {
-            "billing_agent": "COLLECTING_BILLING_PARAMETERS",
-            "product_agent": "COLLECTING_PRODUCT_PARAMETERS",
-            "orders_agent": "COLLECTING_ORDER_PARAMETERS",
-            "support_agent": "COLLECTING_SUPPORT_PARAMETERS",
-        }.get(current_agent, "COLLECTING_SUPPORT_PARAMETERS")
+        collecting_state = self._collecting_state_name(state)
         state.update({
             "selected_tool_call": {"tool_name": tool_name, "arguments": arguments},
             "pending_tool_call": {},
@@ -1061,7 +1430,24 @@ class AgentRuntimeMixin:
 
     def build_direct_mcp_answer(self, state: dict[str, Any], mcp_results: list[dict[str, Any]], *, agent_label: str) -> str | None:
         """Resposta determinística para consultas estruturadas simples."""
+        requires_rag, _ = self._mcp_rag_directive(mcp_results)
+        requires_llm_composition, _ = self._mcp_llm_composition_directive(mcp_results)
+        if requires_rag or requires_llm_composition:
+            return None
         ok = [r for r in mcp_results if r.get("ok") and isinstance(r.get("result"), dict)]
+        for item in ok:
+            workflow = self._workflow_payload_from_tool_result(item)
+            if workflow and workflow.get("status") == "PAUSED":
+                pause = workflow.get("pause") if isinstance(workflow.get("pause"), dict) else {}
+                prompt = pause.get("prompt")
+                if prompt:
+                    return str(prompt)
+            if workflow and workflow.get("status") == "COMPLETED":
+                nodes = workflow.get("output") if isinstance(workflow.get("output"), dict) else {}
+                # prefer last business message emitted by a workflow action
+                for value in reversed(list(nodes.values())):
+                    if isinstance(value, dict) and str(value.get("mensagem") or "").strip():
+                        return str(value["mensagem"]).strip()
         text = state.get("sanitized_input") or state.get("user_text") or ""
         if (
             len(ok) != 1
@@ -1106,6 +1492,18 @@ class AgentRuntimeMixin:
         state["available_mcp_tools"] = available_tools
         text = state.get("sanitized_input") or state.get("user_text") or ""
 
+        # Clarificação de resultado de tool tem precedência: reutiliza a mesma tool
+        # e argumentos, alterando apenas o parâmetro escolhido pelo usuário.
+        if state.get("pending_tool_clarification"):
+            resumed = await self._resume_pending_tool_clarification(state, str(text))
+            return [resumed] if resumed else []
+
+        # Workflows conversacionais pausados têm precedência sobre novo roteamento/tool selection.
+        # O domínio informa apenas workflow/execution_id; a retomada é uma capability genérica.
+        if state.get("pending_domain_workflow"):
+            resumed = await self._resume_pending_domain_workflow(state, str(text))
+            return [resumed] if resumed else []
+
         # Antes de confirmar, complete os parâmetros obrigatórios da ação.
         if state.get("transaction_status") == "COLLECTING_PARAMETERS":
             selected = dict(state.get("selected_tool_call") or {})
@@ -1143,13 +1541,7 @@ class AgentRuntimeMixin:
                 state["selected_tool_call"] = selected
                 state["missing_parameters"] = []
                 if policy.get("require_confirmation"):
-                    current_agent = state.get("route") or state.get("active_agent") or "support_agent"
-                    waiting_state = {
-                        "billing_agent": "WAITING_BILLING_CONFIRMATION",
-                        "product_agent": "WAITING_PRODUCT_CONFIRMATION",
-                        "orders_agent": "WAITING_ORDER_CONFIRMATION",
-                        "support_agent": "WAITING_SUPPORT_CONFIRMATION",
-                    }.get(current_agent, "WAITING_SUPPORT_CONFIRMATION")
+                    waiting_state = self._waiting_state_name(state)
                     state.update({
                         "pending_tool_call": selected,
                         "transaction_status": "AWAITING_CONFIRMATION",
@@ -1169,8 +1561,10 @@ class AgentRuntimeMixin:
 
                 arguments["confirmed"] = True
                 result = await self._call_mcp_tool(tool_name, arguments, state)
+                self._capture_pending_domain_workflow(state, result)
+                self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
                 state.update({
-                    "transaction_status": "COMPLETED" if result.get("ok") else "FAILED",
+                    "transaction_status": ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))),
                     "confirmation_required": False,
                     "confirmation_received": True,
                     "pending_tool_call": {},
@@ -1197,8 +1591,10 @@ class AgentRuntimeMixin:
                 arguments["confirmed"] = True
                 state["confirmation_received"] = True
                 result = await self._call_mcp_tool(tool_name, arguments, state)
+                self._capture_pending_domain_workflow(state, result)
+                self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
                 state.update({
-                    "transaction_status": "COMPLETED" if result.get("ok") else "FAILED",
+                    "transaction_status": ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))),
                     "confirmation_required": False,
                     "selected_tool_call": pending,
                     "pending_tool_call": {},
@@ -1227,6 +1623,8 @@ class AgentRuntimeMixin:
             if emit_events:
                 await self._emit_ic("IC.MCP_TOOL_REQUESTED", state, {"tool_name": tool, "operation_type": "read_only"}, component="agent_runtime")
             result = await self._call_mcp_tool(tool, args, state)
+            self._capture_pending_domain_workflow(state, result)
+            self._capture_pending_tool_clarification(state, result, tool_name=tool, arguments=args)
             results.append(result)
             if emit_events:
                 await self._emit_ic(
@@ -1294,13 +1692,7 @@ class AgentRuntimeMixin:
                 "confirmation_required": True,
                 "confirmation_received": False,
             })
-            current_agent = state.get("route") or state.get("active_agent") or "support_agent"
-            state["next_state"] = {
-                "billing_agent": "WAITING_BILLING_CONFIRMATION",
-                "product_agent": "WAITING_PRODUCT_CONFIRMATION",
-                "orders_agent": "WAITING_ORDER_CONFIRMATION",
-                "support_agent": "WAITING_SUPPORT_CONFIRMATION",
-            }.get(current_agent, "WAITING_SUPPORT_CONFIRMATION")
+            state["next_state"] = self._waiting_state_name(state)
             if emit_events:
                 await self._emit_ic("IC.TRANSACTION_CONFIRMATION_REQUIRED", state, {"tool_name": selected_action, **policy}, component="agent_runtime.tool_policy")
             results.append({"ok": False, "tool_name": selected_action, "awaiting_confirmation": True, "transaction_status": "AWAITING_CONFIRMATION", "metadata": policy})
@@ -1308,8 +1700,9 @@ class AgentRuntimeMixin:
 
         action_args["confirmed"] = True
         result = await self._call_mcp_tool(selected_action, action_args, state)
+        self._capture_pending_domain_workflow(state, result)
         state.update({
-            "transaction_status": "COMPLETED" if result.get("ok") else "FAILED",
+            "transaction_status": ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))),
             "confirmation_required": False,
             "confirmation_received": True,
             "pending_tool_call": {},

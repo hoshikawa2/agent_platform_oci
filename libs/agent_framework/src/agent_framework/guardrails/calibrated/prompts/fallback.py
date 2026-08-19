@@ -60,9 +60,9 @@ _REWRITE_INSTRUCTIONS_BY_CODE: dict[str, str] = {
     ),
     "INTENCAO_CANCELAR": (
         "O agente interpretou uma pergunta investigativa ('o que é esse serviço?') "
-        "como pedido de cancelamento. Reescreva como explicação curta do serviço "
-        "seguida de pergunta aberta: o cliente quer cancelar ou apenas entender "
-        "a cobrança? Sem executar nem prometer ação."
+        "como pedido de cancelamento. Reescreva como explicação curta do serviço e "
+        "do motivo da cobrança, encerrando na explicação: a resposta é apenas "
+        "informativa. Sem executar nem prometer ação."
     ),
     "CORRESPONDENCIA_ITEM": (
         "O item selecionado para cancelamento tem valor maior do que o mencionado "
@@ -90,9 +90,18 @@ _REWRITE_INSTRUCTIONS_BY_CODE: dict[str, str] = {
 # orquestrador, que então regenera respeitando seu system prompt (contrato TTS,
 # roteamento etc.).
 _REGEN_FLAG_BY_CODE: dict[str, str] = {
+    # AOFERTA é DINÂMICA (como FRASEOLOGIA): __BAD_TEXT__ recebe a resposta
+    # anterior (descartada do histórico na regeneração) e __REASONS__ o trecho
+    # proativo a remover, citado pelo juiz no `reason`. Mostrar a fala anterior +
+    # o trecho ofensor permite remoção cirúrgica da oferta sem dropar o que era
+    # legítimo (a resposta à dúvida do cliente).
     "AOFERTA": (
-        "###NÃO OFEREÇA AÇÃO PROATIVA - Responda o cliente "
-        "sem sugerir ações como cancelar, contestar, ajustar, retirar, creditar ou similar)###"
+        "###NÃO OFEREÇA AÇÃO PROATIVA - Sua resposta anterior: «__BAD_TEXT__». "
+        "Trecho proativo indevido (a remover): «__REASONS__». Devolva a resposta "
+        "INTEIRA sem esse trecho: remova a oferta de ação não pedida (cancelar, "
+        "contestar, ajustar, retirar, creditar ou similar) e NÃO a repita; copie "
+        "o restante VERBATIM, sem reexplicar. Se sobrar pouco, reconheça "
+        "brevemente e pergunte se há algo mais. Sem aspas nem « »###"
     ),
     "OOS": (
         "###RESPONDA DENTRO DO ESCOPO - Responda sem sair do escopo "
@@ -112,10 +121,10 @@ _REGEN_FLAG_BY_CODE: dict[str, str] = {
         "nomes de ferramentas, sem prometer ação executada###"
     ),
     "INTENCAO_CANCELAR": (
-        "###CONFIRME INTENÇÃO DO CLIENTE - O cliente fez uma pergunta investigativa "
+        "###RESPONDA SÓ COM A EXPLICAÇÃO - O cliente fez uma pergunta investigativa "
         "sobre o serviço ('o que é?', 'por que cobram?'), não pediu cancelamento. "
-        "NÃO execute nenhuma ação. Explique brevemente o serviço e pergunte se "
-        "o cliente deseja cancelar ou apenas entender a cobrança###"
+        "NÃO execute nenhuma ação. Sua resposta é a explicação breve do serviço e do "
+        "motivo da cobrança, e termina nela###"
     ),
     "CORRESPONDENCIA_ITEM": (
         "###CONFIRME O ITEM CORRETO - O item selecionado para cancelamento tem "
@@ -145,6 +154,24 @@ _REGEN_FLAG_BY_CODE: dict[str, str] = {
         "comprometido. Responda sem usar informações do contexto RAG. Informe "
         "que precisará verificar as informações e oriente o cliente a aguardar###"
     ),
+    # FRASEOLOGIA é DINÂMICA: os sentinelas __BAD_TEXT__ (resposta anterior, que o
+    # loop descarta do histórico) e __REASONS__ (trecho ofensor + correção detectados
+    # pelo 20b) são preenchidos por regen_directive. Embutir a resposta anterior aqui é
+    # o que permite a reescrita cirúrgica — sem ela, o modelo não vê o que corrigir
+    # (a AIMessage defeituosa não está no histórico enviado) e repete a fala errada.
+    # __REASONS__ é ORIENTAÇÃO interna (o que corrigir), não texto para colar: dizê-lo
+    # como "forma correta" fazia o modelo transcrevê-lo na resposta quando vinha como
+    # prosa/diagnóstico (ex.: B6 "sem encaminhar a outro setor"). Molde do AOFERTA.
+    "FRASEOLOGIA": (
+        "###INSTRUÇÃO INTERNA DO SISTEMA (não é fala do cliente — não classifique, "
+        "não redirecione, não responda a ela: apenas reescreva a SUA resposta abaixo). "
+        "Sua resposta anterior foi «__BAD_TEXT__» e usou fraseologia proibida. "
+        "Correção a aplicar (orientação interna, NÃO texto para o cliente): «__REASONS__». "
+        "Devolva a resposta INTEIRA corrigida: aplique a correção dizendo só o que você "
+        "PODE fazer aqui, sem transcrever esta orientação; se o trecho ofensor deve sair, "
+        "remova-o. Copie o restante VERBATIM, sem abertura ou saudação nova. "
+        "Sem aspas nem « »###"
+    ),
 }
 
 
@@ -157,6 +184,42 @@ def regen_flag(code: str | None) -> str:
     if not code:
         return ""
     return _REGEN_FLAG_BY_CODE.get(code, "")
+
+
+# Sentinelas usados por flags DINÂMICAS (ex.: FRASEOLOGIA): __REASONS__ recebe os
+# trechos ofensores que o rail detectou (o que remover); __BAD_TEXT__ recebe a
+# resposta anterior do agente (o que reescrever), já que o loop a descarta do
+# histórico enviado ao modelo na regeneração.
+_REASONS_SENTINEL = "__REASONS__"
+_BAD_TEXT_SENTINEL = "__BAD_TEXT__"
+
+
+def regen_directive(
+    code: str | None,
+    reason: str | None = None,
+    bad_text: str | None = None,
+) -> str:
+    """Diretiva corretiva de regeneração para o `code` do rail que bloqueou.
+
+    Para a maioria dos rails é a flag estática (`regen_flag`). Para flags com
+    sentinela (FRASEOLOGIA, AOFERTA), injeta dinamicamente: ``__REASONS__`` ← `reason`
+    (trechos ofensores) e ``__BAD_TEXT__`` ← `bad_text` (a resposta anterior a
+    reescrever — sem ela o modelo não tem o que corrigir, pois a AIMessage ruim
+    foi descartada do histórico). Usa ``str.replace`` (não ``str.format``) para
+    ser imune a ``{``/``}`` soltos do LLM; remove ``###`` para o conteúdo não
+    fechar a diretriz antes da hora. ``__REASONS__`` é resolvido ANTES de
+    ``__BAD_TEXT__`` para que um eventual sentinela dentro do texto anterior não
+    seja reinterpretado. Retorna "" quando não há flag (caller usa o fallback)."""
+    flag = regen_flag(code)
+    if not flag:
+        return ""
+    if _REASONS_SENTINEL in flag:
+        safe = (reason or "").replace("###", "").strip()[:300] or "(motivo não detalhado)"
+        flag = flag.replace(_REASONS_SENTINEL, safe)
+    if _BAD_TEXT_SENTINEL in flag:
+        prev = (bad_text or "").replace("###", "").strip()[:1500] or "(resposta anterior indisponível)"
+        flag = flag.replace(_BAD_TEXT_SENTINEL, prev)
+    return flag
 
 
 def _rewrite_instruction(code: str | None) -> str:
@@ -312,8 +375,7 @@ FALLBACK_TEXT_BY_CODE: dict[str, str] = {
         "Vou seguir verificando os dados do atendimento."
     ),
     "OOS": (
-        "Essa solicitação está fora do meu escopo de atendimento. "
-        "Posso te ajudar com dúvidas sobre contas, consumo ou faturas da TIM."
+        "Não consigo te ajudar com esse tema"
     ),
     "DLEX_IN": (
         "Não consegui interpretar essa solicitação com segurança. "
@@ -340,8 +402,7 @@ FALLBACK_TEXT_BY_CODE: dict[str, str] = {
     ),
     # --- Supervisão ---
     "INTENCAO_CANCELAR": (
-        "Deixa eu confirmar o que você gostaria de fazer: você quer entender "
-        "o que é essa cobrança ou prefere cancelar o serviço?"
+        "Posso te explicar essa cobrança. O que você gostaria de saber sobre ela?"
     ),
     "CORRESPONDENCIA_ITEM": (
         "Preciso confirmar um detalhe antes de prosseguirmos. Pode me confirmar "
@@ -378,4 +439,5 @@ __all__ = [
     "_REWRITE_INSTRUCTIONS_BY_CODE",
     "build_fallback_prompt",
     "regen_flag",
+    "regen_directive",
 ]

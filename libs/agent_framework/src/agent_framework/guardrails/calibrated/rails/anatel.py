@@ -16,8 +16,8 @@ O original no core.py NÃO foi alterado — este módulo é a nova implementaç�
 desacoplada para uso via Protocol Rail.
 
 Exemplo de uso:
-    from agente_contas_tim.guardrails.rails.anatel import AnatelRail
-    from agente_contas_tim.guardrails.contracts import GuardRailContext
+    from agent_framework.guardrails.calibrated.rails.anatel import AnatelRail
+    from agent_framework.guardrails.calibrated.contracts import GuardRailContext
 
     rail = AnatelRail()
     ctx = GuardRailContext(
@@ -90,13 +90,7 @@ def _vocalize(value: str) -> str:
     Importa de text_utils quando disponível; caso contrário usa a lógica
     local acima.
     """
-    try:
-        from agente_contas_tim.text_utils import vocalize_digits  # noqa: PLC0415
-        return vocalize_digits(value)
-    except Exception:
-        pass
-
-    # Fallback local: vocaliza caractere a caractere
+    # Implementação local: o framework não depende de helpers de domínio.
     tokens: list[str] = []
     for ch in value.lower():
         if ch in _DIGIT_TO_WORD:

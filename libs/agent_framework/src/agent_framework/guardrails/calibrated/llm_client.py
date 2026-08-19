@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any
 
 from .prompts.ausencia_oferta_proativa import build_aoferta_prompt
+from .prompts.coerencia import build_coer_prompt
 from .prompts._context import format_context_block
 from .prompts.out_of_scope import build_oos_prompt
 from .prompts.revprec import build_revprec_prompt
+from .prompts.fraseologia import build_fraseologia_prompt
 from .prompts.toxicidade_output import build_toxout_rewrite_prompt
 from .prompts.tox import build_tox_prompt
 
@@ -34,18 +35,18 @@ _AOFERTA_TRIGGERS = (
 )
 
 
+# Mock determinístico do REVPREC: substrings de ação dada como FEITA (a pergunta do rail
+# desde 2026-08-06). A detecção rica (fatura × ação, protocolo, histórico) é do prompt.
 _REVPREC_MARKERS = (
-    "vou retirar o valor",
-    "vou retirar a cobranca",
-    "vou retirar a cobrança",
-    "vou cancelar o servico",
-    "vou cancelar o serviço",
-    "vou cancelar a cobranca",
-    "vou cancelar a cobrança",
-    "vou devolver o valor",
-    "vou retornar o valor",
-    "sera devolvido para voce",
-    "será devolvido para você",
+    "cancelamento confirmado",
+    "foi cancelado",
+    "cancelado com sucesso",
+    "cancelei",
+    "cancelamos",
+    "retiramos o valor",
+    "retirei o valor",
+    "contestacao foi registrada",
+    "contestação foi registrada",
 )
 
 
@@ -64,58 +65,88 @@ _OOS_MOCK_TRIGGERS = (
 )
 
 
+# Substrings inequívocas de fraseado proibido (mock determinístico). Mantidas
+# curtas e sem ambiguidade para não colidir com falas legítimas; a detecção rica
+# (allow-list, "entendo" no início etc.) é responsabilidade do prompt 20b real.
+_FRASEOLOGIA_MOCK_TRIGGERS = (
+    "bundle",
+    "parceiro",
+    "terceiros",
+)
+
+
+# Tasks cujo prompt pede UM DÍGITO (1 = passa, 0 = bloqueia) em vez de JSON, com o
+# motivo do bloqueio fixado aqui. Gerar um `reason` por turno era o maior bloco de
+# tokens de saída desses rails e nenhum consumidor o lia além do span.
+_BINARY_TASKS: dict[str, str] = {
+    "COER": "fala incompreensível ou negação ambígua na transcrição",
+    "PINJ": "tentativa de prompt injection ou jailbreak detectada",
+    "REVPREC": "agente afirmou cancelamento/retirada já executado, sem execução no turno",
+}
+# Polaridade do dígito de BLOQUEIO. Nos binários, 1 = passa e 0 = bloqueia; o REVPREC
+# INVERTE porque a pergunta dele é positiva ("o agente disse que cancelou?"), e é essa
+# forma que dá acurácia — 1 = achou a afirmação = bloqueia.
+_BINARY_BLOCK_DIGIT: dict[str, str] = {"REVPREC": "1"}
+
+
 class GuardrailLLMClient:
     """Roteador de prompts para os guardrails de supervisao TIM.
 
-    Mesma forma do LLMClient da lib (agent_framework.guardrails.nemo.llm_client),
-    mas roteia somente a task propria (AOFERTA) e usa o LLM do projeto
-    (langchain) via create_langchain_llm, herdando suporte a OCI, OpenAI,
-    Groq, Azure etc. atraves de TIM_LLM_PROVIDER.
+    Cliente síncrono de compatibilidade para os guardrails calibrados.
+
+    O backend real é sempre o LLMProvider oficial do agent_framework, com os
+    mesmos perfis/telemetria configurados na plataforma. Não cria gateway ou
+    cliente LangChain paralelo.
     """
 
-    # AOFERTA usa 120b — maior fidelidade no julgamento de oferta proativa.
-    # PINJ usa 20b explicitamente (AT-15): prompt expandido com 11 exemplos e
-    # 7 categorias torna a tarefa suficientemente estruturada para modelo leve.
-    # Antes da reescrita do prompt (AT-03) PINJ usava 120b como compensação.
-    # Demais rails seguem TIM_LLM_OCI_VARIANT.
+    # Todo guard ativo (AOFERTA, OOS, PINJ, FRASEOLOGIA) fixa 20b explicitamente
+    # aqui — nenhum depende do default global (TIM_LLM_OCI_VARIANT), que segue
+    # livre para a variante do orquestrador principal. PINJ usa 20b desde AT-15
+    # (prompt expandido com 11 exemplos e 7 categorias torna a tarefa
+    # suficientemente estruturada para modelo leve; antes da reescrita do
+    # prompt em AT-03 usava 120b como compensação). FRASEOLOGIA: blocklist de
+    # fraseado bem estruturada, mesma lógica. REVPREC (revprec_enabled=False
+    # por default) não está listado — segue o default global até ser ativado.
     _TASK_OCI_VARIANT: dict[str, str] = {
-        "AOFERTA": "120b",
+        "AOFERTA": "20b",
+        "OOS": "20b",
         "PINJ": "20b",
+        "FRASEOLOGIA": "20b",
+        "COER": "20b",
     }
 
     def __init__(self) -> None:
-        self._llms: dict[str, Any] = {}
+        # Mantido sem estado deliberadamente. O provider oficial resolve/cacheia
+        # seus próprios clientes e perfis; esta camada não deve possuir outro pool.
+        pass
 
     @property
     def use_mock(self) -> bool:
-        """Le USE_MOCK_LLM dinamicamente.
-
-        Era um atributo cacheado em __init__, mas como `_client` eh instanciado
-        no import-time de output_sanitization.py, em alguns boots do uvicorn
-        isso acontecia ANTES do dotenv carregar o .env — entao o cliente ficava
-        preso em mock=true mesmo com USE_MOCK_LLM=false no .env. Como property,
-        cada chamada le o env atual; o overhead eh desprezivel.
-        """
         return os.getenv("USE_MOCK_LLM", "true").lower() == "true"
 
-    def _ensure_llm(self, oci_variant: str | None = None) -> Any:
-        cache_key = oci_variant or "default"
-        cached = self._llms.get(cache_key)
-        if cached is not None:
-            return cached
-        import dataclasses
+    @staticmethod
+    def _run_framework_classifier(task: str, payload: dict) -> dict:
+        """Executa a API async oficial a partir desta facade síncrona.
 
-        from agente_contas_tim.agent.infra.langchain.llm_factory import (
-            create_langchain_llm,
-        )
-        from agente_contas_tim.config import AppConfig
+        A aplicação nova usa GuardrailPipeline async diretamente. Esta bridge
+        existe apenas para compatibilidade com rails calibrados legados já
+        portados para o framework. Se houver event loop ativo, a coroutine é
+        executada em thread isolada para evitar nested-loop/cross-event-loop.
+        """
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        from agent_framework.guardrails.framework_llm_client import classify_with_framework_llm
 
-        llm_config = AppConfig.from_env().llm
-        if oci_variant and (llm_config.provider or "").strip().lower() == "oci":
-            llm_config = dataclasses.replace(llm_config, oci_variant=oci_variant)
-        llm = create_langchain_llm(llm_config)
-        self._llms[cache_key] = llm
-        return llm
+        async def _call() -> dict:
+            return await classify_with_framework_llm(None, task, payload)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_call())
+
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="guardrail-compat") as executor:
+            return executor.submit(lambda: asyncio.run(_call())).result()
 
     def classify(
         self,
@@ -127,9 +158,19 @@ class GuardrailLLMClient:
         """Roteia uma task de guardrail para o LLM (ou mock).
 
         Contrato de retorno depende da task:
-        - AOFERTA: {"allowed", "label", "reason", "score"} (JSON do prompt).
-        - REVPREC: {"allowed", "label", "reason", "score"} (JSON do prompt).
-        - OOS: {"allowed", "label"} (JSON do prompt).
+        - PINJ / COER: {"allowed", "label", "reason"} — o PROMPT devolve só um
+          dígito (1 = passa, 0 = bloqueia) e a conversão mora em `_BINARY_TASKS`;
+          o `reason` é fixo. Nenhum consumidor de produção lia o `label` desses
+          rails, e gerar `reason` por turno era a maior parcela da latência
+          (PINJ: 1115 ms -> 476 ms com a saída binária, medido em 2026-08-05).
+        - AOFERTA / OOS: {"allowed", "reason"} (JSON do prompt; `label` saiu de
+          ambos — nenhum consumidor o lia, só gastava token). Por contrato do
+          prompt o `reason` vem VAZIO quando allowed=true, como no FRASEOLOGIA.
+        - REVPREC: {"allowed", "label", "reason"} — binário como PINJ/COER, mas com
+          polaridade INVERTIDA (`_BINARY_BLOCK_DIGIT`): a pergunta é "o agente disse que
+          cancelou?", então `1` bloqueia. Reescrito em 2026-08-06; a forma anterior
+          (JSON de 4 campos, algoritmo de 9 passos) julgava promessa FUTURA e dava OK
+          ao pretérito — deixava passar exatamente a fala que interessa.
         - TOXOUT: {"text": str} — texto reescrito sem trechos toxicos.
 
         `callbacks` (opcional) eh repassado via `config={"callbacks": ...}`
@@ -140,194 +181,13 @@ class GuardrailLLMClient:
         if self.use_mock:
             return self._mock_classify(task, payload)
 
-        context_dict = payload.get("context") if isinstance(payload, dict) else None
-        context_str = format_context_block(context_dict)
-        if task == "AOFERTA":
-            prompt = build_aoferta_prompt(payload["text"], context_str)
-        elif task == "REVPREC":
-            prompt = build_revprec_prompt(payload["text"], context_str)
-        elif task == "OOS":
-            prompt = build_oos_prompt(payload["text"], context_str)
-        elif task == "TOXOUT":
-            prompt = build_toxout_rewrite_prompt(payload["text"])
-        elif task == "TOX":
-            prompt = build_tox_prompt(payload["text"])
-
-        # Segurança Extra
-        elif task == "PINJ":
-            prompt = build_pinj_prompt(payload["text"], context_str)
-        elif task == "RAGSEC":
-            prompt = build_ragsec_prompt(payload["text"], context_str)
-        elif task == "DLEX_IN":
-            prompt = build_dlex_in_prompt(payload["text"])
-        elif task == "DLEX_OUT":
-            prompt = build_dlex_out_prompt(payload["text"], context_str)
-        elif task == "FALLBACK":
-            prompt = build_fallback_prompt(
-                payload["text"],
-                guardrail_code=payload.get("guardrail_code"),
-                guardrail_reason=payload.get("guardrail_reason"),
-                context=payload.get("context"),
-            )
-
-        else:
-            raise ValueError(f"Task nao suportada: {task}")
-
-        from langchain_core.messages import HumanMessage
-
-        from agente_contas_tim.agent.llm_gateway.invocation import (
-            invoke_llm_with_config,
-            invoke_llm_with_leak_retry,
-        )
-
-        llm = self._ensure_llm(self._TASK_OCI_VARIANT.get(task))
-
-        messages = [HumanMessage(content=prompt)]
-        # AOFERTA / REVPREC / OOS retornam JSON estruturado — qualquer texto
-        # tipo "The user is..." dentro dele é semanticamente legítimo, então
-        # a inspeção em modo json não dispara falsos positivos. TOXOUT
-        # devolve texto livre, então usa modo text.
-        inspection_mode = "text" if task == "TOXOUT" else "json"
-
-        def _invoke_once(_prior: list[Any]) -> Any:
-            return invoke_llm_with_config(llm, messages, callbacks=callbacks)
-
-        response = invoke_llm_with_leak_retry(
-            _invoke_once, inspection_mode=inspection_mode
-        )
-        text = getattr(response, "content", None)
-        if isinstance(text, list):
-            text = "".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in text
-            )
-        text = (text or "").strip()
-
-        if task == "TOXOUT":
-            return {"text": text}
-
-        try:
-            return json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            return {"allowed": False, "label": "ERROR", "reason": text}
+        # O caminho real usa exclusivamente o provider oficial do framework.
+        # O helper async preserva perfis (guardrail/grl), telemetria Langfuse e
+        # parsing binário/JSON calibrado.
+        return self._run_framework_classifier(task, payload)
 
     def _mock_classify(self, task: str, payload: dict) -> dict:
-        """Fallback local para dev/teste com razão de negócio real no retorno."""
-        raw = payload.get("text") or ""
-        text = raw.lower()
-
-        def first_substring(triggers):
-            for trigger in triggers:
-                if trigger and trigger in text:
-                    return trigger
-            return None
-
-        def first_regex(patterns):
-            for pattern in patterns:
-                if re.search(pattern, raw, re.IGNORECASE):
-                    return pattern
-            return None
-
-        if task == "AOFERTA":
-            trigger = first_substring(_AOFERTA_TRIGGERS)
-            indevida = trigger is not None
-            return {
-                "allowed": not indevida,
-                "label": "OFERTA_PROATIVA_INDEVIDA" if indevida else "OFERTA_OK",
-                "reason": f"oferta proativa detectada pelo marcador '{trigger}'" if indevida else "não há oferta proativa não solicitada no trecho avaliado",
-                "score": 0 if indevida else 10,
-                "detector": "local_fallback",
-                "matched": trigger,
-            }
-
-        if task == "REVPREC":
-            marker = first_substring(_REVPREC_MARKERS)
-            blocked = marker is not None
-            return {
-                "allowed": not blocked,
-                "label": "PREMATURA" if blocked else "OK",
-                "reason": f"verbalização prematura detectada pelo marcador '{marker}' antes de confirmação/evidência operacional" if blocked else "não há promessa de execução operacional antes de confirmação ou evidência",
-                "score": 0 if blocked else 10,
-                "detector": "local_fallback",
-                "matched": marker,
-            }
-
-        if task == "OOS":
-            trigger = first_substring(_OOS_MOCK_TRIGGERS)
-            blocked = trigger is not None
-            return {
-                "allowed": not blocked,
-                "label": "OUT_OF_SCOPE" if blocked else "IN_SCOPE",
-                "reason": f"tema fora do escopo de contas/faturas TIM detectado pelo marcador '{trigger}'" if blocked else "mensagem permanece dentro do escopo esperado de atendimento",
-                "score": 0 if blocked else 10,
-                "detector": "local_fallback",
-                "matched": trigger,
-            }
-
-        if task == "TOXOUT":
-            cleaned = raw
-            matched = []
-            for pattern in _TOXOUT_MOCK_PATTERNS:
-                if re.search(pattern, cleaned, flags=re.IGNORECASE):
-                    matched.append(pattern)
-                cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
-            cleaned = " ".join(cleaned.split())
-            return {
-                "text": cleaned,
-                "reason": "toxicidade removida do output por blocklist local" if matched else "nenhuma toxicidade encontrada no output",
-                "detector": "local_fallback",
-                "matched": matched,
-            }
-
-        if task == "TOX":
-            patterns = (
-                r"\b(idiota|imbecil|burro|est[uú]pido|in[uú]til|maldito|miser[aá]vel|incompetente)\b",
-                r"\b(filho da puta|fdp|vai se foder|vai tomar no cu)\b",
-                r"\b(idiots?|stupid|useless|moron)\b",
-            )
-            pattern = first_regex(patterns)
-            blocked = pattern is not None
-            return {
-                "allowed": not blocked,
-                "label": "TOXICO" if blocked else "NORMAL",
-                "reason": f"toxicidade direta detectada por padrão '{pattern}'" if blocked else "não há ofensa, ameaça ou toxicidade direta no texto avaliado",
-                "score": 0 if blocked else 10,
-                "detector": "local_fallback",
-                "matched": pattern,
-            }
-
-        if task == "PINJ":
-            patterns = (
-                r"ignore (all )?(previous|prior) instructions",
-                r"ignore todas as instru[cç][oõ]es",
-                r"esque[cç]a (as|todas as) regras",
-                r"reveal (the )?(system prompt|hidden prompt|instructions)",
-                r"mostre (o )?(prompt|system prompt|prompt oculto|instru[cç][oõ]es internas)",
-                r"developer message",
-                r"system message",
-                r"modo desenvolvedor",
-                r"bypass",
-                r"DAN\b",
-            )
-            pattern = first_regex(patterns)
-            blocked = pattern is not None
-            return {
-                "allowed": not blocked,
-                "label": "PROMPT_INJECTION" if blocked else "OK",
-                "reason": f"prompt injection/jailbreak detectado por padrão '{pattern}'" if blocked else "não há tentativa de sobrescrever instruções, extrair prompt ou burlar políticas",
-                "score": 0 if blocked else 10,
-                "detector": "local_fallback",
-                "matched": pattern,
-            }
-
-        if task in {"RAGSEC", "DLEX_IN", "DLEX_OUT"}:
-            return {
-                "allowed": True,
-                "label": "OK",
-                "reason": f"{task} sem indício de violação no fallback local",
-                "score": 5,
-                "detector": "local_fallback",
-                "matched": None,
-            }
-
-        return {"allowed": True, "label": "OK", "reason": f"{task} sem indício de violação no fallback local", "score": 5, "detector": "local_fallback"}
+        # Reutiliza o mesmo fallback determinístico e explicável do pipeline
+        # moderno do framework, evitando divergência entre paths sync/async.
+        from agent_framework.guardrails.framework_llm_client import _mock_classify
+        return _mock_classify(task, payload)

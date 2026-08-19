@@ -2,7 +2,7 @@
 
 Padrao de uso:
 
-    from agente_contas_tim.guardrails import (
+    from agent_framework.guardrails.calibrated import (
         apply_input_rails,
         apply_output_rails,
         sanitizar_output,
@@ -40,7 +40,7 @@ Conformidade:
 - RailResult eh importado de agent_framework.guardrails_old.nemo.models (mesma estrutura).
 - USE_MOCK_LLM env var respeitada (mesmo nome/default da lib).
 - Multi-provider via TIM_LLM_PROVIDER (oci/openai/groq/...) para AOFERTA e
-  TOXOUT atraves de agente_contas_tim.agent.infra.langchain.llm_factory.create_langchain_llm.
+  TOXOUT atraves de agent_framework.llm.providers.create_llm.
 """
 from .input_size import verificar_tamanho_input
 from .llm_rails import ausencia_oferta_proativa, compliance_anatel, out_of_scope, detectar_toxicidade

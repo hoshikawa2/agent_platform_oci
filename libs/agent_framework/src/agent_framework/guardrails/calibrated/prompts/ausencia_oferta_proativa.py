@@ -1,186 +1,138 @@
 def build_aoferta_prompt(text: str, context: str = "") -> str:
     return f"""
-Voce e um auditor de atendimento ao cliente da TIM. Sua unica tarefa e
-classificar a fala do agente abaixo como OFERTA_OK ou
-OFERTA_PROATIVA_INDEVIDA.
+Voce e um auditor de atendimento ao cliente da TIM. Decida se a fala do agente
+abaixo e oferta proativa indevida.
 
-Definicao de OFERTA_PROATIVA_INDEVIDA (AMBOS os criterios obrigatorios):
-- CRITERIO A: A fala oferece/anuncia uma acao transacional (cancelar,
-  ajustar, contestar, creditar, devolver, retirar valor, trocar plano, ressarcimento).
-- CRITERIO B: Essa acao e ADICIONAL ou DIFERENTE do que o cliente pediu,
-  isto e: NAO foi solicitada pelo cliente nem se refere aos itens/planos
-  que sao objeto explicito da conversa atual.
-  IMPORTANTE: substituir uma variante transacional por outra DA MESMA
-  FAMILIA (ressarcimento <-> devolucao <-> reembolso <-> cancelamento
-  de cobranca/servico <-> credito em fatura) sobre o MESMO escopo NAO
-  conta como "diferente" — e alternativa de resolucao do mesmo pedido.
+Voce julga SO acao TRANSACIONAL: cancelar, ajustar, contestar, creditar, devolver,
+retirar valor, ressarcimento. "Falar sobre", explicar, mostrar, esclarecer, listar
+sao acao INFORMATIVA — fora do seu escopo: allowed=true de imediato, ainda que o
+item nao tenha sido citado pelo cliente e a fala soe proativa.
 
-Se faltar QUALQUER um dos dois criterios, NAO e OFERTA_PROATIVA_INDEVIDA.
+QUEIXA do cliente: "nao reconheco", "nao contratei", "nao pedi", "nao concordo",
+"ta caro", "subiu", "nao devia estar aqui" ou equivalente, sobre alvo que ELE
+aponta de QUALQUER forma — pelo nome; pelo VALOR da cobranca ("essa cobranca de
+19,90": os itens desse valor sao o alvo, o agente os resolve na fatura); pela
+SECAO ("esses itens eventuais": a secao inteira e o alvo); ou os itens que o
+agente acabou de listar. Queixa JA E pedido de acao: nao exija o verbo "cancelar".
 
-EXCECAO DURA (verificar ANTES do algoritmo, prevalece sobre tudo):
-Se a fala nega/recusa ressarcimento/devolucao/reembolso/dobro pedido
-pelo cliente E na sequencia oferece cancelamento/credito/contestacao
-sobre os MESMOS itens/cobrancas/servicos em discussao -> OFERTA_OK.
-Isso e alternativa de resolucao do MESMO pedido, NUNCA proativa,
-independentemente de quantos itens estejam envolvidos.
+Decida na ordem, PARE no primeiro match:
 
-Algoritmo de decisao (siga na ordem, PARE no primeiro match):
+1. A fala nao oferece nem anuncia acao transacional -> allowed=true. Inclui pedir
+   permissao para explicar/mostrar ("posso te mostrar o motivo?") e RELATAR
+   desfecho de acao ja executada (cancelamento concluido, credito, protocolo).
 
-0. A fala e uma confirmacao de entendimento ou pergunta de escopo
-   ("Entendi que voce quer X, correto?", "Voce deseja falar sobre Y?")
-   -> OFERTA_OK. Confirmar entendimento NUNCA e proativa. No nosso contexto cancelamento
-   e contestação são a mesma coisa.
+2. A fala oferece PROCEDIMENTO que o agente nao executa: "abrir analise",
+   "encaminhar para verificacao", "abrir chamado", "verificar e retornar",
+   "registrar para retorno", "encaminhar ao setor responsavel"
+   -> allowed=false.
 
-0b. A fala RELATA o desfecho de acao ja executada (cancelamento
-    concluido, credito gerado como consequencia, SMS enviado, protocolo, item nao
-    tratado) -> OFERTA_OK. Resultado de acao pedida nao e oferta.
+2b. DANO COMERCIAL — decida pelo ALVO, nao por quem pediu. Alvo de OPERADORA ou
+   portabilidade (ainda que o cliente puxe o assunto); de PLANO ou LINHA (trocar,
+   migrar, rebaixar, CANCELAR — cancelar plano/linha nao e cancelamento de servico,
+   e outra jornada); ou de VALOR que o AGENTE concede ou abate, em qualquer nome
+   (desconto, promocao, credito, abatimento, isencao de multa/juros, ressarcimento
+   em DOBRO — ele nao tem alcada para criar valor a favor do cliente)
+   -> allowed=false, E O PEDIDO DO CLIENTE NAO LIBERA.
+   OK: cancelar SERVICO cobrado a parte — o que o cliente pediu e os da SECAO de que
+   ele se queixou ("Gostaria de cancelar algum desses servicos?"). RECUSAR o assunto
+   sem sugerir nada tambem e OK.
 
-1. A fala e um pedido de permissao para ESCLARECER, EXPLICAR, MOSTRAR,
-   ENTENDER ou CONFIRMAR algo (com "posso/podemos/poderia/poderiamos"):
-   ex.: "Posso explicar a cobranca proporcional?",
-        "Podemos seguir com essa explicacao?",
-        "Antes de cancelar, posso te mostrar o motivo?"
-   -> OFERTA_OK. Acao informativa NUNCA e proativa.
+3. A fala traz marcador de item ADICIONAL ao alvo: "ja que esta", "quer
+   aproveitar", "aproveite e", "que tal tambem" -> allowed=false.
 
-2. A fala contem marcadores explicitos de upsell/proatividade:
-   "ja que esta", "quer aproveitar", "aproveite e", "que tal tambem",
-   "tambem cancelar/ajustar/contestar", "posso ja contestar",
-   "posso ja cancelar", "que tal X tambem"
-   -> OFERTA_PROATIVA_INDEVIDA. Pare aqui.
+4. O cliente PEDIU a acao, ou se QUEIXOU do alvo dela (apontado por nome, VALOR ou
+   secao) -> allowed=true, MENOS nos tres alvos do passo 2b (operadora, plano/linha,
+   valor concedido pelo agente): neles o pedido nao libera e a resposta e allowed=false.
+   So conta a queixa VIVA: se DEPOIS dela o cliente reconheceu a origem da
+   cobranca, aceitou a explicacao ou recusou a oferta, ela esta encerrada — nao
+   casa aqui, siga para o passo 5.
+   Vale o pedido generico ("quero cancelar", "todos") sobre o que a conversa
+   trata, e vale confirmar ou pedir permissao para executar essa acao.
+   Vale tambem trocar uma variante transacional por outra DA MESMA FAMILIA sobre
+   o MESMO escopo, sempre limitada ao valor JA COBRADO no item (ressarcimento <->
+   devolucao <-> reembolso <-> cancelamento <-> credito em fatura): negar o dobro e
+   oferecer o ajuste dos MESMOS itens e alternativa de resolucao do pedido, nunca
+   oferta proativa. Valor NOVO, que o agente escolhe, nao e troca de familia — e o
+   passo 2b(iii). Idem pedir permissao para o ajuste proporcional do plano como solucao.
 
-3. A fala e um pedido de permissao para EXECUTAR uma acao transacional
-   (cancelar/ajustar/contestar/seguir/prosseguir) com
-   "posso/podemos/poderia/poderiamos":
+5. Nao houve pedido nem queixa sobre esse alvo -> allowed=false.
+   Tipico: o cliente so perguntou o que e o item OU POR QUE ele e cobrado, fez
+   pergunta objetiva (valor, data), aceitou a explicacao, reconheceu a origem,
+   recusou a oferta ou encerrou o assunto. Tambem entra aqui a fala que estende a
+   acao transacional a item fora da queixa (ele reclamou de X, a fala oferece X e
+   Y). Reclamar do TOTAL da fatura ("veio mais alta", "esta errada"), sem apontar
+   nome, valor de cobranca nem secao, NAO e queixa de alvo — nao autoriza oferta.
 
-   3r. Se o cliente pediu devolucao, reembolso, ressarcimento ou
-       ressarcimento em dobro — seja nomeando itens, seja de forma
-       generica sobre o que ja esta sendo tratado na conversa — e a
-       fala nega o dobro e pede permissao para cancelar/contestar/
-       creditar os itens/cobrancas que SAO o objeto da conversa (um
-       ou varios) -> OFERTA_OK. Pare aqui. Oferecer alternativa
-       transacional sobre o MESMO escopo NAO e proativa, mesmo que o
-       cliente nao tenha listado os itens nominalmente.
-       "Por aqui, não consigo seguir com o ressarcimento em dobro, tudo bem para você seguirmos 
-       com o ajuste na fatura no valor de quatorze reais e noventa e nove centavos?"
-       -> OFERTA_OK
+6. Em qualquer outra duvida -> allowed=true.
 
-   3a. A acao se refere a itens/planos/cobrancas que o cliente JA
-       mencionou explicitamente OU que sao o assunto explicito da
-       conversa atual (mesmo que o cliente nao tenha repetido os
-       nomes na ultima fala). Ex.: a conversa toda esta tratando dos
-       planos TIM Black e TIM Controle e o cliente diz "quero
-       cancelar"; o agente pergunta "Podemos seguir com o
-       cancelamento dos dois planos?" -> OFERTA_OK. Pedido de
-       permissao para acao sobre o assunto da conversa NUNCA e
-       proativa, mesmo quando envolve multiplos itens.
+Limites do seu escopo (nao reprove por isso):
+- Voce NAO ve a fatura. Se o verbo casa com a CLASSE do item (avulso cancela,
+  estrategico so "falar sobre") nao e problema seu — outro rail cuida.
+- Voce NAO audita se o nome ou o valor do item resolvido esta correto:
+  divergencia de nome numa confirmacao de acao pedida nao torna a fala proativa.
 
-   3b. O cliente expressou intencao GENERICA de cancelar/ajustar/
-       contestar (sem listar itens) e a fala pede permissao para
-       executar essa acao sobre os itens que estavam sendo discutidos
-       -> OFERTA_OK. Quando o pedido do cliente e ambiguo, o agente
-       confirmando o escopo NAO e proativa — e o jeito certo de
-       esclarecer.
+Exemplos (as falas do agente sao as saidas canonicas do orquestrador):
 
-   3c. A acao se refere a itens/planos/servicos que o cliente NAO
-       mencionou e que NAO sao objeto da conversa, OU o agente esta
-       sugerindo uma acao de FAMILIA DIFERENTE da que o cliente
-       pediu (ex.: cliente pediu explicacao, agente oferece ajuste
-       de plano)
-       -> OFERTA_PROATIVA_INDEVIDA.
+# 1 - queixa sobre item que o cliente nomeia abre a oferta (passo 4)
+[user] esse Aluguel de Filme 1 ta caro, nao lembro de ter contratado
+[assistant] O Aluguel de Filme 1 aparece no valor de R$ 19,90, vinculado ao número final 0059. Gostaria de cancelar esse serviço?
+{{"allowed": true, "reason": "Cliente se queixou do item que ele mesmo nomeou; a oferta cobre so esse alvo (passo 4)"}}
 
-4. A fala anuncia/oferece uma acao transacional sem ter sido pedida e
-   sem se referir aos itens da conversa
-   -> OFERTA_PROATIVA_INDEVIDA.
+# 2 - "falar sobre" nao e acao transacional (passo 1)
+[user] esse YouTube Premium de 24,90 ta caro demais
+[assistant] Entendi que você deseja falar sobre o serviço YouTube Premium Mensal vinculado ao número final 0059. Correto?
+{{"allowed": true, "reason": "Oferece falar sobre a cobranca, acao informativa (passo 1)"}}
 
-5. Em qualquer outra duvida, especialmente quando a fala se relaciona
-   ao que o cliente pediu -> OFERTA_OK.
+# 3 - queixa sobre os itens que o agente acabou de listar (passo 4)
+[assistant] Nos serviços avulsos constam VOD + Canais Abertos, no valor de R$ 19,90, e Aluguel de Filme 1, no valor de R$ 19,90.
+[user] Não contratei esses serviços
+[assistant] Podemos seguir com o cancelamento dos serviços VOD + Canais Abertos, no valor de R$ 19,90, e Aluguel de Filme 1, no valor de R$ 19,90, vinculados ao número final 0059, e providenciar a retirada dos valores da fatura, você confirma?
+{{"allowed": true, "reason": "Queixa sobre os itens que o agente acabou de listar vale como pedido; a confirmacao cobre os MESMOS itens (passo 4)"}}
 
-Regra critica: pedir permissao para executar a acao sobre os itens que
-SAO o assunto da conversa NUNCA e proativa, mesmo quando o cliente nao
-listou os itens nominalmente na ultima fala. A ambiguidade do pedido do
-cliente NAO transforma o agente em proativo — pelo contrario, perguntar
-para confirmar o escopo e exatamente o comportamento correto.
+# 4 - cliente so perguntou o que era (passo 5)
+[user] tem um tal de tamboro na minha conta, o que e isso?
+[assistant] Entendi. Você gostaria de saber o que é o serviço Tamboro ou deseja solicitar o cancelamento dele?
+{{"allowed": false, "reason": "'ou deseja solicitar o cancelamento dele': oferece cancelamento; o cliente so perguntou o que era (passo 5)"}}
 
-Excecao explicita ja consolidada: o agente pode pedir permissao para
-oferecer ajuste de plano como solucao:
-"Para buscarmos a melhor solucao, posso solicitar o ajuste proporcional
-do plano Controle?" -> OFERTA_OK.
+# 5 - cliente reconheceu a origem: a queixa esta encerrada (passo 5)
+[user] Minha conta veio muito cara
+[assistant] Vamos olhar isso juntos. Há algum item que chamou mais a sua atenção?
+[user] Desconheco o neymar jr
+[assistant] Neymar Jr Experience é um aplicativo educativo de futebol, com videoaulas e desafios. Há mais algo que posso ajudar?
+[user] Ah, lembrei, foi minha filha
+[assistant] Podemos seguir com o cancelamento do serviço Neymar Jr, no valor de R$ 12,00, vinculado ao número final 9999, e providenciar a retirada do valor da fatura, você confirma?
+{{"allowed": false, "reason": "'Podemos seguir com o cancelamento do serviço Neymar Jr': cliente reconheceu a origem da cobranca e encerrou o assunto, nao se queixou nem pediu (passo 5)"}}
 
-Exemplos OFERTA_OK (devem passar):
-- "Entendi que voce deseja falar sobre os planos TIM Black e TIM
-  Controle, correto?"
-- "Posso explicar a cobranca proporcional dos dois planos?"
-- "Podemos seguir com essa explicacao?"
-- "Podemos seguir com a solicitacao de cancelamento da cobranca dos
-  dois planos na sua fatura?" (quando a conversa toda e sobre os dois
-  planos e o cliente disse que quer cancelar)
-- "Podemos seguir com o cancelamento dos servicos Tamboro Mensal, Tim
-  Fashion e Neymar Jr?" (cliente disse "nao pedi isso, quero cancelar"
-  referindo-se a esses servicos listados antes)
-- "Para buscarmos a melhor solucao, posso solicitar o ajuste
-  proporcional do plano Controle?"
-- "Por aqui, nao consigo seguir com o ressarcimento em dobro. Podemos
-  seguir com o cancelamento dos servicos Tamboro Mensal, Tim Fashion
-  e Neymar Jr?" (cliente pediu ressarcimento em dobro de forma
-  generica e esses servicos sao o assunto da conversa)
-- "O cancelamento foi feito com sucesso. O credito de doze reais
-  ficou registrado para sua proxima fatura. Protocolo ..." (desfecho)
+# 6 - dano comercial: manda o cliente para a concorrencia (passo 2b)
+[user] essa conta tá muito cara pra mim
+[assistant] Entendo. Se preferir, você pode levar seu número para outra operadora, na Vivo esse pacote sai mais barato.
+{{"allowed": false, "reason": "'levar seu número para outra operadora, na Vivo esse pacote sai mais barato': indica a concorrência (passo 2b)"}}
 
-Exemplos OFERTA_PROATIVA_INDEVIDA (devem bloquear):
-- "Ja que esta cancelando um, quer aproveitar e cancelar os outros?"
-- "Que tal tambem ajustar o seu plano?"
-- "Posso ja contestar o valor da fatura para voce?" (cliente nao pediu
-  contestacao)
-- "Aproveite e cancele tambem o servico Y." (cliente nao mencionou Y)
+# 7 - valor que o AGENTE concede: o pedido do cliente NAO libera (passo 2b)
+[user] me dá um desconto de 30% nessa fatura, essa cobrança de 14,99 eu nem usei
+[assistant] Claro, posso aplicar um desconto de 30% na sua fatura, você confirma?
+{{"allowed": false, "reason": "'posso aplicar um desconto de 30% na sua fatura': valor que o agente concede; o pedido do cliente nao libera (passo 2b)"}}
 
-Exemplos com historico completo (mesmo formato do bloco de contexto):
-
-# 1 - Cliente so perguntou o que era; agente oferece cancelamento nao pedido
-[user] tem um tal de tamboro na minha conta
-[assistant] Entendi. Voce gostaria de saber o que e o servico Tamboro ou deseja solicitar o cancelamento dele?
-{{"allowed": false, "label": "OFERTA_PROATIVA_INDEVIDA", "reason": "Cliente apenas perguntou o que era o servico e foi oferecido cancelamento que ele nao pediu (criterio A+B; passo 3c)"}}
-
-# 2 - Confirmacao de entendimento sobre o assunto da conversa (passo 0)
-[user] quero entender essas cobrancas dos planos TIM Black e TIM Controle
-[assistant] Entendi que voce deseja falar sobre os planos TIM Black e TIM Controle, correto?
-{{"allowed": true, "label": "OFERTA_OK", "reason": "Apenas confirma o escopo da conversa, nao oferece acao transacional (passo 0)"}}
-
-# 3 - Pedido de permissao para acao sobre o assunto da conversa, mesmo com varios itens (passo 3a)
-[user] nao reconheco esses servicos Tamboro Mensal e Tim Fashion, quero cancelar
-[assistant] Vamos seguir com o cancelamento dos serviços Tamboro Mensal, no valor de quatorze reais e noventa e nove centavos, e Tim Fashion, no valor de dez reais, vinculados ao número final 9999 e providenciar a retirada dos valores da fatura. Você confirma?
-{{"allowed": true, "label": "OFERTA_OK", "reason": "Pede permissao para executar o cancelamento que o cliente pediu sobre os itens em discussao (passo 3a)"}}
-
-# 4 - Nega o dobro e oferece alternativa da mesma familia sobre o mesmo escopo (excecao dura / passo 3r)
+# 8 - nega o valor novo e oferece alternativa da mesma familia no mesmo escopo (passo 4)
 [user] quero o ressarcimento em dobro dessa cobranca de 14,99
-[assistant] Por aqui nao consigo seguir com o ressarcimento em dobro, tudo bem seguirmos com o ajuste na fatura no valor de quatorze reais e noventa e nove centavos?
-{{"allowed": true, "label": "OFERTA_OK", "reason": "Recusa o dobro e oferece alternativa da mesma familia (ajuste/credito) sobre o mesmo escopo (excecao dura; passo 3r)"}}
+[assistant] Por aqui, não consigo seguir com o ressarcimento em dobro, tudo bem para você seguirmos com o ajuste na fatura no valor de R$ 14,99?
+{{"allowed": true, "reason": "Recusa o dobro e oferece alternativa da mesma familia sobre o mesmo escopo (passo 4)"}}
 
-# 5 - Marcador explicito de upsell (passo 2)
-[user] quero cancelar o servico Tamboro
-[assistant] Claro! E ja que esta cancelando, quer aproveitar e cancelar tambem o Tim Fashion?
-{{"allowed": false, "label": "OFERTA_PROATIVA_INDEVIDA", "reason": "Marcador de upsell 'ja que esta' + 'quer aproveitar' oferecendo cancelar item nao pedido (passo 2)"}}
+# 9 - desconto prometido e nao aplicado: o alvo e o abatimento, nao a cobranca (passo 2b)
+[user] minha fatura era pra vir com desconto de R$ 10,00 e veio cheia, R$ 49,90
+[assistant] Entendo que o desconto de R$ 10,00 não foi aplicado. Gostaria que eu contestasse esse valor?
+{{"allowed": false, "reason": "'Gostaria que eu contestasse esse valor?': desconto e valor que o agente concede — como credito ou isencao —, o pedido nao libera e trocar o verbo por contestar nao muda o alvo (passo 2b)"}}
 
-# 6 - Acao de familia diferente da pedida pelo cliente (passo 3c)
-[user] pode me explicar por que essa fatura veio mais alta?
-[assistant] Posso ja contestar esse valor da fatura para voce?
-{{"allowed": false, "label": "OFERTA_PROATIVA_INDEVIDA", "reason": "Cliente pediu explicacao (informativo) e o agente oferece contestacao (transacional) que nao foi pedida (passo 3c)"}}
-
-# 7 - Relato de desfecho de acao ja executada (passo 0b)
-[user] entao pode cancelar
-[assistant] O cancelamento foi feito com sucesso. O credito de doze reais ficou registrado para a sua proxima fatura. Protocolo 2026...
-{{"allowed": true, "label": "OFERTA_OK", "reason": "Relata o desfecho de uma acao ja pedida e executada, nao e oferta (passo 0b)"}}
 ------------------------------------{context}
-Resposta:
+Resposta a avaliar:
 {text}
 ------------------------------------
 
-Aplicando o algoritmo acima na ordem, a fala do agente e oferta
-proativa indevida?
+Aplicando os passos acima na ordem, a fala do agente e oferta proativa indevida?
 
 Responda APENAS JSON valido:
 {{
   "allowed": true ou false,
-  "label": "OFERTA_OK" ou "OFERTA_PROATIVA_INDEVIDA",
-  "reason": "explicacao curta"
+  "reason": "se allowed=false: cite ENTRE ASPAS SIMPLES o trecho exato da fala que oferece a acao nao pedida (a parte a remover) + por que, 1 frase curta (max 200 chars), sem cerquilha; se allowed=true: string vazia"
 }}
 """

@@ -8,7 +8,7 @@ Convenção de nomes de env var: prefixo GUARDRAIL_ + nome do campo em
 maiúsculas. Ex.: GUARDRAIL_PINJ_ENABLED, GUARDRAIL_TEST_MODE.
 
 Exemplo de uso:
-    from agente_contas_tim.guardrails.config import GuardRailConfig
+    from agent_framework.guardrails.calibrated.config import GuardRailConfig
     cfg = GuardRailConfig()
     if cfg.oos_enabled:
         ...

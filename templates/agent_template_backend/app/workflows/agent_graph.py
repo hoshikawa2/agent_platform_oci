@@ -1,5 +1,5 @@
 from agent_framework.checkpoints.langgraph_saver import create_langgraph_checkpointer
-from langgraph.graph import END, START, StateGraph
+from agent_framework.workflows import END, START, FrameworkStateGraph
 
 from agent_framework.guardrails.pipeline import GuardrailPipeline
 from agent_framework.guardrails.output_supervisor import OutputSupervisor
@@ -137,7 +137,7 @@ class AgentWorkflow:
         return _wrapped
 
     def _build_graph(self):
-        builder = StateGraph(AgentState)
+        builder = FrameworkStateGraph(AgentState)
         builder.add_node("input_guardrails", self._node("input_guardrails", self.input_guardrails))
         builder.add_node("load_long_term_memory", self._node("load_long_term_memory", self.load_long_term_memory))
         builder.add_node("routing_decision", self._node("routing_decision", self.routing_decision))

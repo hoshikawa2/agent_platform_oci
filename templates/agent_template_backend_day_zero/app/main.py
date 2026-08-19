@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 from agent_framework.channels.base import ChannelResponse
 from agent_framework.channels.gateway import ChannelGateway
+from agent_framework.channels.interruption import classify_processing_interruption, evaluate_interruption
+from agent_framework.channels.transcription import fix_whole_utterance_transcription
 from agent_framework.config.agent_registry import AgentProfileRegistry
 from agent_framework.config.settings import settings
 from agent_framework.analytics.factory import create_analytics_publisher
@@ -220,13 +222,91 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
             "identity_missing": missing_identity_keys,
             "original_context": normalized_context,
         }
+        await sessions.upsert(session)
+
+        fixed_message_text = fix_whole_utterance_transcription(msg.text)
+        if fixed_message_text != msg.text:
+            await telemetry.event(
+                "channel.transcription.fixed",
+                {
+                    "session_id": agent_session_id,
+                    "original_text": msg.text,
+                    "fixed_text": fixed_message_text,
+                },
+            )
+
+        interruption = evaluate_interruption(
+            payload=payload,
+            message_text=fixed_message_text,
+            session_metadata=session.metadata,
+            terminal_fallback_text=getattr(settings, "POST_FINALIZE_REPLAY_MESSAGE", ""),
+        )
+        if interruption.action == "classify":
+            prior_history = await memory.list(agent_session_id)
+            prior_user_text = ""
+            for prior in reversed(prior_history):
+                role = getattr(prior, "role", None)
+                content = getattr(prior, "content", "")
+                if str(role or "") == "user" and str(content or "").strip():
+                    prior_user_text = str(content).strip()
+                    break
+            regenerate = await classify_processing_interruption(
+                llm,
+                original_agent=interruption.replay_text,
+                original_client=prior_user_text,
+                supplement_client=interruption.text,
+            )
+            await telemetry.event(
+                "channel.processing_interruption.classified",
+                {
+                    "session_id": agent_session_id,
+                    "regenerate": regenerate,
+                    "profile_name": "processing_interruption_classifier",
+                },
+            )
+            if regenerate:
+                interruption.action = "process"
+                interruption.reason = "classifier_result_1"
+            else:
+                interruption.action = "replay"
+                interruption.reason = "classifier_result_0"
+
+        if interruption.action == "replay":
+            response = ChannelResponse(
+                channel=msg.channel,
+                session_id=agent_session_id,
+                text=interruption.replay_text,
+                metadata={
+                    "channel_id": msg.channel_id,
+                    "tenant_id": identity.tenant_id,
+                    "agent_id": identity.agent_id,
+                    "original_session_id": msg.session_id,
+                    "conversation_key": agent_session_id,
+                    "workflow_id": workflow_id,
+                    "message_id": message_id,
+                    "replay": True,
+                    "replay_reason": interruption.reason,
+                    "is_interruptible": interruption.is_interruptible,
+                    "framework_short_circuit": True,
+                    "terminal_status": interruption.terminal_status,
+                    "llm_called": False,
+                    "tools_called": False,
+                    "guardrails_called": False,
+                },
+            )
+            rendered = await gateway.render(response)
+            await telemetry.event("gateway.message.replayed", {"session_id": agent_session_id, "reason": interruption.reason})
+            await sse_hub.emit(agent_session_id, "message.responded", rendered) if emit_sse else None
+            return rendered
+
+        effective_text = interruption.text
         await sse_hub.emit(agent_session_id, "session.upserted", {"session_id": agent_session_id, "business_context": business_context.model_dump()}) if emit_sse else None
 
         await memory.append(
             agent_session_id,
             ChatMessage(
                 role="user",
-                content=msg.text,
+                content=effective_text,
                 metadata={
                     **normalized_context,
                     "agent_id": identity.agent_id,
@@ -247,7 +327,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
             "payload": payload,
         }
         trace_context = {
-            "text": msg.text,
+            "text": effective_text,
             "channel": msg.channel,
             "channel_id": msg.channel_id,
             "tenant_id": identity.tenant_id,
@@ -291,7 +371,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
                     "conversation_key": agent_session_id,
                     "workflow_id": workflow_id,
                     "agent_profile": normalized_context["agent_profile"],
-                    "user_text": msg.text,
+                    "user_text": effective_text,
                     "history": history,
                     "context": {
                         **normalized_context,
@@ -330,6 +410,20 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
                     },
                 ),
             )
+
+            terminal_status = str(result.get("terminal_status") or "").strip()
+            session_ended = bool(result.get("session_ended")) or bool(terminal_status)
+            session.metadata = {
+                **(session.metadata or {}),
+                "last_assistant_text": answer,
+                "last_assistant_is_interruptible": bool(result.get("is_interruptible", True)),
+                "last_route": result.get("route"),
+                "last_intent": result.get("intent"),
+                "conversation_closed": session_ended,
+                "terminal_status": terminal_status or ("resolvido" if session_ended else ""),
+                "terminal_replay_text": answer if session_ended else "",
+            }
+            await sessions.upsert(session)
 
             await telemetry.event(
                 "gateway.message.responded",
@@ -442,7 +536,7 @@ async def debug_route(req: GatewayRequest):
         "session_id": msg.session_id or "debug-session",
         "conversation_key": identity.conversation_key(),
         "agent_profile": context["agent_profile"],
-        "user_text": msg.text,
+        "user_text": effective_text,
         "sanitized_input": msg.text,
         "history": [],
         "context": {**context, "session": context.get("session", {}), "channel": msg.channel, "business_context": business_context.model_dump()},

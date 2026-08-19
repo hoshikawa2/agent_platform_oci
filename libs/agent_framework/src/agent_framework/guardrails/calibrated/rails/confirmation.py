@@ -16,7 +16,7 @@ O arquivo original em agent/infra/langchain/agent/execution/confirmation_classif
 NÃO foi alterado — este módulo é a nova implementação desacoplada.
 
 Uso via Protocol Rail:
-    from agente_contas_tim.guardrails.rails.confirmation import ConfirmationRail
+    from agent_framework.guardrails.calibrated.rails.confirmation import ConfirmationRail
     from ..contracts import GuardRailContext
     from ..llm_adapter import AgentLLMClientAdapter
 

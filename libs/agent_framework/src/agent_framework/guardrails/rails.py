@@ -244,6 +244,24 @@ class OutOfScopeRail(Guardrail):
         )
 
 
+class CoherenceRail(Guardrail):
+    """COER calibrado: fala do cliente incompreensível/negação ambígua."""
+    code = "COER"
+    stage = "input"
+
+    async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
+        ctx = _ctx(context)
+        out = await classify_with_framework_llm(
+            _llm(ctx), "COER", {"text": text or "", "context": ctx},
+            profile_name="guardrail", component_name="guardrail.coer", generation_name="guardrail.coer",
+        )
+        return RailDecision(
+            code=self.code, allowed=bool(out.get("allowed", True)),
+            reason=str(out.get("reason") or out.get("label") or "COER avaliado"),
+            sanitized_text=text, metadata={"mechanism": "llm_rail", "data": out, "calibrated": True},
+        )
+
+
 class LoopRail(Guardrail):
     code = "VLOOP"
     stage = "input"
@@ -307,6 +325,24 @@ class ProactiveOfferRail(Guardrail):
             reason=str(out.get("reason") or out.get("label") or "AOFERTA avaliado"),
             sanitized_text=text,
             metadata={"mechanism": "llm_supervisor", "data": out, "calibrated": True},
+        )
+
+
+class PhraseologyRail(Guardrail):
+    """FRASEOLOGIA calibrado: bloqueia fraseados proibidos do agente."""
+    code = "FRASEOLOGIA"
+    stage = "output"
+
+    async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
+        ctx = _ctx(context)
+        out = await classify_with_framework_llm(
+            _llm(ctx), "FRASEOLOGIA", {"text": text or "", "context": ctx},
+            profile_name="grl", component_name="guardrail.fraseologia", generation_name="guardrail.fraseologia",
+        )
+        return RailDecision(
+            code=self.code, allowed=bool(out.get("allowed", True)),
+            reason=str(out.get("reason") or out.get("label") or "FRASEOLOGIA avaliado"),
+            sanitized_text=text, metadata={"mechanism": "llm_rail", "data": out, "calibrated": True},
         )
 
 

@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 2048
     LLM_TIMEOUT_SECONDS: int = 120
     LLM_PROFILES_PATH: str = './llm_profiles.yaml'
+    # Reasoning controls. When absent from .env, auto is the default.
+    # auto = enable only when the provider/model capability resolver says it is supported.
+    # true = force-enable (the provider still performs SDK/request safety checks).
+    # false = never send reasoning_effort.
+    LLM_REASONING_ENABLED: Literal['auto','true','false'] = 'auto'
+    LLM_REASONING_EFFORT: str | None = None
 
     OCI_GENAI_BASE_URL: str = 'https://inference.generativeai.sa-saopaulo-1.oci.oraclecloud.com/openai/v1'
     OCI_GENAI_MODEL: str = 'openai.gpt-4.1'
@@ -182,6 +188,10 @@ class Settings(BaseSettings):
     ROUTE_STICKINESS_MAX_TOKENS: int = 80
     HUMAN_HANDOFF_MESSAGE: str = 'Vou encaminhar seu atendimento para uma pessoa.'
     END_SESSION_MESSAGE: str = 'Atendimento encerrado. Obrigado pelo contato.'
+    POST_FINALIZE_REPLAY_MESSAGE: str = (
+        'Por aqui finalizamos o tratamento da sua solicitação. '
+        'Aguarde um instante na linha.'
+    )
     SESSION_ALREADY_ENDED_MESSAGE: str = 'Este atendimento já foi encerrado. Inicie uma nova sessão para continuar.'
 
     # MCP / Tooling

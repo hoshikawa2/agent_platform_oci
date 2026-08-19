@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from typing import Any
 
 
@@ -33,9 +34,23 @@ def _collect_agent_specific_data(metadata: dict[str, Any], body: dict[str, Any])
     direct = _first(metadata, "agentSpecificData")
     if isinstance(direct, dict):
         return dict(direct)
+    if isinstance(direct, str) and direct.strip():
+        try:
+            parsed = json.loads(direct)
+            if isinstance(parsed, dict):
+                return parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
     direct = _first(body, "agentSpecificData")
     if isinstance(direct, dict):
         return dict(direct)
+    if isinstance(direct, str) and direct.strip():
+        try:
+            parsed = json.loads(direct)
+            if isinstance(parsed, dict):
+                return parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
     return None
 
 

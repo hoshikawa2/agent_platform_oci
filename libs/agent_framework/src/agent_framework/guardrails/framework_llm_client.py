@@ -12,9 +12,11 @@ load_dotenv(override=False)
 
 from .calibrated.prompts._context import format_context_block
 from .calibrated.prompts.ausencia_oferta_proativa import build_aoferta_prompt
+from .calibrated.prompts.coerencia import build_coer_prompt
 from .calibrated.prompts.dlex_in import build_dlex_in_prompt
 from .calibrated.prompts.dlex_out import build_dlex_out_prompt
 from .calibrated.prompts.fallback import build_fallback_prompt
+from .calibrated.prompts.fraseologia import build_fraseologia_prompt
 from .calibrated.prompts.out_of_scope import build_oos_prompt
 from .calibrated.prompts.pinj import build_pinj_prompt
 from .calibrated.prompts.ragsec import build_ragsec_prompt
@@ -27,11 +29,15 @@ _AOFERTA_TRIGGERS = (
     "ja que esta", "já que está", "aproveita e", "aproveite e", "tambem cancelar", "também cancelar",
 )
 _REVPREC_MARKERS = (
-    "vou retirar o valor", "vou retirar a cobranca", "vou retirar a cobrança",
-    "vou cancelar o servico", "vou cancelar o serviço", "vou cancelar a cobranca", "vou cancelar a cobrança",
-    "vou devolver o valor", "vou retornar o valor", "sera devolvido para voce", "será devolvido para você",
-    "já cancelei", "ja cancelei", "já contestei", "ja contestei", "ajuste realizado", "foi cancelado",
-    "foi contestado", "foi ajustado", "foi removido", "reativação concluída", "reativacao concluida", "protocolo aberto",
+    "cancelamento confirmado",
+    "foi cancelado",
+    "cancelado com sucesso",
+    "cancelei",
+    "cancelamos",
+    "retiramos o valor",
+    "retirei o valor",
+    "contestacao foi registrada",
+    "contestação foi registrada",
 )
 _OOS_TRIGGERS = ("política", "politica", "religião", "religiao", "presidente", "concorrente", "vivo", "claro", "netflix", "futebol")
 _TOX_PATTERNS = (
@@ -39,6 +45,14 @@ _TOX_PATTERNS = (
     r"\b(filho da puta|fdp|vai se foder|vai tomar no cu)\b",
     r"\b(idiots?|stupid|useless|moron)\b",
 )
+_FRASEOLOGIA_MOCK_TRIGGERS = ("bundle", "parceiro", "terceiros")
+_BINARY_TASKS: dict[str, str] = {
+    "COER": "fala incompreensível ou negação ambígua na transcrição",
+    "PINJ": "tentativa de prompt injection ou jailbreak detectada",
+    "REVPREC": "agente afirmou cancelamento/retirada já executado, sem execução no turno",
+}
+_BINARY_BLOCK_DIGIT: dict[str, str] = {"REVPREC": "1"}
+
 _PINJ_PATTERNS = (
     r"ignore (all )?(previous|prior) instructions",
     r"ignore todas as instru[cç][oõ]es",
@@ -152,6 +166,21 @@ def _mock_classify(task: str, payload: dict[str, Any]) -> dict[str, Any]:
             "score": 0 if blocked else 10,
             "detector": "local_fallback",
             "matched": trigger,
+        }
+
+    if task == "FRASEOLOGIA":
+        hit = next((t for t in _FRASEOLOGIA_MOCK_TRIGGERS if t in text), None)
+        return {"allowed": hit is None, "reason": f"trecho proibido: '{hit}'" if hit else "", "detector": "local_fallback", "matched": hit}
+
+    if task == "COER":
+        normalized = re.sub(r"[^a-z0-9áéíóúãõâêôç]+", " ", text).strip()
+        ambiguous = not normalized or normalized in {"nao sei", "não sei", "hm", "hmm", "hã", "ha"}
+        return {
+            "allowed": not ambiguous,
+            "label": "COER" if ambiguous else "OK",
+            "reason": _BINARY_TASKS["COER"] if ambiguous else "",
+            "score": 0 if ambiguous else 10,
+            "detector": "local_fallback",
         }
 
     if task == "TOXOUT":
@@ -286,6 +315,10 @@ def _build_prompt(task: str, text: str, context: dict[str, Any]) -> str:
         return build_aoferta_prompt(text, context_str)
     if task == "REVPREC":
         return build_revprec_prompt(text, context_str)
+    if task == "FRASEOLOGIA":
+        return build_fraseologia_prompt(text, context_str)
+    if task == "COER":
+        return build_coer_prompt(text, context_str)
     if task == "OOS":
         return build_oos_prompt(text, context_str)
     if task == "TOXOUT":
@@ -308,7 +341,7 @@ def _build_prompt(task: str, text: str, context: dict[str, Any]) -> str:
 
 
 def _selected_profile_for_task(task: str, profile_name: str | None = None) -> str:
-    return profile_name or ("grl" if task in {"AOFERTA", "REVPREC", "DLEX_OUT"} else "guardrail")
+    return profile_name or ("grl" if task in {"AOFERTA", "REVPREC", "DLEX_OUT", "FRASEOLOGIA"} else "guardrail")
 
 
 def _profile_forces_real_llm(llm: Any, selected_profile: str) -> bool:
@@ -386,9 +419,14 @@ async def classify_with_framework_llm(
     prompt = _build_prompt(task, text, context)
     selected_component = component_name or f"guardrail.{task.lower()}"
     selected_generation = generation_name or f"guardrail.{task.lower()}"
+    system_instruction = (
+        "Responda apenas com o dígito solicitado (0 ou 1), sem texto adicional."
+        if task in _BINARY_TASKS
+        else "Responda apenas JSON válido, sem markdown."
+    )
     raw = await llm.ainvoke(
         [
-            {"role": "system", "content": "Responda apenas JSON válido, sem markdown."},
+            {"role": "system", "content": system_instruction},
             {"role": "user", "content": prompt},
         ],
         profile_name=selected_profile,
@@ -398,4 +436,15 @@ async def classify_with_framework_llm(
     output = _extract_text(raw)
     if task == "TOXOUT":
         return {"text": output}
+    if not output:
+        return {"allowed": True, "label": "EMPTY", "reason": ""}
+    if task in _BINARY_TASKS:
+        block_digit = _BINARY_BLOCK_DIGIT.get(task, "0")
+        digits = [ch for ch in output if ch in "01"]
+        allowed = digits[-1] != block_digit if digits else True
+        return {
+            "allowed": allowed,
+            "label": "OK" if allowed else task,
+            "reason": "" if allowed else _BINARY_TASKS[task],
+        }
     return _parse_json(output)

@@ -23,3 +23,4 @@ Requires-Dist: aiohttp>=3.9.0
 Requires-Dist: motor>=3.6.0
 Requires-Dist: google-cloud-pubsub>=2.28.0
 Requires-Dist: mcp>=1.9.0
+Requires-Dist: PyJWT[crypto]>=2.9.0

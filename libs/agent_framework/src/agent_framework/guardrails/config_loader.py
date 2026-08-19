@@ -41,6 +41,7 @@ def _resolve_path(config_path: str | None = None) -> Path:
 def _rail_factories() -> dict[str, Callable[[], Any]]:
     # Lazy import avoids circular import with pipeline.py.
     from .rails import (
+        CoherenceRail,
         ComplianceRail,
         DataLeakageInputRail,
         DataLeakageOutputRail,
@@ -53,6 +54,7 @@ def _rail_factories() -> dict[str, Callable[[], Any]]:
         OutputPiiMaskRail,
         OutputToxicitySanitizationRail,
         PiiMaskRail,
+        PhraseologyRail,
         PrematureActionRail,
         ProactiveOfferRail,
         PromptInjectionRail,
@@ -74,6 +76,7 @@ def _rail_factories() -> dict[str, Callable[[], Any]]:
         "LOOP": LoopRail,
         "DLEX_IN": DataLeakageInputRail,
         "OOS": OutOfScopeRail,
+        "COER": CoherenceRail,
         # Output
         "MSK_OUT": OutputPiiMaskRail,
         "OUTPUT_MSK": OutputPiiMaskRail,
@@ -83,6 +86,7 @@ def _rail_factories() -> dict[str, Callable[[], Any]]:
         "COMPLIANCE": ComplianceRail,
         "AOFERTA": ProactiveOfferRail,
         "PROACTIVE_OFFER": ProactiveOfferRail,
+        "FRASEOLOGIA": PhraseologyRail,
         "REVPREC": PrematureActionRail,
         "PREMATURE_ACTION": PrematureActionRail,
         "DLEX_OUT": DataLeakageOutputRail,

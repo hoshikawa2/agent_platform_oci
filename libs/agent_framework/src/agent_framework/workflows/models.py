@@ -4,11 +4,26 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class WorkflowExpectedInput(BaseModel):
+    key: str = Field(min_length=1)
+    allowed_values: list[Any] = Field(default_factory=list)
+    normalize: Literal["none", "upper_strip", "lower_strip", "strip"] = "none"
+
+
+class WorkflowPause(BaseModel):
+    enabled: bool = True
+    when: dict[str, Any] | None = None
+    return_from: str = "$.output"
+    expected_input: WorkflowExpectedInput | None = None
+    resume_from: str | None = None
+
+
 class WorkflowNode(BaseModel):
     id: str = Field(min_length=1)
     action: str = Field(min_length=1)
     input: dict[str, Any] = Field(default_factory=dict)
     retry: int = Field(default=0, ge=0, le=10)
+    pause: WorkflowPause | None = None
 
 
 class WorkflowEdge(BaseModel):
@@ -34,6 +49,9 @@ class WorkflowDefinition(BaseModel):
         known = set(ids)
         if self.start not in known:
             raise ValueError(f"Nó inicial inexistente: {self.start}")
+        for node in self.nodes:
+            if node.pause and node.pause.resume_from and node.pause.resume_from not in known:
+                raise ValueError(f"resume_from inexistente em {node.id}: {node.pause.resume_from}")
         for edge in self.edges:
             if edge.source not in known:
                 raise ValueError(f"Origem inexistente: {edge.source}")
@@ -46,7 +64,10 @@ class WorkflowRunResult(BaseModel):
     execution_id: str
     workflow_name: str
     workflow_version: int
-    status: Literal["COMPLETED", "FAILED"]
+    status: Literal["COMPLETED", "PAUSED", "FAILED"]
     output: dict[str, Any] = Field(default_factory=dict)
     state: dict[str, Any] = Field(default_factory=dict)
+    pause: dict[str, Any] | None = None
+    trace: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
+    error_details: dict[str, Any] = Field(default_factory=dict)

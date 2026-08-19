@@ -1,6 +1,6 @@
 """Prompt do judge FALLBACK: reescreve quando um judge bloqueia.
 
-Estrutura espelhada ao `agente_contas_tim/guardrails/prompts/fallback.py`,
+Estrutura espelhada ao `agent_framework/guardrails/calibrated/prompts/fallback.py`,
 acrescentando os códigos específicos dos judges (ALUC, RQLT, VCTN, CSI).
 Reusa `format_context_block` do pacote de guardrails para evitar duplicação.
 """

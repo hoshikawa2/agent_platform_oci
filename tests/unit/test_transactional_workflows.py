@@ -74,3 +74,37 @@ edges:
     assert await adapter.execute_from_policy(tool_name="x", arguments={}, policy={"execution": {"mode": "direct_tool"}}) is None
     result = await adapter.execute_from_policy(tool_name="x", arguments={}, policy={"execution": {"mode": "workflow", "workflow": "job", "version": "active"}})
     assert result["status"] == "COMPLETED"
+
+@pytest.mark.asyncio
+async def test_offline_regression_mode_forces_deterministic_backend_even_if_langgraph_is_available(tmp_path: Path, monkeypatch):
+    (tmp_path / "offline.active.yaml").write_text("version: 1\n", encoding="utf-8")
+    (tmp_path / "offline.v1.yaml").write_text(
+        """name: offline
+version: 1
+start: one
+nodes:
+  - id: one
+    action: one
+edges:
+  - from: one
+    to: END
+""",
+        encoding="utf-8",
+    )
+    actions = WorkflowActionRegistry()
+    actions.register("one", lambda params, state: {"ok": True})
+    runtime = WorkflowRuntime(
+        FileWorkflowRepository(tmp_path),
+        actions=actions,
+        allow_deterministic_fallback=True,
+    )
+
+    def _must_not_compile(_definition):
+        raise AssertionError("offline regression mode must not compile LangGraph")
+
+    monkeypatch.setattr(runtime, "_compile", _must_not_compile)
+    result = await runtime.arun("offline", {})
+
+    assert result.status == "COMPLETED"
+    assert result.output["one"]["ok"] is True
+    assert runtime._compiled == {}

@@ -8,7 +8,7 @@ Rail determinístico (sem LLM): zero chamadas externas, latência desprezível.
 Implementa o Protocol ``Rail`` de contracts.py.
 
 Exemplo de uso:
-    from agente_contas_tim.guardrails.rails.alcada import AlcadaRail
+    from agent_framework.guardrails.calibrated.rails.alcada import AlcadaRail
     from ..contracts import GuardRailContext
 
     rail = AlcadaRail()

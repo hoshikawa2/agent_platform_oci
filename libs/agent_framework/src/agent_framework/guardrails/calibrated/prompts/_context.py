@@ -6,13 +6,14 @@ agente esta executando — sem isso, OOS classifica "Olá, como vai?" como
 in-scope (a frase em si nao e off-topic) quando deveria reprovar o turno
 porque o cliente perguntou algo fora de telecom.
 
-`format_context_block` extrai o historico recente da conversa (com tool calls
-e tool results) e o renderiza como string pronta para ser injetada no prompt.
-SystemMessage e filtrada — o rail nao precisa do system prompt do agente.
+`format_context_block` extrai o historico recente da conversa e o renderiza
+como string pronta para ser injetada no prompt. So os turnos de fala entram:
+SystemMessage, ToolMessage e as linhas de tool_call sao filtrados — o rail
+julga a CONVERSA, e o resultado de tool que importa ja aparece ecoado na fala
+do assistente (mante-los so duplicava o turno e gastava token do auditor).
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 
@@ -26,9 +27,11 @@ def _truncate(text: str, limit: int = 2000) -> str:
 _ROLE_BY_CLASS = {
     "HumanMessage": "user",
     "AIMessage": "assistant",
-    "ToolMessage": "tool",
-    "FunctionMessage": "tool",
 }
+
+# Filtradas do bloco: system nao e conversa; tool e duplicata do que o
+# assistente ecoa em seguida (ver docstring do modulo).
+_SKIPPED_CLASSES = frozenset({"SystemMessage", "ToolMessage", "FunctionMessage"})
 
 
 def _message_content_to_str(content: Any) -> str:
@@ -47,53 +50,17 @@ def _message_content_to_str(content: Any) -> str:
     return str(content) if content is not None else ""
 
 
-def _tool_call_name(call: dict) -> str:
-    name = call.get("name") or call.get("tool")
-    if isinstance(name, str) and name:
-        return name
-    function = call.get("function")
-    if isinstance(function, dict):
-        fn_name = function.get("name")
-        if isinstance(fn_name, str):
-            return fn_name
-    elif isinstance(function, str):
-        return function
-    return ""
-
-
-def _format_tool_calls(tool_calls: Any) -> str:
-    if not isinstance(tool_calls, list) or not tool_calls:
-        return ""
-    rendered: list[str] = []
-    for call in tool_calls:
-        if not isinstance(call, dict):
-            continue
-        name = _tool_call_name(call)
-        if not name:
-            continue
-        args = call.get("args") or call.get("arguments") or {}
-        if isinstance(args, str):
-            args_str = args
-        else:
-            try:
-                args_str = json.dumps(args, ensure_ascii=False, default=str)
-            except (TypeError, ValueError):
-                args_str = str(args)
-        rendered.append(f"{name}({_truncate(args_str, 300)})")
-    return "; ".join(rendered)
-
-
 def _format_conversation_history(
     history: Any,
     *,
     per_message_limit: int = 2000,
     trim_trailing_assistant: bool = True,
 ) -> str:
-    """Renderiza historico filtrando SystemMessage e expondo tool calls.
+    """Renderiza o historico so com os turnos de FALA (user/assistant).
 
-    Cada AIMessage com `tool_calls` ganha uma linha extra `[assistant->tool]`
-    listando nome(args). ToolMessage aparece como `[tool] <content>`. System
-    e omitida porque o rail nao precisa do prompt do agente.
+    SystemMessage, ToolMessage e tool_calls sao filtrados (ver docstring do
+    modulo): o rail julga a conversa, e o conteudo de tool ja chega ecoado na
+    fala do assistente.
 
     `trim_trailing_assistant` remove a ultima AIMessage do final — os output
     rails recebem essa mensagem como `text` e ela ja aparece no bloco
@@ -108,29 +75,33 @@ def _format_conversation_history(
     lines: list[str] = []
     for msg in msgs:
         cls = type(msg).__name__
-        if cls == "SystemMessage":
+        if cls in _SKIPPED_CLASSES:
             continue
         role = _ROLE_BY_CLASS.get(cls, cls.lower())
         content = _message_content_to_str(getattr(msg, "content", ""))
         if content.strip():
             lines.append(f"[{role}] {_truncate(content, per_message_limit)}")
-        tool_calls = getattr(msg, "tool_calls", None)
-        rendered_tools = _format_tool_calls(tool_calls)
-        if rendered_tools:
-            lines.append(f"[{role}->tool] {rendered_tools}")
     return "\n".join(lines)
 
 
-def format_context_block(context: dict | None) -> str:
+def format_context_block(
+    context: dict | None,
+    *,
+    trim_trailing_assistant: bool = True,
+) -> str:
     """Renderiza o bloco de contexto padrao para rails de guardrail.
+
+    `trim_trailing_assistant=False` mantem a ultima fala do agente no bloco —
+    necessario para rails de INPUT que julgam a fala do cliente COMO RESPOSTA
+    (ex.: COER), onde a pergunta pendente do agente e justamente o que decide
+    o veredito. Para rails de OUTPUT o default (True) continua valendo: a fala
+    do agente ja vem no bloco "Resposta:".
 
     Retorna string vazia quando nao ha historico util. Formato:
 
         Historico da conversa:
         [user] ...
         [assistant] ...
-        [assistant->tool] buscar_informacao({...})
-        [tool] ...
         [user] ...
 
     Builders de prompt recebem esta string ja formatada e a injetam no
@@ -140,7 +111,7 @@ def format_context_block(context: dict | None) -> str:
         return ""
     history_block = _format_conversation_history(
         context.get("conversation_history"),
-        trim_trailing_assistant=True,
+        trim_trailing_assistant=trim_trailing_assistant,
     )
     if not history_block:
         return ""

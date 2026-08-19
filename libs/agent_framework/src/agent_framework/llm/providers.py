@@ -24,6 +24,40 @@ def _clean_config_value(value: Any) -> str | None:
     return value or None
 
 
+
+
+def _reasoning_enabled_for_model(*, provider: str, model: str | None, mode: str | None) -> bool:
+    """Resolve whether reasoning_effort should be sent for this provider/model.
+
+    Default mode is ``auto``. Auto is intentionally conservative: only known
+    reasoning-capable model families are enabled. Operators may override with
+    true/false through LLM_REASONING_ENABLED or an explicit invocation kwarg.
+    """
+    normalized_mode = str(mode or "auto").strip().lower()
+    if normalized_mode in {"false", "0", "no", "off"}:
+        return False
+    if normalized_mode in {"true", "1", "yes", "on"}:
+        return True
+
+    model_name = (_clean_config_value(model) or "").lower()
+    provider_name = str(provider or "").strip().lower()
+
+    # OCI native SDK currently exposes reasoning_effort on GenericChatRequest,
+    # but not every OCI-hosted model/endpoint accepts it. Keep auto allowlisted.
+    if provider_name == "oci_sdk":
+        return model_name.startswith(("openai.gpt-oss", "gpt-oss"))
+
+    # OpenAI-compatible paths can support reasoning models depending on endpoint.
+    if provider_name in {"oci_openai", "openai_compatible"}:
+        return model_name.startswith((
+            "openai.gpt-oss", "gpt-oss",
+            "openai.gpt-5", "gpt-5",
+            "openai.o1", "openai.o3", "openai.o4",
+            "o1", "o3", "o4",
+        ))
+
+    return False
+
 def _validate_openai_base_url(base_url: str | None, *, provider: str) -> str:
     cleaned = _clean_config_value(base_url)
     if not cleaned:
@@ -552,7 +586,20 @@ class OCISDKProvider(LLMProvider):
 
         temperature = kwargs.get("temperature", getattr(self.settings, "LLM_TEMPERATURE", 0.2))
         max_tokens = kwargs.get("max_tokens", getattr(self.settings, "LLM_MAX_TOKENS", 2048))
-        reasoning_effort = kwargs.get("reasoning_effort") or getattr(self.settings, "LLM_REASONING_EFFORT", None)
+        configured_reasoning_effort = kwargs.get("reasoning_effort") or getattr(self.settings, "LLM_REASONING_EFFORT", None)
+        reasoning_mode = kwargs.get("reasoning_enabled", getattr(self.settings, "LLM_REASONING_ENABLED", "auto"))
+        reasoning_effort = (
+            configured_reasoning_effort
+            if configured_reasoning_effort and _reasoning_enabled_for_model(
+                provider="oci_sdk", model=model, mode=reasoning_mode
+            )
+            else None
+        )
+        if configured_reasoning_effort and not reasoning_effort:
+            logger.info(
+                "reasoning_effort suppressed provider=oci_sdk model=%s mode=%s",
+                model, reasoning_mode,
+            )
 
         compartment_id = (
                 kwargs.get("compartment_id")

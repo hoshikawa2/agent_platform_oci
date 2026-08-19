@@ -16,7 +16,7 @@ class WorkflowExecutionPolicy(BaseModel):
 class ToolPolicy(BaseModel):
     """Política de execução aplicada antes da chamada MCP ou workflow."""
 
-    operation_type: Literal["read_only", "transactional"] = "read_only"
+    operation_type: Literal["read_only", "transactional", "conversational", "internal"] = "read_only"
     require_confirmation: bool = False
     requires: list[str] = Field(default_factory=list)
     execution: WorkflowExecutionPolicy = Field(default_factory=WorkflowExecutionPolicy)

@@ -129,6 +129,8 @@ def _is_vas_section_name(section_name: str) -> bool:
         or "servicos de valor adicionado" in normalized
         or "servicos valor adicionado" in normalized
         or "sva detalhe total" in normalized
+        or "servicos contratados de parceiros" in normalized
+        or "servico contratado de parceiro" in normalized
     )
 
 
@@ -185,13 +187,23 @@ def _extract_contestation_invoice_items(
             "validatedAmount",
         )
         if candidate_name and candidate_amount is not None and candidate_amount > 0:
+            payload_type = str(payload.get("type") or payload.get("tipo") or "").strip()
+            payload_desc = str(payload.get("desc") or "").strip()
+            classe = str(payload.get("classe", "")).strip().lower()
+            is_vas = (
+                _is_vas_section_name(section_name)
+                or _is_vas_section_name(payload_type)
+                or classe in {"avulso", "estrategico"}
+            )
             found.append(
                 {
                     "name": candidate_name,
                     "amount": _money(candidate_amount),
-                    "is_vas": _is_vas_section_name(section_name),
+                    "is_vas": is_vas,
                     "section": section_name,
-                    "classe": str(payload.get("classe", "")).strip().lower(),
+                    "source_type": payload_type,
+                    "source_desc": payload_desc,
+                    "classe": classe,
                     "estrategico": bool(payload.get("estrategico")),
                     "verb": str(payload.get("verb", "")).strip().lower(),
                 }
@@ -397,14 +409,25 @@ def validate_contestation_items(
                 "vas_estrategico": False,
                 "status": "em_validacao",
             }
-            matched_candidate = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if _is_same_plan_name(candidate.get("name", ""), item_name)
-                ),
-                None,
+            matching_candidates = [
+                candidate
+                for candidate in candidates
+                if _is_same_plan_name(candidate.get("name", ""), item_name)
+            ]
+            # A mesma cobrança pode aparecer em múltiplas visões da fatura.
+            # Prefira a evidência que traz classificação explícita de VAS em vez
+            # de aceitar a primeira ocorrência genérica e concluir incorretamente
+            # que o item está fora da seção VAS.
+            matching_candidates.sort(
+                key=lambda candidate: (
+                    0 if (
+                        str(candidate.get("classe", "")).strip().lower() in {"avulso", "estrategico"}
+                        or bool(candidate.get("is_vas"))
+                    ) else 1,
+                    0 if _normalize_match_text(candidate.get("name", "")) == _normalize_match_text(item_name) else 1,
+                )
             )
+            matched_candidate = matching_candidates[0] if matching_candidates else None
             if matched_candidate is None:
                 _record_failure(
                     item_log,
@@ -414,6 +437,9 @@ def validate_contestation_items(
                 continue
             item_log["item_na_fatura"] = True
             item_log["item_confirmado"] = True
+            item_log["item_fatura_resolvido"] = str(matched_candidate.get("name", "") or "")
+            item_log["secao_fatura"] = str(matched_candidate.get("section", "") or "")
+            item_log["tipo_fatura"] = str(matched_candidate.get("source_type", "") or "")
 
             classe = str(matched_candidate.get("classe", "")).strip().lower()
             is_strategic = (

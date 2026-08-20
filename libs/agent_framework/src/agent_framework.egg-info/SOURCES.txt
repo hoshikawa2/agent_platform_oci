@@ -1,6 +1,7 @@
 pyproject.toml
 src/agent_framework/__init__.py
 src/agent_framework/gateway_policy_context.py
+src/agent_framework/idempotency.py
 src/agent_framework/observer.py
 src/agent_framework/runtime_mcp_gateway_adapter.py
 src/agent_framework.egg-info/PKG-INFO
@@ -28,6 +29,8 @@ src/agent_framework/channels/__init__.py
 src/agent_framework/channels/adapters.py
 src/agent_framework/channels/base.py
 src/agent_framework/channels/gateway.py
+src/agent_framework/channels/interruption.py
+src/agent_framework/channels/transcription.py
 src/agent_framework/checkpoints/__init__.py
 src/agent_framework/checkpoints/checkpoint_repository.py
 src/agent_framework/checkpoints/langgraph_saver.py
@@ -73,9 +76,11 @@ src/agent_framework/guardrails/calibrated/pipeline.py
 src/agent_framework/guardrails/calibrated/prompts/__init__.py
 src/agent_framework/guardrails/calibrated/prompts/_context.py
 src/agent_framework/guardrails/calibrated/prompts/ausencia_oferta_proativa.py
+src/agent_framework/guardrails/calibrated/prompts/coerencia.py
 src/agent_framework/guardrails/calibrated/prompts/dlex_in.py
 src/agent_framework/guardrails/calibrated/prompts/dlex_out.py
 src/agent_framework/guardrails/calibrated/prompts/fallback.py
+src/agent_framework/guardrails/calibrated/prompts/fraseologia.py
 src/agent_framework/guardrails/calibrated/prompts/out_of_scope.py
 src/agent_framework/guardrails/calibrated/prompts/pinj.py
 src/agent_framework/guardrails/calibrated/prompts/ragsec.py
@@ -174,6 +179,8 @@ src/agent_framework/persistence/__init__.py
 src/agent_framework/persistence/mongodb_store.py
 src/agent_framework/persistence/oracle_store.py
 src/agent_framework/persistence/sqlite_store.py
+src/agent_framework/presentation/__init__.py
+src/agent_framework/presentation/renderers.py
 src/agent_framework/rag/__init__.py
 src/agent_framework/rag/embedding_provider.py
 src/agent_framework/rag/graph_store.py
@@ -200,6 +207,7 @@ src/agent_framework/supervisor/__init__.py
 src/agent_framework/supervisor/router_supervisor.py
 src/agent_framework/supervisor/supervisor.py
 src/agent_framework/workflows/__init__.py
+src/agent_framework/workflows/graph.py
 src/agent_framework/workflows/models.py
 src/agent_framework/workflows/registry.py
 src/agent_framework/workflows/repository.py

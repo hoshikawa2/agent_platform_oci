@@ -28,6 +28,11 @@ class MCPToolConfig(BaseModel):
     execution_policy: dict[str, Any] = Field(default_factory=dict)
     selection_keywords: list[str] = Field(default_factory=list)
 
+    # Política declarativa opcional de apresentação da resposta da tool.
+    # Para novos projetos prefira mode=renderer + renderer=<nome simbólico>.
+    # O framework resolve o nome no registry; a regra de negócio fica na aplicação.
+    response: dict[str, Any] = Field(default_factory=dict)
+
     # Política declarativa de cache da tool, lida diretamente de config/tools.yaml.
     # Exemplo:
     # cache:

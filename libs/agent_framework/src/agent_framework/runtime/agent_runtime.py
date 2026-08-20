@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
@@ -14,6 +15,21 @@ from agent_framework.memory.summary_memory import MemoryContext, render_recent_m
 logger = logging.getLogger(__name__)
 
 _EMPTY_VALUES = (None, "", {}, [])
+
+_ACTIVE_TRANSACTION_STATUSES = {
+    "COLLECTING_PARAMETERS",
+    "AWAITING_CONFIRMATION",
+    "WORKFLOW_PAUSED",
+    "TOOL_RESULT_CLARIFICATION",
+    "EXECUTING",
+}
+_TERMINAL_TRANSACTION_STATUSES = {
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "BLOCKED",
+    "OUT_OF_SCOPE",
+}
 
 
 @dataclass(slots=True)
@@ -519,11 +535,42 @@ class AgentRuntimeMixin:
             return str(response.get("content") or response.get("text") or response.get("answer") or "")
         return str(getattr(response, "content", None) or getattr(response, "text", None) or response)
 
+    def _drop_stale_message_extracted_arguments(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        explicit_fields: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """Remove valores herdados para campos cujo contrato diz ``from: message``.
+
+        Em uma NOVA transação, ``context.tool_arguments`` pode ainda carregar
+        parâmetros de uma operação anterior. Campos declarados pelo mapper como
+        extraídos da mensagem corrente não podem nascer desse contexto antigo.
+        Valores explicitamente extraídos deterministicamente do turno atual são
+        preservados. Durante coleta incremental este helper não é usado.
+        """
+        router = getattr(self, "tool_router", None)
+        if not router or not hasattr(router, "parameter_extract_rules"):
+            return dict(arguments or {})
+        rules = router.parameter_extract_rules(tool_name) or {}
+        explicit = {str(name) for name in explicit_fields}
+        cleaned = dict(arguments or {})
+        for field_name, rule in rules.items():
+            if (
+                str(rule.get("from") or "message").lower() == "message"
+                and str(field_name) not in explicit
+            ):
+                cleaned.pop(str(field_name), None)
+        return cleaned
+
     async def _extract_mcp_parameters(
         self,
         tool_name: str,
         arguments: dict[str, Any],
         state: dict[str, Any],
+        *,
+        overwrite_from_message: bool = False,
     ) -> dict[str, Any]:
         """Executa regras ``extract`` declaradas para a tool escolhida.
 
@@ -544,9 +591,13 @@ class AgentRuntimeMixin:
         llm = getattr(self, "llm", None)
 
         for field_name, rule in rules.items():
-            if resolved.get(field_name) not in _EMPTY_VALUES:
+            from_message = str(rule.get("from") or "message").lower() == "message"
+            if not from_message:
                 continue
-            if str(rule.get("from") or "message").lower() != "message":
+            # Em uma nova transação, a mensagem atual prevalece para campos
+            # declarados como ``from: message``. Durante COLLECTING_PARAMETERS
+            # o default permanece False para congelar valores já coletados.
+            if resolved.get(field_name) not in _EMPTY_VALUES and not overwrite_from_message:
                 continue
             strategy = str(rule.get("strategy") or "llm").lower()
             value: Any = None
@@ -1167,19 +1218,13 @@ class AgentRuntimeMixin:
         return None
 
     def _select_transactional_tool(self, tools: list[str], text: str) -> str | None:
-        """Seleciona a ação transacional da intent atual.
-
-        O match por ``selection_keywords`` continua tendo precedência. Porém, depois
-        que o EnterpriseRouter já restringiu ``tools`` às capabilities da intent,
-        uma única tool transacional é uma escolha determinística e segura. Isso
-        evita perder frases naturais como ``quero cancelar TIM Fashion Mensal`` ou
-        ``não contratei esse serviço`` só porque elas não repetem literalmente uma
-        keyword de ``tools.yaml``.
-        """
         matched = self._transactional_action_match(text, tools)
         if matched:
             return matched
 
+        # Generic fallback: once routing has constrained the allowlist, a single
+        # transactional capability is unambiguous even when the user's wording
+        # does not contain one of the tool-specific selection keywords.
         transactional = [
             tool
             for tool in tools
@@ -1348,12 +1393,112 @@ class AgentRuntimeMixin:
             state["transaction_status"] = "COMPLETED" if result.get("ok") else "FAILED"
         return result
 
+    @staticmethod
+    def _transaction_is_active(state: dict[str, Any]) -> bool:
+        return str(state.get("transaction_status") or "") in _ACTIVE_TRANSACTION_STATUSES
+
+    @staticmethod
+    def _transaction_is_terminal(state: dict[str, Any]) -> bool:
+        return str(state.get("transaction_status") or "") in _TERMINAL_TRANSACTION_STATUSES
+
+    def _active_transaction(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        """Return only the operationally active transaction.
+
+        Closed transactions are history and must never provide tool/arguments for
+        a later turn.  For backward compatibility, an old checkpoint that has the
+        legacy selected/pending fields but an ACTIVE status is lazily hydrated into
+        ``active_transaction``.
+        """
+        if not self._transaction_is_active(state):
+            return None
+        current = state.get("active_transaction")
+        if isinstance(current, dict) and current.get("tool_name"):
+            return current
+        legacy = state.get("pending_tool_call") or state.get("selected_tool_call") or {}
+        if not isinstance(legacy, dict) or not legacy.get("tool_name"):
+            return None
+        current = {
+            "transaction_id": str(uuid.uuid4()),
+            "tool_name": legacy.get("tool_name"),
+            "arguments": dict(legacy.get("arguments") or {}),
+            "status": state.get("transaction_status"),
+            "started_from_intent": state.get("intent"),
+        }
+        state["active_transaction"] = current
+        return current
+
+    def _set_active_transaction(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        status: str,
+        transaction_id: str | None = None,
+    ) -> dict[str, Any]:
+        current = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+        txid = transaction_id or current.get("transaction_id") or str(uuid.uuid4())
+        tx = {
+            "transaction_id": txid,
+            "tool_name": tool_name,
+            "arguments": dict(arguments or {}),
+            "status": status,
+            "started_from_intent": current.get("started_from_intent") or state.get("intent"),
+        }
+        state["active_transaction"] = tx
+        return tx
+
+    def _finish_active_transaction(self, state: dict[str, Any], status: str) -> None:
+        """Close the active transaction without leaving operational state behind."""
+        active = self._active_transaction(state)
+        if isinstance(active, dict):
+            state["last_transaction"] = {
+                **active,
+                "status": status,
+            }
+        state["active_transaction"] = None
+        state["selected_tool_call"] = {}
+        state["pending_tool_call"] = {}
+        state["missing_parameters"] = []
+        state["confirmation_required"] = False
+        state["confirmation_received"] = status == "COMPLETED"
+        state["next_state"] = None
+        state["transaction_status"] = status
+
+    def _normalize_transaction_lifecycle(self, state: dict[str, Any]) -> None:
+        """Ensure closed transactions cannot leak into a later user turn."""
+        if self._transaction_is_terminal(state):
+            # Preserve a compact audit snapshot, but remove every operational latch.
+            active = state.get("active_transaction")
+            if not isinstance(active, dict):
+                legacy = state.get("pending_tool_call") or state.get("selected_tool_call")
+                if isinstance(legacy, dict) and legacy.get("tool_name"):
+                    active = {
+                        "transaction_id": str(uuid.uuid4()),
+                        "tool_name": legacy.get("tool_name"),
+                        "arguments": dict(legacy.get("arguments") or {}),
+                        "status": state.get("transaction_status"),
+                        "started_from_intent": state.get("intent"),
+                    }
+            if isinstance(active, dict):
+                state["last_transaction"] = {**active, "status": state.get("transaction_status")}
+            state["active_transaction"] = None
+            state["selected_tool_call"] = {}
+            state["pending_tool_call"] = {}
+            state["missing_parameters"] = []
+            state["confirmation_required"] = False
+            state["confirmation_received"] = False
+            state["next_state"] = None
+            return
+        if self._transaction_is_active(state):
+            self._active_transaction(state)
+
     def transaction_state_patch(self, state: dict[str, Any]) -> dict[str, Any]:
         keys = (
             "available_mcp_tools", "selected_tool_call", "pending_tool_call",
             "transaction_status", "confirmation_required", "confirmation_received",
             "tool_policy_result", "missing_parameters", "next_state", "pending_domain_workflow", "pending_tool_clarification",
-            "business_workflows_executed",
+            "business_workflows_executed", "active_transaction", "last_transaction",
         )
         return {key: state.get(key) for key in keys if key in state}
 
@@ -1411,6 +1556,9 @@ class AgentRuntimeMixin:
             "next_state": collecting_state,
             "tool_policy_result": {**policy, "tool_name": tool_name, "action": "collecting_parameters"},
         })
+        self._set_active_transaction(
+            state, tool_name=tool_name, arguments=arguments, status="COLLECTING_PARAMETERS"
+        )
 
     def transaction_confirmation_message(self, state: dict[str, Any]) -> str | None:
         if state.get("transaction_status") != "AWAITING_CONFIRMATION":
@@ -1446,6 +1594,185 @@ class AgentRuntimeMixin:
                 matches.append(name)
         return matches or available_tools[:1]
 
+    @staticmethod
+    def _response_path_get(data: Any, path: str | None) -> Any:
+        """Resolve caminho simples ``a.b.c`` em dicts sem conhecer o domínio."""
+        if not path:
+            return data
+        current = data
+        for part in str(path).split("."):
+            if isinstance(current, Mapping):
+                current = current.get(part)
+            else:
+                return None
+        return current
+
+    @staticmethod
+    def _response_format_value(value: Any, formatter: str | None) -> Any:
+        """Formatadores genéricos permitidos pela política declarativa de resposta."""
+        if formatter in (None, "", "raw"):
+            return value
+        if formatter == "decimal_2_comma":
+            try:
+                return f"{float(value):.2f}".replace(".", ",")
+            except (TypeError, ValueError):
+                return value
+        if formatter == "decimal_2":
+            try:
+                return f"{float(value):.2f}"
+            except (TypeError, ValueError):
+                return value
+        if formatter == "str":
+            return "" if value is None else str(value)
+        return value
+
+    @classmethod
+    def _response_template(cls, template: str, data: Mapping[str, Any], formats: Mapping[str, Any] | None = None) -> str | None:
+        """Renderiza template somente se todos os placeholders existirem.
+
+        Isso evita respostas como ``None`` quando o contrato da tool não corresponde
+        à configuração. Nesse caso o runtime cai no fallback legado/LLM.
+        """
+        formats = formats or {}
+        names = set(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", str(template)))
+        values: dict[str, Any] = {}
+        for name in names:
+            if name not in data or data.get(name) is None:
+                return None
+            values[name] = cls._response_format_value(data.get(name), formats.get(name))
+        try:
+            return str(template).format(**values)
+        except Exception:
+            return None
+
+    def _render_declared_tool_response(self, tool_name: str | None, data: dict[str, Any], *, agent_label: str, state: dict[str, Any] | None = None) -> str | None:
+        """Renderiza resposta MCP por configuração, sem regras de negócio no core.
+
+        A configuração vive em ``tools.yaml`` e suporta primitives genéricas:
+        ``template``, ``list`` e ``lines``. Se não houver política, retorna ``None``
+        para preservar integralmente o comportamento legado.
+        """
+        router = getattr(self, "tool_router", None)
+        registry = getattr(router, "registry", None)
+        cfg = registry.get_tool(str(tool_name)) if registry and tool_name else None
+        policy = dict(getattr(cfg, "response", None) or {}) if cfg else {}
+        if not policy:
+            return None
+
+        mode = str(policy.get("mode") or "").strip().lower()
+
+        # Extensão preferencial: o core conhece apenas um nome simbólico.
+        # O código do renderer é registrado pela aplicação/domínio.
+        if mode == "renderer":
+            renderer_name = str(policy.get("renderer") or "").strip()
+            if not renderer_name:
+                return None
+            try:
+                from agent_framework.presentation import render_tool_response
+
+                return render_tool_response(
+                    renderer_name,
+                    tool_name=str(tool_name or ""),
+                    result=data,
+                    state=state or {},
+                    agent_label=agent_label,
+                )
+            except Exception:
+                # Compatibilidade/fail-open: renderer ausente ou com erro não quebra
+                # agentes legados; o fluxo continua para o fallback existente.
+                return None
+
+        # Modos declarativos da versão anterior são preservados apenas por
+        # compatibilidade. Novos projetos devem usar mode=renderer.
+        base: dict[str, Any] = {**data, "agent_label": agent_label, "result": data}
+
+        if mode == "template":
+            template = policy.get("template")
+            if not template:
+                return None
+            # ``result`` pode ser usado para debug/compatibilidade; demais campos
+            # precisam existir para impedir None em texto de cliente.
+            if "{result}" in str(template):
+                try:
+                    return str(template).replace("{result}", str(data)).replace("{agent_label}", agent_label)
+                except Exception:
+                    return None
+            return self._response_template(str(template), base, policy.get("formats"))
+
+        if mode == "list":
+            items = self._response_path_get(data, policy.get("source"))
+            if not isinstance(items, list) or not items:
+                return str(policy.get("empty_message") or "").strip() or None
+            rendered_items: list[str] = []
+            item_template = str(policy.get("item_template") or "{item}")
+            item_formats = policy.get("item_formats") or {}
+            for raw in items:
+                if isinstance(raw, Mapping):
+                    item_data = dict(raw)
+                else:
+                    item_data = {"item": raw}
+                item_data["agent_label"] = agent_label
+                line = self._response_template(item_template, item_data, item_formats)
+                if line:
+                    rendered_items.append(line)
+            if not rendered_items:
+                return None
+            count = len(rendered_items)
+            heading_template = policy.get("heading_singular") if count == 1 else policy.get("heading_plural")
+            heading = None
+            if heading_template:
+                heading = self._response_template(
+                    str(heading_template),
+                    {"agent_label": agent_label, "count": count},
+                )
+            sep = str(policy.get("separator") or "\n")
+            body = sep.join(rendered_items)
+            return f"{heading}\n{body}" if heading else body
+
+        if mode == "lines":
+            lines: list[str] = []
+            for spec in policy.get("lines") or []:
+                if not isinstance(spec, Mapping):
+                    continue
+                kind = str(spec.get("kind") or "template")
+                if kind == "template":
+                    when = spec.get("when_present")
+                    if when and self._response_path_get(data, str(when)) is None:
+                        continue
+                    line = self._response_template(str(spec.get("template") or ""), base, spec.get("formats"))
+                    if line:
+                        lines.append(line)
+                elif kind == "list":
+                    values = self._response_path_get(data, spec.get("source"))
+                    if not isinstance(values, list) or not values:
+                        continue
+                    fields = list(spec.get("item_fields") or ["item"])
+                    rendered: list[str] = []
+                    for value in values:
+                        if isinstance(value, Mapping):
+                            chosen = next((value.get(f) for f in fields if value.get(f) not in _EMPTY_VALUES), None)
+                        else:
+                            chosen = value
+                        if chosen not in _EMPTY_VALUES:
+                            rendered.append(str(chosen))
+                    if rendered:
+                        lines.append(
+                            str(spec.get("prefix") or "")
+                            + str(spec.get("separator") or "; ").join(rendered)
+                            + str(spec.get("suffix") or "")
+                        )
+            if not lines:
+                return None
+            return str(policy.get("joiner") or " ").join(lines)
+
+        if mode == "field":
+            value = self._response_path_get(data, policy.get("field"))
+            return str(value).strip() if value not in _EMPTY_VALUES else None
+
+        if mode in {"llm", "none"}:
+            return None
+        return None
+
     def build_direct_mcp_answer(self, state: dict[str, Any], mcp_results: list[dict[str, Any]], *, agent_label: str) -> str | None:
         """Resposta determinística para consultas estruturadas simples."""
         requires_rag, _ = self._mcp_rag_directive(mcp_results)
@@ -1475,6 +1802,14 @@ class AgentRuntimeMixin:
             return None
         tool = ok[0].get("tool_name")
         data = ok[0]["result"]
+
+        # Primeiro tenta o contrato genérico e declarativo de apresentação.
+        # Se a aplicação não o configurou, preserva exatamente o fallback legado
+        # abaixo para não quebrar projetos existentes.
+        declared = self._render_declared_tool_response(tool, data, agent_label=agent_label, state=state)
+        if declared is not None:
+            return declared
+
         if tool == "consultar_pedido":
             oid=data.get("order_id"); status=data.get("status"); total=data.get("valor_total")
             lines=[f"[{agent_label}] Pedido {oid}: status {status}."]
@@ -1509,6 +1844,7 @@ class AgentRuntimeMixin:
         available_tools = list(tools if tools is not None else (state.get("mcp_tools") or []))
         state["available_mcp_tools"] = available_tools
         text = state.get("sanitized_input") or state.get("user_text") or ""
+        self._normalize_transaction_lifecycle(state)
 
         # Clarificação de resultado de tool tem precedência: reutiliza a mesma tool
         # e argumentos, alterando apenas o parâmetro escolhido pelo usuário.
@@ -1524,7 +1860,7 @@ class AgentRuntimeMixin:
 
         # Antes de confirmar, complete os parâmetros obrigatórios da ação.
         if state.get("transaction_status") == "COLLECTING_PARAMETERS":
-            selected = dict(state.get("selected_tool_call") or {})
+            selected = dict(self._active_transaction(state) or state.get("selected_tool_call") or {})
             tool_name = selected.get("tool_name")
             if tool_name:
                 previous_args = dict(selected.get("arguments") or {})
@@ -1535,14 +1871,20 @@ class AgentRuntimeMixin:
                     aliases=aliases,
                     extra_args=self._extract_action_arguments(text),
                 )
-                arguments = {
-                    **previous_args,
-                    **{k: v for k, v in new_args.items() if v not in (None, "", [], {})},
-                }
-                # Execute parameter extraction before deciding whether the workflow
-                # must enter COLLECTING_PARAMETERS. Otherwise parameters declared
-                # with strategy=llm in mcp_parameter_mapping.yaml are invisible to
-                # the deterministic transaction state machine.
+                # Durante coleta incremental, valores de contexto podem ainda conter
+                # parâmetros de uma operação anterior. O que já foi coletado para a
+                # transação pendente prevalece; o turno atual só preenche lacunas.
+                non_empty_new = {k: v for k, v in new_args.items() if v not in (None, "", [], {})}
+                arguments = {**non_empty_new, **previous_args}
+
+                # Campos de envelope pertencem ao turno corrente e devem permanecer
+                # atualizados, mesmo quando os parâmetros de negócio ficam congelados.
+                for per_turn_key in ("query", "operator_instructions", "interaction_key"):
+                    if non_empty_new.get(per_turn_key) not in (None, "", [], {}):
+                        arguments[per_turn_key] = non_empty_new[per_turn_key]
+
+                # Reutiliza o contrato declarativo para preencher somente os campos
+                # ainda faltantes; campos previamente coletados não são sobrescritos.
                 arguments = await self._extract_mcp_parameters(tool_name, arguments, state)
                 policy = self._resolve_tool_execution_policy(tool_name, arguments)
                 missing = self._missing_required_arguments(policy, arguments)
@@ -1562,6 +1904,9 @@ class AgentRuntimeMixin:
 
                 selected = {"tool_name": tool_name, "arguments": arguments}
                 state["selected_tool_call"] = selected
+                self._set_active_transaction(
+                    state, tool_name=tool_name, arguments=arguments, status="COLLECTING_PARAMETERS"
+                )
                 state["missing_parameters"] = []
                 if policy.get("require_confirmation"):
                     waiting_state = self._waiting_state_name(state)
@@ -1573,6 +1918,9 @@ class AgentRuntimeMixin:
                         "next_state": waiting_state,
                         "tool_policy_result": {**policy, "tool_name": tool_name},
                     })
+                    self._set_active_transaction(
+                        state, tool_name=tool_name, arguments=arguments, status="AWAITING_CONFIRMATION"
+                    )
                     return [{
                         "ok": True,
                         "executed": False,
@@ -1586,27 +1934,29 @@ class AgentRuntimeMixin:
                 result = await self._call_mcp_tool(tool_name, arguments, state)
                 self._capture_pending_domain_workflow(state, result)
                 self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
-                state.update({
-                    "transaction_status": ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))),
-                    "confirmation_required": False,
-                    "confirmation_received": True,
-                    "pending_tool_call": {},
-                    "missing_parameters": [],
-                })
+                final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
+                if final_status in _TERMINAL_TRANSACTION_STATUSES:
+                    self._finish_active_transaction(state, final_status)
+                else:
+                    state.update({
+                        "transaction_status": final_status,
+                        "confirmation_required": False,
+                        "confirmation_received": True,
+                        "pending_tool_call": {},
+                        "missing_parameters": [],
+                    })
+                    self._set_active_transaction(
+                        state, tool_name=tool_name, arguments=arguments, status=final_status
+                    )
                 return [result]
 
-        pending = state.get("pending_tool_call") or {}
+        active_tx = self._active_transaction(state)
+        pending = (active_tx if isinstance(active_tx, dict) and active_tx.get("status") == "AWAITING_CONFIRMATION" else state.get("pending_tool_call")) or {}
         if pending:
             decision = self._confirmation_decision(text)
             if decision == "reject":
-                state.update({
-                    "transaction_status": "CANCELLED",
-                    "confirmation_received": False,
-                    "confirmation_required": False,
-                    "selected_tool_call": pending,
-                    "pending_tool_call": {},
-                    "tool_policy_result": {"action": "cancelled", "tool_name": pending.get("tool_name")},
-                })
+                state["tool_policy_result"] = {"action": "cancelled", "tool_name": pending.get("tool_name")}
+                self._finish_active_transaction(state, "CANCELLED")
                 return [{"ok": True, "tool_name": pending.get("tool_name"), "transaction_status": "CANCELLED", "cancelled": True}]
             if decision == "confirm":
                 tool_name = pending.get("tool_name")
@@ -1616,17 +1966,26 @@ class AgentRuntimeMixin:
                 result = await self._call_mcp_tool(tool_name, arguments, state)
                 self._capture_pending_domain_workflow(state, result)
                 self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
-                state.update({
-                    "transaction_status": ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))),
-                    "confirmation_required": False,
-                    "selected_tool_call": pending,
-                    "pending_tool_call": {},
-                    "tool_policy_result": {"action": "executed_after_confirmation", "tool_name": tool_name},
-                })
+                final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
+                state["tool_policy_result"] = {"action": "executed_after_confirmation", "tool_name": tool_name}
+                if final_status in _TERMINAL_TRANSACTION_STATUSES:
+                    self._finish_active_transaction(state, final_status)
+                else:
+                    state.update({
+                        "transaction_status": final_status,
+                        "confirmation_required": False,
+                        "pending_tool_call": {},
+                    })
+                    self._set_active_transaction(
+                        state, tool_name=tool_name, arguments=arguments, status=final_status
+                    )
                 results.append(result)
                 return results
             state["transaction_status"] = "AWAITING_CONFIRMATION"
             state["confirmation_required"] = True
+            self._set_active_transaction(
+                state, tool_name=str(pending.get("tool_name") or ""), arguments=dict(pending.get("arguments") or {}), status="AWAITING_CONFIRMATION"
+            )
             return [{"ok": False, "tool_name": pending.get("tool_name"), "awaiting_confirmation": True, "transaction_status": "AWAITING_CONFIRMATION"}]
 
         read_only_tools = [
@@ -1669,19 +2028,30 @@ class AgentRuntimeMixin:
         if not selected_action:
             return results
 
+        explicit_action_args = self._extract_action_arguments(text)
         action_args = self.build_tool_arguments(
             state,
             tool_name=selected_action,
             intent=state.get("intent"),
             aliases=aliases,
-            extra_args=self._extract_action_arguments(text),
+            extra_args=explicit_action_args,
         )
-        # Extract parameters (including LLM-declared extraction rules) before
-        # validating required fields and before persisting the pending call.
-        action_args = await self._extract_mcp_parameters(selected_action, action_args, state)
+        # Nova transação: parâmetros declarados ``from: message`` não podem ser
+        # herdados de context.tool_arguments de uma operação anterior.
+        action_args = self._drop_stale_message_extracted_arguments(
+            selected_action, action_args, explicit_fields=explicit_action_args.keys()
+        )
+        # A mensagem atual é a fonte de verdade para esses campos no primeiro
+        # turno transacional.
+        action_args = await self._extract_mcp_parameters(
+            selected_action, action_args, state, overwrite_from_message=True
+        )
         policy = self._resolve_tool_execution_policy(selected_action, action_args)
         selected = {"tool_name": selected_action, "arguments": action_args}
         state["selected_tool_call"] = selected
+        self._set_active_transaction(
+            state, tool_name=selected_action, arguments=action_args, status="COLLECTING_PARAMETERS"
+        )
         state["tool_policy_result"] = {**policy, "tool_name": selected_action}
 
         missing = self._missing_required_arguments(policy, action_args)
@@ -1718,6 +2088,9 @@ class AgentRuntimeMixin:
                 "confirmation_required": True,
                 "confirmation_received": False,
             })
+            self._set_active_transaction(
+                state, tool_name=selected_action, arguments=action_args, status="AWAITING_CONFIRMATION"
+            )
             state["next_state"] = self._waiting_state_name(state)
             if emit_events:
                 await self._emit_ic("IC.TRANSACTION_CONFIRMATION_REQUIRED", state, {"tool_name": selected_action, **policy}, component="agent_runtime.tool_policy")
@@ -1727,12 +2100,19 @@ class AgentRuntimeMixin:
         action_args["confirmed"] = True
         result = await self._call_mcp_tool(selected_action, action_args, state)
         self._capture_pending_domain_workflow(state, result)
-        state.update({
-            "transaction_status": ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))),
-            "confirmation_required": False,
-            "confirmation_received": True,
-            "pending_tool_call": {},
-        })
+        final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
+        if final_status in _TERMINAL_TRANSACTION_STATUSES:
+            self._finish_active_transaction(state, final_status)
+        else:
+            state.update({
+                "transaction_status": final_status,
+                "confirmation_required": False,
+                "confirmation_received": True,
+                "pending_tool_call": {},
+            })
+            self._set_active_transaction(
+                state, tool_name=selected_action, arguments=action_args, status=final_status
+            )
         results.append(result)
         return results
 

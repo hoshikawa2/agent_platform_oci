@@ -434,15 +434,11 @@ class WorkflowRuntime:
             "current_node": None,
         }
         config = {"configurable": {"thread_id": eid}}
-        # Explicit offline-regression mode. When enabled, always use the
-        # deterministic backend, regardless of whether LangGraph happens to be
-        # installed in the current environment. This keeps regression results
-        # reproducible across developer machines and CI while production
-        # (the default) continues to require/use LangGraph.
         if self.allow_deterministic_fallback:
-            return await self._run_fallback(
-                definition, initial, start_node=definition.start, execution_id=eid
-            )
+            try:
+                import langgraph  # noqa: F401
+            except ModuleNotFoundError:
+                return await self._run_fallback(definition, initial, start_node=definition.start, execution_id=eid)
         try:
             graph = self._compile(definition)
             state = await graph.ainvoke(initial, config=config)
@@ -503,9 +499,10 @@ class WorkflowRuntime:
         definition = self.repository.get_version(name, version) if version else self.repository.get_active(name)
         config = {"configurable": {"thread_id": execution_id}}
         if self.allow_deterministic_fallback:
-            return await self._resume_fallback(
-                name, execution_id, resume_value, version=version
-            )
+            try:
+                import langgraph  # noqa: F401
+            except ModuleNotFoundError:
+                return await self._resume_fallback(name, execution_id, resume_value, version=version)
         try:
             from langgraph.types import Command
         except ModuleNotFoundError as exc:

@@ -83,12 +83,14 @@ class MCPToolRouter:
             required.extend(explicit.requires)
             source = "tool_policies.yaml"
         execution = explicit.execution.model_dump() if explicit is not None else {"mode": "direct_tool", "workflow": None, "version": "active"}
+        pre_validation = explicit.pre_validation.model_dump() if explicit is not None else {"enabled": False, "tool": None, "fail_open": False}
         return {
             "operation_type": operation_type,
             "require_confirmation": confirmation_required,
             "requires": list(dict.fromkeys(required)),
             "policy_source": source,
             "execution": execution,
+            "pre_validation": pre_validation,
         }
 
     def validate_execution_policy(

@@ -61,6 +61,18 @@ tools:
     - rastreamento
     - transportadora
     - previsão
+  validar_cancelamento_pedido:
+    description: Pre-valida cancelamento do pedido sem executar efeitos transacionais.
+    mcp_server: retail
+    enabled: true
+    tool_type: internal
+    confirmation_required: false
+    requires: [order_id]
+    args_schema:
+      order_id: string
+      target_tool: string
+    selection_keywords: []
+
   cancelar_pedido:
     description: Simula o cancelamento de um pedido de varejo.
     mcp_server: retail

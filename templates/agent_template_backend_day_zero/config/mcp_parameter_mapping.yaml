@@ -60,6 +60,10 @@ mcp_parameter_mapping:
             mensagem.
           pattern: (?i)\\b(?:pedido|order)\\s*[:#-]?\\s*([A-Z0-9-]+)\\b
           group: 1
+    validar_cancelamento_pedido:
+      map:
+        resource_key: order_id
+
     cancelar_pedido:
       map:
         session_key: session_id

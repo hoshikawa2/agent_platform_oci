@@ -379,3 +379,192 @@ def test_transaction_evidence_is_correlated_by_resource_identifier():
     current = [{"ok": True, "tool_name": "consultar_pedido", "result": {"order_id": "123"}}]
     relevant = runtime.transaction_evidence_for_turn(state, current)
     assert [item["transaction_id"] for item in relevant] == ["tx-123"]
+
+
+def test_tool_policy_registry_reads_pre_validation(tmp_path: Path):
+    config = tmp_path / "tool_policies.yaml"
+    config.write_text("""version: 1
+defaults:
+  operation_type: read_only
+  require_confirmation: false
+tool_policies:
+  contestar_cobranca:
+    operation_type: transactional
+    require_confirmation: true
+    requires: [subject, valor]
+    pre_validation:
+      enabled: true
+      tool: validar_contestacao
+      fail_open: false
+""", encoding="utf-8")
+    policy = ToolPolicyRegistry(str(config)).get("contestar_cobranca")
+    assert policy is not None
+    assert policy.pre_validation.enabled is True
+    assert policy.pre_validation.tool == "validar_contestacao"
+    assert policy.pre_validation.fail_open is False
+
+
+class _PreValidationRouter(_ContestPolicyRouter):
+    def __init__(self):
+        super().__init__()
+        from types import SimpleNamespace
+        self.registry = SimpleNamespace(
+            tools={"contestar_cobranca": object(), "validar_contestacao": object()},
+            get_tool=lambda name: SimpleNamespace(
+                selection_keywords=["contestar", "não contratei", "nao contratei"] if name == "contestar_cobranca" else []
+            ),
+        )
+
+    def resolve_execution_policy(self, tool_name, arguments=None):
+        if tool_name == "contestar_cobranca":
+            return {
+                "operation_type": "transactional",
+                "require_confirmation": True,
+                "requires": ["subject", "valor"],
+                "policy_source": "test",
+                "pre_validation": {"enabled": True, "tool": "validar_contestacao", "fail_open": False},
+            }
+        return {"operation_type": "internal", "require_confirmation": False, "requires": [], "policy_source": "test", "pre_validation": {"enabled": False}}
+
+
+class _PreValidationRuntime(AgentRuntimeMixin):
+    def __init__(self, eligible: bool):
+        self.tool_router = _PreValidationRouter()
+        self.calls = []
+        self.eligible = eligible
+
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append((tool_name, dict(arguments)))
+        if tool_name == "validar_contestacao":
+            payload = ({"eligible": True, "status": "ELIGIBLE"} if self.eligible else {
+                "eligible": False,
+                "status": "OUT_OF_SCOPE",
+                "category": "plano",
+                "error": "item não elegível para contestação",
+            })
+            return {"ok": True, "tool_name": tool_name, "result": payload}
+        return {"ok": True, "tool_name": tool_name, "result": {"status": "OPENED"}}
+
+
+@pytest.mark.asyncio
+async def test_pre_validation_rejects_before_confirmation_without_executing_transaction():
+    runtime = _PreValidationRuntime(eligible=False)
+    state = {
+        "user_text": "quero contestar TIM CTRL no valor de R$ 71,99",
+        "sanitized_input": "quero contestar TIM CTRL no valor de R$ 71,99",
+        "mcp_tools": ["contestar_cobranca"],
+        "route": "contestacao_agent",
+        "intent": "contas_contestation",
+        "context": {"tool_arguments": {"subject": "TIM CTRL Redes Sociais 8.0", "valor": 71.99}},
+    }
+    result = await runtime.execute_tools_for_intent(state)
+    assert [name for name, _ in runtime.calls] == ["validar_contestacao"]
+    assert result[-1]["pre_validation"] is True
+    assert result[-1]["transaction_status"] == "OUT_OF_SCOPE"
+    assert state["transaction_status"] == "OUT_OF_SCOPE"
+    assert state.get("pending_tool_call") in ({}, None)
+    assert state["confirmation_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_pre_validation_passes_then_waits_for_confirmation():
+    runtime = _PreValidationRuntime(eligible=True)
+    state = {
+        "user_text": "quero contestar serviço X no valor de R$ 10,00",
+        "sanitized_input": "quero contestar serviço X no valor de R$ 10,00",
+        "mcp_tools": ["contestar_cobranca"],
+        "route": "contestacao_agent",
+        "intent": "contas_contestation",
+        "context": {"tool_arguments": {"subject": "serviço X", "valor": 10.0}},
+    }
+    result = await runtime.execute_tools_for_intent(state)
+    assert [name for name, _ in runtime.calls] == ["validar_contestacao"]
+    assert result[-1]["awaiting_confirmation"] is True
+    assert state["transaction_status"] == "AWAITING_CONFIRMATION"
+    assert state["pending_tool_call"]["tool_name"] == "contestar_cobranca"
+
+@pytest.mark.asyncio
+async def test_pre_validation_runs_after_last_required_parameter_before_confirmation():
+    runtime = _PreValidationRuntime(eligible=False)
+    state = {
+        "user_text": "R$ 71,99",
+        "sanitized_input": "R$ 71,99",
+        "route": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "selected_tool_call": {
+            "tool_name": "contestar_cobranca",
+            "arguments": {"subject": "TIM CTRL Redes Sociais 8.0", "motivo": "não contratei"},
+        },
+        "context": {"tool_arguments": {"valor": 71.99}},
+    }
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+    assert [name for name, _ in runtime.calls] == ["validar_contestacao"]
+    assert runtime.calls[0][1]["subject"] == "TIM CTRL Redes Sociais 8.0"
+    assert runtime.calls[0][1]["valor"] == 71.99
+    assert result[-1]["pre_validation"] is True
+    assert state["transaction_status"] == "OUT_OF_SCOPE"
+    assert state["confirmation_required"] is False
+    assert not state.get("pending_tool_call")
+
+
+def test_transaction_state_patch_exposes_prevalidation_and_terminal_lifecycle():
+    runtime = _PreValidationRuntime(eligible=False)
+    state = {
+        "transaction_status": "OUT_OF_SCOPE",
+        "next_state": None,
+        "selected_tool_call": {},
+        "pending_tool_call": {},
+        "confirmation_required": False,
+        "confirmation_received": False,
+        "transaction_pre_validation": {
+            "tool_name": "contestar_cobranca",
+            "validator_tool": "validar_contestacao",
+            "eligible": False,
+            "status": "OUT_OF_SCOPE",
+            "terminal": True,
+        },
+    }
+    patch = runtime.transaction_state_patch(state)
+    assert patch["transaction_pre_validation"]["eligible"] is False
+    assert patch["transaction_pre_validation"]["status"] == "OUT_OF_SCOPE"
+    assert patch["next_state"] is None
+    assert patch["transaction_status"] == "OUT_OF_SCOPE"
+    assert patch["confirmation_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_pre_validation_rejection_clears_collecting_latches_and_is_exposed_in_patch():
+    runtime = _PreValidationRuntime(eligible=False)
+    state = {
+        "user_text": "R$ 71,99",
+        "sanitized_input": "R$ 71,99",
+        "route": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "next_state": "COLLECTING_CONTESTACAO_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "selected_tool_call": {
+            "tool_name": "contestar_cobranca",
+            "arguments": {"subject": "TIM CTRL Redes Sociais 8.0", "motivo": "não contratei"},
+        },
+        "pending_tool_call": {},
+        "missing_parameters": ["valor"],
+        "confirmation_required": False,
+        "context": {"tool_arguments": {"valor": 71.99}},
+    }
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+    assert result[-1]["pre_validation"] is True
+    assert state["transaction_status"] == "OUT_OF_SCOPE"
+    assert state["next_state"] is None
+    assert state["active_transaction"] is None
+    assert state["selected_tool_call"] == {}
+    assert state["pending_tool_call"] == {}
+    assert state["missing_parameters"] == []
+    assert state["confirmation_required"] is False
+    assert state["confirmation_received"] is False
+    assert state["transaction_pre_validation"]["eligible"] is False
+    assert state["transaction_pre_validation"]["status"] == "OUT_OF_SCOPE"
+    assert state["transaction_pre_validation"]["terminal"] is True
+    patch = runtime.transaction_state_patch(state)
+    assert patch["transaction_pre_validation"] == state["transaction_pre_validation"]
+    assert patch["next_state"] is None

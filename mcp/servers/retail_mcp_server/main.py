@@ -17,6 +17,10 @@ TOOLS = {
         "description": "Consulta entrega e rastreamento do pedido.",
         "input_schema": {"order_id": "string"},
     },
+    "validar_cancelamento_pedido": {
+        "description": "Pre-valida se o pedido pode ser cancelado, sem efeitos colaterais.",
+        "input_schema": {"order_id": "string", "target_tool": "string"},
+    },
     "cancelar_pedido": {
         "description": "Simula o cancelamento de um pedido de varejo.",
         "input_schema": {"order_id": "string"},
@@ -81,6 +85,23 @@ async def call_tool(call: ToolCall):
                 {"data": "2026-05-29", "descricao": "Em trânsito para o centro de distribuição"},
             ],
         }
+    elif name == "validar_cancelamento_pedido":
+        order_id = str(args.get("order_id") or "PED-1001").upper()
+        if order_id in {"123", "PED-ENTREGUE"}:
+            result = {
+                "eligible": False,
+                "status": "NOT_ELIGIBLE",
+                "order_id": order_id,
+                "reason": "Pedido já entregue não pode ser cancelado por esta operação.",
+                "metadata": {"side_effect_free": True},
+            }
+        else:
+            result = {
+                "eligible": True,
+                "status": "ELIGIBLE",
+                "order_id": order_id,
+                "metadata": {"side_effect_free": True},
+            }
     elif name == "cancelar_pedido":
         result = {
             "protocolo": "CANCEL-2026-001",

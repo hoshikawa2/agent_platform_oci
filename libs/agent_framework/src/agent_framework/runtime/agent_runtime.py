@@ -713,6 +713,83 @@ class AgentRuntimeMixin:
             "policy_source": "tools.yaml",
         }
 
+    async def _run_transaction_pre_validation(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        policy: dict[str, Any],
+        emit_events: bool = True,
+    ) -> dict[str, Any] | None:
+        """Execute an optional domain-owned MCP pre-validation before confirmation.
+
+        The framework knows only the generic contract ``eligible``. Business rules
+        remain in the configured MCP validator tool. No LLM is used here.
+        """
+        cfg = policy.get("pre_validation") if isinstance(policy, dict) else None
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            return None
+        validator = str(cfg.get("tool") or "").strip()
+        if not validator:
+            return None
+        validation_args = dict(arguments or {})
+        validation_args.pop("confirmed", None)
+        validation_args["target_tool"] = tool_name
+        if emit_events:
+            await self._emit_ic(
+                "IC.TRANSACTION_PREVALIDATION_REQUESTED",
+                state,
+                {"tool_name": tool_name, "validator_tool": validator},
+                component="agent_runtime.tool_policy",
+            )
+        result = await self._call_mcp_tool(validator, validation_args, state)
+        payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
+        eligible = payload.get("eligible") if isinstance(payload, dict) else None
+        if eligible is True:
+            state["transaction_pre_validation"] = {
+                "tool_name": tool_name, "validator_tool": validator, "eligible": True, "result": result
+            }
+            if emit_events:
+                await self._emit_ic(
+                    "IC.TRANSACTION_PREVALIDATION_PASSED", state,
+                    {"tool_name": tool_name, "validator_tool": validator},
+                    component="agent_runtime.tool_policy",
+                )
+            return None
+        transport_failed = isinstance(result, dict) and result.get("ok") is False and eligible is None
+        if transport_failed and bool(cfg.get("fail_open")):
+            return None
+        status = str((payload or {}).get("status") or ("PREVALIDATION_ERROR" if transport_failed else "OUT_OF_SCOPE"))
+        state["transaction_pre_validation"] = {
+            "tool_name": tool_name,
+            "validator_tool": validator,
+            "eligible": False,
+            "status": status,
+            "error": (payload or {}).get("error") if isinstance(payload, dict) else None,
+            "terminal": True,
+            "result": result,
+        }
+        # A rejeição da pré-validação encerra o latch transacional imediatamente.
+        # A regra de negócio permanece no MCP; o framework apenas materializa o
+        # resultado genérico de elegibilidade e garante que o próximo turno volte
+        # ao roteamento normal, sem herdar COLLECTING_/WAITING_.
+        self._finish_active_transaction(state, "OUT_OF_SCOPE", result=result)
+        state["next_state"] = None
+        state["confirmation_required"] = False
+        state["confirmation_received"] = False
+        if emit_events:
+            await self._emit_ic(
+                "IC.TRANSACTION_PREVALIDATION_REJECTED", state,
+                {"tool_name": tool_name, "validator_tool": validator, "status": status, "error": (payload or {}).get("error")},
+                component="agent_runtime.tool_policy",
+            )
+        enriched = dict(result or {})
+        enriched["pre_validation"] = True
+        enriched["target_tool"] = tool_name
+        enriched["transaction_status"] = "OUT_OF_SCOPE"
+        return enriched
+
     def _validate_tool_execution_policy(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str | None]:
         """Aplica a mesma política central usada pelo MCPToolRouter."""
         router = getattr(self, "tool_router", None)
@@ -1608,6 +1685,7 @@ class AgentRuntimeMixin:
             "tool_policy_result", "missing_parameters", "next_state", "pending_domain_workflow", "pending_tool_clarification",
             "business_workflows_executed", "active_transaction", "last_transaction",
             "transaction_evidence", "last_transaction_evidence", "relevant_transaction_evidence",
+            "transaction_pre_validation",
         )
         return {key: state.get(key) for key in keys if key in state}
 
@@ -2017,6 +2095,12 @@ class AgentRuntimeMixin:
                     state, tool_name=tool_name, arguments=arguments, status="COLLECTING_PARAMETERS"
                 )
                 state["missing_parameters"] = []
+                pre_validation_result = await self._run_transaction_pre_validation(
+                    state, tool_name=tool_name, arguments=arguments, policy=policy, emit_events=emit_events
+                )
+                if pre_validation_result is not None:
+                    return [pre_validation_result]
+
                 if policy.get("require_confirmation"):
                     waiting_state = self._waiting_state_name(state)
                     state.update({
@@ -2188,6 +2272,13 @@ class AgentRuntimeMixin:
                 "missing_parameters": missing,
                 "metadata": policy,
             })
+            return results
+
+        pre_validation_result = await self._run_transaction_pre_validation(
+            state, tool_name=selected_action, arguments=action_args, policy=policy, emit_events=emit_events
+        )
+        if pre_validation_result is not None:
+            results.append(pre_validation_result)
             return results
 
         if policy.get("require_confirmation"):

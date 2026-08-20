@@ -1,0 +1,12 @@
+servers:
+  telecom:
+    transport: http
+    endpoint: http://telecom-mcp:8100/mcp
+    enabled: true
+    description: MCP Server Telecom via docker-compose.
+
+  retail:
+    transport: http
+    endpoint: http://retail-mcp:8200/mcp
+    enabled: true
+    description: MCP Server Retail via docker-compose.

@@ -13,6 +13,14 @@ class WorkflowExecutionPolicy(BaseModel):
     version: int | Literal["active"] = "active"
 
 
+class ToolPreValidationPolicy(BaseModel):
+    """Optional MCP business pre-validation executed before user confirmation."""
+
+    enabled: bool = False
+    tool: str | None = None
+    fail_open: bool = False
+
+
 class ToolPolicy(BaseModel):
     """Política de execução aplicada antes da chamada MCP ou workflow."""
 
@@ -20,6 +28,7 @@ class ToolPolicy(BaseModel):
     require_confirmation: bool = False
     requires: list[str] = Field(default_factory=list)
     execution: WorkflowExecutionPolicy = Field(default_factory=WorkflowExecutionPolicy)
+    pre_validation: ToolPreValidationPolicy = Field(default_factory=ToolPreValidationPolicy)
 
 
 class ToolPolicyRegistry:
@@ -55,11 +64,18 @@ class ToolPolicyRegistry:
         execution_raw = raw.get("execution") or {}
         base_execution = base.execution.model_dump()
         base_execution.update(execution_raw)
+        pre_validation_raw = raw.get("pre_validation") or {}
+        base_pre_validation = base.pre_validation.model_dump()
+        if isinstance(pre_validation_raw, bool):
+            base_pre_validation["enabled"] = pre_validation_raw
+        elif isinstance(pre_validation_raw, dict):
+            base_pre_validation.update(pre_validation_raw)
         return ToolPolicy(
             operation_type=operation_type,
             require_confirmation=bool(confirmation),
             requires=list(raw.get("requires", base.requires) or []),
             execution=WorkflowExecutionPolicy.model_validate(base_execution),
+            pre_validation=ToolPreValidationPolicy.model_validate(base_pre_validation),
         )
 
     def get(self, tool_name: str) -> ToolPolicy | None:

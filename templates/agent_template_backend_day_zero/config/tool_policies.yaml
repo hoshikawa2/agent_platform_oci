@@ -11,6 +11,10 @@ tool_policies:
     operation_type: transactional
     require_confirmation: true
     requires: [order_id]
+    pre_validation:
+      enabled: true
+      tool: validar_cancelamento_pedido
+      fail_open: false
 
 
   solicitar_troca:

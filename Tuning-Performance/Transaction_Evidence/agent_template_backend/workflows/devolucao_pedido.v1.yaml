@@ -1,0 +1,27 @@
+name: devolucao_pedido
+version: 1
+start: validar_pedido
+nodes:
+  - id: validar_pedido
+    action: validar_pedido
+    input:
+      order_id: $.input.order_id
+  - id: registrar_devolucao
+    action: registrar_devolucao
+    retry: 1
+    input:
+      order_id: $.input.order_id
+      reason: $.input.reason
+edges:
+  - from: validar_pedido
+    to: registrar_devolucao
+    when:
+      path: $.nodes.validar_pedido.valid
+      equals: true
+  - from: validar_pedido
+    to: END
+    when:
+      path: $.nodes.validar_pedido.valid
+      equals: false
+  - from: registrar_devolucao
+    to: END

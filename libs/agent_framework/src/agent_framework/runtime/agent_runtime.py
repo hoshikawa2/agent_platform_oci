@@ -1448,14 +1448,122 @@ class AgentRuntimeMixin:
         state["active_transaction"] = tx
         return tx
 
-    def _finish_active_transaction(self, state: dict[str, Any], status: str) -> None:
-        """Close the active transaction without leaving operational state behind."""
+    @staticmethod
+    def _collect_resource_identifiers(value: Any) -> set[tuple[str, str]]:
+        """Collect stable business/resource identifiers from nested evidence.
+
+        Identifier names are deliberately generic (``*_id`` plus common business
+        keys) so the framework can correlate transaction evidence across domains
+        without embedding telecom/retail-specific behavior.
+        """
+        identifiers: set[tuple[str, str]] = set()
+        common = {
+            "resource_key", "customer_key", "contract_key", "account_key",
+            "session_key", "subject", "msisdn", "order_id", "invoice_id",
+            "asset_id", "product_id", "service_id", "protocol", "protocolo",
+        }
+
+        def walk(item: Any) -> None:
+            if isinstance(item, dict):
+                for key, raw in item.items():
+                    key_s = str(key).strip().lower()
+                    if raw not in (None, "", [], {}) and (key_s.endswith("_id") or key_s in common):
+                        if isinstance(raw, (str, int, float, bool)):
+                            identifiers.add((key_s, str(raw).strip().lower()))
+                    walk(raw)
+            elif isinstance(item, (list, tuple, set)):
+                for child in item:
+                    walk(child)
+
+        walk(value)
+        return identifiers
+
+    def _record_transaction_evidence(
+        self,
+        state: dict[str, Any],
+        *,
+        transaction: dict[str, Any] | None,
+        status: str,
+        result: dict[str, Any] | None,
+    ) -> None:
+        """Persist compact structured evidence from an executed transaction.
+
+        This is operational evidence, not semantic/LTM memory. It survives later
+        turns through the LangGraph state/checkpoint and can be used both by the
+        answering LLM and groundedness judges.
+        """
+        if not isinstance(transaction, dict) or not transaction.get("tool_name"):
+            return
+        # Only execution outcomes are evidence. A rejected/not-yet-executed action
+        # must not become a factual claim about the external system.
+        if status not in {"COMPLETED", "FAILED"} or not isinstance(result, dict):
+            return
+
+        evidence = {
+            "transaction_id": transaction.get("transaction_id"),
+            "tool_name": transaction.get("tool_name"),
+            "arguments": dict(transaction.get("arguments") or {}),
+            "status": status,
+            "started_from_intent": transaction.get("started_from_intent"),
+            "result": result,
+        }
+        history = [x for x in (state.get("transaction_evidence") or []) if isinstance(x, dict)]
+        txid = evidence.get("transaction_id")
+        if txid:
+            history = [x for x in history if x.get("transaction_id") != txid]
+        history.append(evidence)
+        # Bound checkpoint growth while retaining enough recent operational history.
+        state["transaction_evidence"] = history[-10:]
+        state["last_transaction_evidence"] = evidence
+
+    def transaction_evidence_for_turn(
+        self,
+        state: dict[str, Any],
+        mcp_results: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return transaction evidence relevant to the current resource/turn."""
+        history = [x for x in (state.get("transaction_evidence") or []) if isinstance(x, dict)]
+        if not history:
+            return []
+
+        current_identifiers = self._collect_resource_identifiers(mcp_results or [])
+        if not current_identifiers:
+            current_identifiers |= self._collect_resource_identifiers(state.get("business_context") or {})
+
+        if current_identifiers:
+            relevant = []
+            for evidence in history:
+                evidence_ids = self._collect_resource_identifiers(evidence)
+                # Match by value as well as key: integrations sometimes rename
+                # resource identifiers between transaction/read models.
+                current_values = {value for _, value in current_identifiers}
+                evidence_values = {value for _, value in evidence_ids}
+                if current_identifiers & evidence_ids or current_values & evidence_values:
+                    relevant.append(evidence)
+            return relevant[-5:]
+
+        # With no resource identifier, expose only the latest evidence to avoid
+        # leaking unrelated historical operations into a new topic.
+        return history[-1:]
+
+    def _finish_active_transaction(
+        self,
+        state: dict[str, Any],
+        status: str,
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        """Close the active transaction and retain its result as operational evidence."""
         active = self._active_transaction(state)
         if isinstance(active, dict):
             state["last_transaction"] = {
                 **active,
                 "status": status,
+                **({"result": result} if isinstance(result, dict) else {}),
             }
+            self._record_transaction_evidence(
+                state, transaction=active, status=status, result=result
+            )
         state["active_transaction"] = None
         state["selected_tool_call"] = {}
         state["pending_tool_call"] = {}
@@ -1499,6 +1607,7 @@ class AgentRuntimeMixin:
             "transaction_status", "confirmation_required", "confirmation_received",
             "tool_policy_result", "missing_parameters", "next_state", "pending_domain_workflow", "pending_tool_clarification",
             "business_workflows_executed", "active_transaction", "last_transaction",
+            "transaction_evidence", "last_transaction_evidence", "relevant_transaction_evidence",
         )
         return {key: state.get(key) for key in keys if key in state}
 
@@ -1936,7 +2045,7 @@ class AgentRuntimeMixin:
                 self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
                 final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
                 if final_status in _TERMINAL_TRANSACTION_STATUSES:
-                    self._finish_active_transaction(state, final_status)
+                    self._finish_active_transaction(state, final_status, result=result)
                 else:
                     state.update({
                         "transaction_status": final_status,
@@ -1969,7 +2078,7 @@ class AgentRuntimeMixin:
                 final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
                 state["tool_policy_result"] = {"action": "executed_after_confirmation", "tool_name": tool_name}
                 if final_status in _TERMINAL_TRANSACTION_STATUSES:
-                    self._finish_active_transaction(state, final_status)
+                    self._finish_active_transaction(state, final_status, result=result)
                 else:
                     state.update({
                         "transaction_status": final_status,
@@ -2102,7 +2211,7 @@ class AgentRuntimeMixin:
         self._capture_pending_domain_workflow(state, result)
         final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
         if final_status in _TERMINAL_TRANSACTION_STATUSES:
-            self._finish_active_transaction(state, final_status)
+            self._finish_active_transaction(state, final_status, result=result)
         else:
             state.update({
                 "transaction_status": final_status,
@@ -2117,7 +2226,12 @@ class AgentRuntimeMixin:
         return results
 
     async def _collect_mcp_context(self, state: dict[str, Any]) -> list[dict[str, Any]]:
-        return await self.execute_tools_for_intent(state)
+        results = await self.execute_tools_for_intent(state)
+        # Materialize the relevant prior operational evidence in graph state so
+        # downstream nodes (output supervision/judges/telemetry) consume the same
+        # evidence set used by the answering agent.
+        state["relevant_transaction_evidence"] = self.transaction_evidence_for_turn(state, results)
+        return results
 
     # ------------------------------------------------------------------
     # Conversation memory / context compression
@@ -2271,6 +2385,12 @@ class AgentRuntimeMixin:
             sections.append(f"BusinessContext canônico:\n{runtime.business_context or '[sem business_context]'}")
         if mcp_results is not None:
             sections.append(f"Resultados MCP normalizados pelo framework:\n{mcp_results}")
+        transaction_evidence = self.transaction_evidence_for_turn(state, mcp_results)
+        if transaction_evidence:
+            sections.append(
+                "Evidências operacionais de transações anteriores relevantes ao recurso atual "
+                f"(persistidas pelo framework, não inferidas pela memória conversacional):\n{transaction_evidence}"
+            )
         if rag_context is not None:
             sections.append(f"Contexto RAG nativo do framework:\n{rag_context or '[sem contexto RAG]'}")
         if rag_metadata is not None:

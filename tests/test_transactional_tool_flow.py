@@ -287,3 +287,95 @@ async def test_terminal_confirmation_closes_active_transaction_and_clears_latche
     assert state["next_state"] is None
     assert state["last_transaction"]["tool_name"] == "solicitar_devolucao"
     assert state["last_transaction"]["status"] == "COMPLETED"
+
+class _EvidenceRuntime(_Runtime):
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append((tool_name, dict(arguments)))
+        if tool_name == "solicitar_devolucao":
+            return {
+                "ok": True,
+                "tool_name": tool_name,
+                "result": {
+                    "order_id": arguments.get("order_id"),
+                    "status": "PROCESSANDO",
+                    "protocolo": "DEV-2026-001",
+                },
+            }
+        return {
+            "ok": True,
+            "tool_name": tool_name,
+            "result": {
+                "order_id": arguments.get("order_id") or "123",
+                "status": "EM_TRANSPORTE",
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_completed_transaction_becomes_reusable_operational_evidence():
+    runtime = _EvidenceRuntime()
+    state = {
+        "user_text": "Quero devolver o pedido 123 porque me arrependi",
+        "sanitized_input": "Quero devolver o pedido 123 porque me arrependi",
+        "mcp_tools": ["consultar_pedido", "solicitar_devolucao"],
+        "route": "support_agent",
+        "intent": "retail_support_exchange_return",
+    }
+
+    await runtime.execute_tools_for_intent(state)
+    state["user_text"] = "sim"
+    state["sanitized_input"] = "sim"
+    await runtime.execute_tools_for_intent(state)
+
+    assert state["transaction_status"] == "COMPLETED"
+    assert state["last_transaction"]["result"]["result"]["protocolo"] == "DEV-2026-001"
+    assert state["transaction_evidence"][-1]["tool_name"] == "solicitar_devolucao"
+    assert state["transaction_evidence"][-1]["result"]["result"]["protocolo"] == "DEV-2026-001"
+
+    # New read-only turn on the same resource must receive the prior transaction
+    # as grounded operational evidence, without reactivating the transaction.
+    state["user_text"] = "quero meu pedido 123"
+    state["sanitized_input"] = state["user_text"]
+    state["mcp_tools"] = ["consultar_pedido"]
+    state["intent"] = "retail_order_tracking"
+    results = await runtime._collect_mcp_context(state)
+
+    assert results[0]["result"]["order_id"] == "123"
+    assert state["active_transaction"] is None
+    relevant = state["relevant_transaction_evidence"]
+    assert len(relevant) == 1
+    assert relevant[0]["result"]["result"]["protocolo"] == "DEV-2026-001"
+
+    messages = runtime.build_messages(
+        state,
+        system_prompt="Use apenas evidências fornecidas pelo framework.",
+        mcp_results=results,
+    )
+    rendered = "\n".join(message["content"] for message in messages)
+    assert "Evidências operacionais de transações anteriores" in rendered
+    assert "DEV-2026-001" in rendered
+
+
+def test_transaction_evidence_is_correlated_by_resource_identifier():
+    runtime = _EvidenceRuntime()
+    state = {
+        "transaction_evidence": [
+            {
+                "transaction_id": "tx-123",
+                "tool_name": "solicitar_devolucao",
+                "arguments": {"order_id": "123"},
+                "status": "COMPLETED",
+                "result": {"result": {"order_id": "123", "protocolo": "DEV-123"}},
+            },
+            {
+                "transaction_id": "tx-999",
+                "tool_name": "solicitar_devolucao",
+                "arguments": {"order_id": "999"},
+                "status": "COMPLETED",
+                "result": {"result": {"order_id": "999", "protocolo": "DEV-999"}},
+            },
+        ]
+    }
+    current = [{"ok": True, "tool_name": "consultar_pedido", "result": {"order_id": "123"}}]
+    relevant = runtime.transaction_evidence_for_turn(state, current)
+    assert [item["transaction_id"] for item in relevant] == ["tx-123"]

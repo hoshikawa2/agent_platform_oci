@@ -1,0 +1,12 @@
+input:
+  - code: MSK
+    enabled: true
+  - code: VLOOP
+    enabled: true
+output:
+  - code: REVPREC
+    enabled: true
+  - code: PINJ
+    enabled: true
+  - code: DLEX_OUT
+    enabled: true

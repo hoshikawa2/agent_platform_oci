@@ -12,3 +12,8 @@
 A route stickiness é preemptada quando uma keyword explícita configurada em `routing.yaml` identifica outra intent/agente. Assim, uma sessão em `retail_order_tracking` muda para `retail_support_exchange_return` ao receber pedidos como “devolver pedido”. Além disso, respostas diretas de tools read-only são bloqueadas quando a mensagem contém `selection_keywords` de qualquer tool transacional registrada.
 
 As palavras de ação ficam em `config/tools.yaml`; o runtime não mantém aliases de domínio hardcoded.
+
+
+### Preempção determinística de mudança explícita de intent
+
+A stickiness não chama um segundo LLM quando a mensagem contém uma mudança explícita que pode ser reconhecida deterministicamente. Keywords multi-token configuradas em `routing.yaml` aceitam até três tokens intermediários, preservando a ordem. Assim, `cancelar pedido` reconhece `quero cancelar meu pedido`, `cancelar o meu pedido` e `pode cancelar esse pedido`. Nesse caso a nova intent preempta a stickiness e o metadado `keyword_match_strategy=ordered_tokens` permite auditar a decisão. Mensagens sem sinal explícito continuam usando a route stickiness normalmente.

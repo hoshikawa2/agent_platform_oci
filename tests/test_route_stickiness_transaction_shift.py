@@ -94,3 +94,67 @@ async def test_same_agent_transaction_keyword_preempts_continuity(monkeypatch):
     assert decision.metadata["route_stickiness_preempted"] is True
     assert decision.metadata["previous_agent"] == "orders_agent"
     assert decision.metadata["previous_intent"] == "retail_order_tracking"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "quero cancelar meu pedido",
+        "quero cancelar o meu pedido",
+        "pode cancelar esse pedido",
+        "gostaria de cancelar meu pedido",
+    ],
+)
+@pytest.mark.asyncio
+async def test_same_agent_transaction_shift_with_inserted_words_is_deterministic(message):
+    """Inserted connector/pronoun words must not force an LLM continuity call."""
+    from agent_framework.routing.models import IntentDefinition
+
+    class _Continuity:
+        async def evaluate(self, state, *, intents):
+            raise AssertionError("continuity LLM must not run for explicit deterministic transaction shift")
+
+    router = object.__new__(EnterpriseRouter)
+    router.state_policies = []
+    router.intents = [
+        IntentDefinition(
+            name="retail_order_cancel", domain="retail", agent="orders_agent",
+            description="cancelamento", priority=20,
+            mcp_tools=["consultar_pedido", "cancelar_pedido"],
+            keywords=["cancelar pedido"], examples=[], enabled=True,
+        ),
+        IntentDefinition(
+            name="retail_order_tracking", domain="retail", agent="orders_agent",
+            description="tracking", priority=30,
+            mcp_tools=["consultar_pedido", "consultar_entrega"],
+            keywords=["pedido"], examples=[], enabled=True,
+        ),
+    ]
+    router.continuity = _Continuity()
+    router.enable_llm_router = False
+    router.llm = None
+    router.telemetry = None
+    router.fallback_agent = "billing_agent"
+
+    decision = await router.route({
+        "user_text": message, "sanitized_input": message,
+        "active_agent": "orders_agent", "intent": "retail_order_tracking",
+        "route_decision": {
+            "route": "orders_agent", "agent": "orders_agent",
+            "intent": "retail_order_tracking", "domain": "retail",
+            "mcp_tools": ["consultar_pedido", "consultar_entrega"],
+        },
+        "context": {"session": {}},
+    })
+
+    assert decision.intent == "retail_order_cancel"
+    assert decision.agent == "orders_agent"
+    assert decision.mcp_tools == ["consultar_pedido", "cancelar_pedido"]
+    assert decision.metadata["route_stickiness_preempted"] is True
+    assert decision.metadata["keyword_match_strategy"] == "ordered_tokens"
+
+
+def test_ordered_keyword_match_is_conservative():
+    assert EnterpriseRouter._ordered_keyword_match("cancelar pedido", "quero cancelar meu pedido") is True
+    assert EnterpriseRouter._ordered_keyword_match("cancelar pedido", "quero pedido e talvez cancelar depois") is False
+    assert EnterpriseRouter._ordered_keyword_match("pedido", "meu pedido") is False

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 from typing import Any
 
 from .config_loader import load_intents, load_router_defaults, load_state_policies
@@ -141,28 +143,79 @@ class EnterpriseRouter:
                 )
         return None
 
+    @staticmethod
+    def _keyword_tokens(value: str) -> list[str]:
+        """Tokeniza texto para matching determinístico tolerante a palavras de ligação.
+
+        A remoção de acentos evita duplicar regras apenas por variação ortográfica.
+        Não há chamada de LLM neste caminho.
+        """
+        folded = unicodedata.normalize("NFKD", str(value or "").casefold())
+        folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+        return re.findall(r"[\w]+", folded, flags=re.UNICODE)
+
+    @classmethod
+    def _ordered_keyword_match(cls, keyword: str, text: str, *, max_gap: int = 3) -> bool:
+        """Aceita uma keyword multi-token mesmo com poucos tokens inseridos.
+
+        Ex.: ``cancelar pedido`` casa com ``quero cancelar meu pedido`` e
+        ``cancelar o meu pedido``. O limite de gap mantém a regra conservadora e
+        evita transformar o roteador determinístico em busca semântica ampla.
+        Keywords de um único token continuam usando apenas o match exato legado.
+        """
+        wanted = cls._keyword_tokens(keyword)
+        actual = cls._keyword_tokens(text)
+        if len(wanted) < 2 or not actual:
+            return False
+
+        pos = -1
+        for token in wanted:
+            found = None
+            upper = min(len(actual), pos + max_gap + 2)
+            for idx in range(pos + 1, upper):
+                if actual[idx] == token:
+                    found = idx
+                    break
+            if found is None:
+                return False
+            pos = found
+        return True
+
     def _route_by_keyword(self, text: str) -> RouteDecision | None:
-        normalized = text.lower()
-        matches: list[tuple[int, int, IntentDefinition, str]] = []
+        normalized = text.casefold()
+        matches: list[tuple[int, int, int, IntentDefinition, str, str]] = []
         for intent in self.intents:
             if not intent.enabled:
                 continue
             for kw in intent.keywords:
-                if kw.lower() in normalized:
-                    # menor priority vence; maior tamanho da keyword desempata
-                    matches.append((intent.priority, -len(kw), intent, kw))
+                kw_normalized = kw.casefold()
+                strategy = None
+                # Exato primeiro para preservar o comportamento existente.
+                if kw_normalized in normalized:
+                    strategy = "exact"
+                elif self._ordered_keyword_match(kw, text):
+                    strategy = "ordered_tokens"
+
+                if strategy:
+                    # menor priority vence; exact vence fuzzy; keyword maior desempata
+                    strategy_rank = 0 if strategy == "exact" else 1
+                    matches.append((intent.priority, strategy_rank, -len(kw), intent, kw, strategy))
         if not matches:
             return None
-        matches.sort(key=lambda x: (x[0], x[1]))
-        _, _, intent, kw = matches[0]
+        matches.sort(key=lambda x: (x[0], x[1], x[2]))
+        _, _, _, intent, kw, strategy = matches[0]
         return RouteDecision(
             route=intent.agent,
             agent=intent.agent,
             intent=intent.name,
-            confidence=0.85,
-            reason=f"Keyword '{kw}' correspondeu à intent '{intent.name}'.",
+            confidence=0.85 if strategy == "exact" else 0.82,
+            reason=(
+                f"Keyword '{kw}' correspondeu à intent '{intent.name}'."
+                if strategy == "exact"
+                else f"Sequência de tokens da keyword '{kw}' correspondeu à intent '{intent.name}'."
+            ),
             method="keyword",
-            metadata={"matched_keyword": kw},
+            metadata={"matched_keyword": kw, "keyword_match_strategy": strategy},
             domain=intent.domain,
             mcp_tools=intent.mcp_tools,
         )

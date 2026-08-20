@@ -73,7 +73,6 @@ class EnterpriseRouter:
         if (
             active_agent
             and keyword_candidate is not None
-            and keyword_candidate.agent != active_agent
             and keyword_candidate.intent != previous_intent
             and self._is_explicit_intent_shift(keyword_candidate)
         ):

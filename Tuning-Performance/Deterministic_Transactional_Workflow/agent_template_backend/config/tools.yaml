@@ -73,6 +73,23 @@ tools:
     response:
       mode: renderer
       renderer: retail.delivery
+  cancelar_pedido:
+    description: Simula o cancelamento de um pedido de varejo.
+    mcp_server: retail
+    enabled: true
+    tool_type: action
+    requires:
+    - order_id
+    confirmation_required: true
+    args_schema:
+      order_id: string
+    selection_keywords:
+    - cancelar pedido
+    - cancelamento do pedido
+    - cancelar compra
+    - cancelar a compra
+
+
   solicitar_troca:
     description: Simula abertura de solicitação de troca.
     mcp_server: retail

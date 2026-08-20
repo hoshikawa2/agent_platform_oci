@@ -17,6 +17,10 @@ TOOLS = {
         "description": "Consulta entrega e rastreamento do pedido.",
         "input_schema": {"order_id": "string"},
     },
+    "cancelar_pedido": {
+        "description": "Simula o cancelamento de um pedido de varejo.",
+        "input_schema": {"order_id": "string"},
+    },
     "solicitar_troca": {
         "description": "Simula abertura de solicitação de troca.",
         "input_schema": {"order_id": "string", "reason": "string"},
@@ -76,6 +80,13 @@ async def call_tool(call: ToolCall):
                 {"data": "2026-05-28", "descricao": "Pedido coletado"},
                 {"data": "2026-05-29", "descricao": "Em trânsito para o centro de distribuição"},
             ],
+        }
+    elif name == "cancelar_pedido":
+        result = {
+            "protocolo": "CANCEL-2026-001",
+            "order_id": args.get("order_id") or "PED-1001",
+            "status": "CANCELAMENTO_SOLICITADO",
+            "orientacao": "Cancelamento registrado para processamento.",
         }
     elif name == "solicitar_troca":
         result = {

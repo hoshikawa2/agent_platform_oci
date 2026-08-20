@@ -7,6 +7,12 @@ defaults:
   require_confirmation: false
 
 tool_policies:
+  cancelar_pedido:
+    operation_type: transactional
+    require_confirmation: true
+    requires: [order_id]
+
+
   solicitar_troca:
     operation_type: transactional
     require_confirmation: true

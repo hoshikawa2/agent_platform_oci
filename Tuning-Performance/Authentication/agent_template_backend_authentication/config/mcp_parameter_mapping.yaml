@@ -60,6 +60,18 @@ mcp_parameter_mapping:
             mensagem.
           pattern: (?i)\\b(?:pedido|order)\\s*[:#-]?\\s*([A-Z0-9-]+)\\b
           group: 1
+    cancelar_pedido:
+      map:
+        session_key: session_id
+      extract:
+        order_id:
+          from: message
+          type: string
+          strategy: hybrid
+          description: Extraia somente o identificador do pedido informado explicitamente pelo usuário. Retorne null quando não houver identificador de pedido na mensagem.
+          pattern: (?i)\\b(?:pedido|order)\\s*[:#-]?\\s*([A-Z0-9-]+)\\b
+          group: 1
+
     solicitar_troca:
       map:
         session_key: session_id

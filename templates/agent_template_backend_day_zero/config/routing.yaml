@@ -84,6 +84,25 @@ intents:
       - Quero saber sobre meu pacote de internet.
       - Tenho roaming internacional?
 
+
+  - name: retail_order_cancel
+    domain: retail
+    agent: orders_agent
+    description: Cancelamento explícito de pedido ou compra.
+    priority: 20
+    mcp_tools:
+      - consultar_pedido
+      - cancelar_pedido
+    keywords:
+      - cancelar pedido
+      - cancelamento do pedido
+      - cancelar a compra
+      - cancelar compra
+    examples:
+      - Quero cancelar meu pedido.
+      - Cancele o pedido.
+      - Quero cancelar a compra.
+
   - name: retail_order_tracking
     domain: retail
     agent: orders_agent

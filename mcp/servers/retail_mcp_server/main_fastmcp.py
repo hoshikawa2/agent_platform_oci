@@ -31,6 +31,16 @@ def consultar_entrega(order_id: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
+def cancelar_pedido(order_id: str | None = None) -> dict[str, Any]:
+    """Solicita o cancelamento de um pedido de varejo."""
+    return {
+        "order_id": order_id or "ORD-001",
+        "protocolo": "CANCEL-123456",
+        "status": "CANCELAMENTO_SOLICITADO",
+    }
+
+
+@mcp.tool()
 def solicitar_troca(order_id: str | None = None, reason: str | None = None) -> dict[str, Any]:
     """Abre solicitação de troca para um pedido."""
     return {

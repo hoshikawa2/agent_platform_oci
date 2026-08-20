@@ -158,3 +158,83 @@ def test_ordered_keyword_match_is_conservative():
     assert EnterpriseRouter._ordered_keyword_match("cancelar pedido", "quero cancelar meu pedido") is True
     assert EnterpriseRouter._ordered_keyword_match("cancelar pedido", "quero pedido e talvez cancelar depois") is False
     assert EnterpriseRouter._ordered_keyword_match("pedido", "meu pedido") is False
+
+
+def test_ordered_content_keyword_match_tolerates_omitted_short_connectors():
+    assert EnterpriseRouter._ordered_content_keyword_match(
+        "qual é o meu plano", "qual o meu plano"
+    ) is True
+    assert EnterpriseRouter._ordered_content_keyword_match(
+        "qual é o meu plano", "quero ver minha fatura"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_loaded_domain_style_plan_shift_preempts_continuity_without_llm():
+    """Regression: invoice -> plan must work from configured keywords, even same agent.
+
+    This mirrors applications such as Contas where two intents may be handled by
+    the same agent but require different MCP tools. The routing core must not
+    know application-specific intent or agent names.
+    """
+    from agent_framework.routing.models import IntentDefinition
+
+    class _Continuity:
+        async def evaluate(self, state, *, intents):
+            raise AssertionError("continuity LLM must not run for explicit configured intent shift")
+
+    router = object.__new__(EnterpriseRouter)
+    router.state_policies = []
+    router.intents = [
+        IntentDefinition(
+            name="domain_plan_information",
+            domain="customer_domain",
+            agent="customer_agent",
+            description="informações de plano",
+            priority=142,
+            mcp_tools=["consultar_plano"],
+            keywords=["qual é o meu plano", "plano contratado"],
+            examples=[],
+            enabled=True,
+        ),
+        IntentDefinition(
+            name="domain_invoice_query",
+            domain="customer_domain",
+            agent="customer_agent",
+            description="consulta de fatura",
+            priority=140,
+            mcp_tools=["consultar_faturas"],
+            keywords=["quero minha fatura", "fatura atual"],
+            examples=[],
+            enabled=True,
+        ),
+    ]
+    router.continuity = _Continuity()
+    router.enable_llm_router = False
+    router.llm = None
+    router.telemetry = None
+    router.fallback_agent = "customer_agent"
+
+    message = "qual o meu plano"
+    decision = await router.route({
+        "user_text": message,
+        "sanitized_input": message,
+        "active_agent": "customer_agent",
+        "intent": "domain_invoice_query",
+        "route_decision": {
+            "route": "customer_agent",
+            "agent": "customer_agent",
+            "intent": "domain_invoice_query",
+            "domain": "customer_domain",
+            "mcp_tools": ["consultar_faturas"],
+        },
+        "context": {"session": {}},
+    })
+
+    assert decision.intent == "domain_plan_information"
+    assert decision.agent == "customer_agent"
+    assert decision.mcp_tools == ["consultar_plano"]
+    assert decision.method == "keyword"
+    assert decision.metadata["route_stickiness_preempted"] is True
+    assert decision.metadata["previous_intent"] == "domain_invoice_query"
+    assert decision.metadata["keyword_match_strategy"] == "ordered_content_tokens"

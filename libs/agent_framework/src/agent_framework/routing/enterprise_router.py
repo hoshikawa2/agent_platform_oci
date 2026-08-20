@@ -181,6 +181,45 @@ class EnterpriseRouter:
             pos = found
         return True
 
+    @classmethod
+    def _ordered_content_keyword_match(cls, keyword: str, text: str, *, max_gap: int = 4) -> bool:
+        """Match determinístico tolerante à omissão de conectores curtos.
+
+        Alguns ``routing.yaml`` usam frases naturais como ``qual é o meu plano``.
+        A mesma intenção pode chegar como ``qual o meu plano``. O matcher legado
+        falhava porque exigia também o token ``e`` (resultado da normalização de
+        ``é``). Aqui tokens de até dois caracteres são tratados como conectores
+        opcionais *apenas no lado da keyword*. Os tokens informativos continuam
+        obrigatórios, em ordem e próximos entre si.
+
+        A heurística é propositalmente linguística-neutra e não contém nomes de
+        intents, agentes, domínios ou listas de verbos de negócio. Assim funciona
+        com qualquer configuração carregada pelo ``routing.yaml`` sem LLM extra.
+        """
+        wanted_all = cls._keyword_tokens(keyword)
+        actual = cls._keyword_tokens(text)
+        if len(wanted_all) < 2 or not actual:
+            return False
+
+        wanted = [token for token in wanted_all if len(token) > 2]
+        # Exigimos pelo menos dois tokens informativos para não transformar
+        # keywords curtas em matches amplos demais.
+        if len(wanted) < 2 or len(wanted) == len(wanted_all):
+            return False
+
+        pos = -1
+        for token in wanted:
+            found = None
+            upper = min(len(actual), pos + max_gap + 2)
+            for idx in range(pos + 1, upper):
+                if actual[idx] == token:
+                    found = idx
+                    break
+            if found is None:
+                return False
+            pos = found
+        return True
+
     def _route_by_keyword(self, text: str) -> RouteDecision | None:
         normalized = text.casefold()
         matches: list[tuple[int, int, int, IntentDefinition, str, str]] = []
@@ -195,10 +234,17 @@ class EnterpriseRouter:
                     strategy = "exact"
                 elif self._ordered_keyword_match(kw, text):
                     strategy = "ordered_tokens"
+                elif self._ordered_content_keyword_match(kw, text):
+                    strategy = "ordered_content_tokens"
 
                 if strategy:
-                    # menor priority vence; exact vence fuzzy; keyword maior desempata
-                    strategy_rank = 0 if strategy == "exact" else 1
+                    # menor priority vence; estratégias mais estritas vencem as relaxadas;
+                    # keyword maior desempata dentro da mesma prioridade/estratégia.
+                    strategy_rank = {
+                        "exact": 0,
+                        "ordered_tokens": 1,
+                        "ordered_content_tokens": 2,
+                    }[strategy]
                     matches.append((intent.priority, strategy_rank, -len(kw), intent, kw, strategy))
         if not matches:
             return None
@@ -208,11 +254,19 @@ class EnterpriseRouter:
             route=intent.agent,
             agent=intent.agent,
             intent=intent.name,
-            confidence=0.85 if strategy == "exact" else 0.82,
+            confidence={
+                "exact": 0.85,
+                "ordered_tokens": 0.82,
+                "ordered_content_tokens": 0.80,
+            }[strategy],
             reason=(
                 f"Keyword '{kw}' correspondeu à intent '{intent.name}'."
                 if strategy == "exact"
-                else f"Sequência de tokens da keyword '{kw}' correspondeu à intent '{intent.name}'."
+                else (
+                    f"Sequência de tokens da keyword '{kw}' correspondeu à intent '{intent.name}'."
+                    if strategy == "ordered_tokens"
+                    else f"Tokens informativos da keyword '{kw}' corresponderam à intent '{intent.name}'."
+                )
             ),
             method="keyword",
             metadata={"matched_keyword": kw, "keyword_match_strategy": strategy},

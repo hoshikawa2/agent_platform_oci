@@ -74,6 +74,39 @@ class EnterpriseRouter:
             await self._emit(state_decision, state)
             return state_decision
 
+        # Defensive recovery for checkpoints where the transactional latch survived
+        # but ``next_state`` was not restored.  This can happen in host templates
+        # that persist transaction fields independently from the router state.
+        # Without this branch, a clear new intent may preempt route stickiness but
+        # the runtime still resumes the old pending tool, producing hybrid replies
+        # such as ``[BillingAgent] informe o número do pedido``.
+        tx_status = str(state.get("transaction_status") or "").strip().upper()
+        active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+        legacy_tx = state.get("pending_tool_call") or state.get("selected_tool_call") or {}
+        has_tx = bool(active_tx.get("tool_name") or (isinstance(legacy_tx, dict) and legacy_tx.get("tool_name")))
+        if has_tx and tx_status in {"COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION"}:
+            previous = state.get("route_decision") or {}
+            tx_agent = str(previous.get("agent") or state.get("active_agent") or state.get("route") or self.fallback_agent).strip()
+            synthetic = RouteDecision(
+                route=tx_agent,
+                agent=tx_agent,
+                intent=f"state:{tx_status}",
+                confidence=1.0,
+                reason="Transação ativa recuperada sem next_state; avaliando possível interrupção de intenção.",
+                method="state",
+                next_state=tx_status,
+            )
+            interruption = await self._transaction_state_interruption_candidate(
+                state, text=str(text), state_decision=synthetic
+            )
+            if interruption is not None:
+                interruption.metadata = {
+                    **(interruption.metadata or {}),
+                    "transaction_state_recovered": True,
+                }
+                await self._emit(interruption, state)
+                return interruption
+
         # Mensagens que expressam de forma explícita uma intenção diferente da
         # intent/agente ativos devem prevalecer sobre a route stickiness. Isso
         # evita manter um fluxo read-only (por exemplo, tracking) quando o usuário

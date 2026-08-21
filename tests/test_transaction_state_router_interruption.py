@@ -216,3 +216,107 @@ intents:
     decision = await router.route(state)
     assert decision.intent == "contas_vas_information"
     assert decision.metadata["transaction_interruption"] == "intent_shift"
+
+@pytest.mark.asyncio
+async def test_active_transaction_without_next_state_still_allows_intent_shift(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: billing_agent
+  confidence_threshold: 0.70
+state_policies:
+  - state: COLLECTING_ORDER_PARAMETERS
+    agent: orders_agent
+intents:
+  - name: billing_invoice_explanation
+    domain: telecom
+    agent: billing_agent
+    priority: 10
+    keywords: [vencimento]
+  - name: retail_order_cancel
+    domain: retail
+    agent: orders_agent
+    priority: 20
+    keywords: [cancelar pedido]
+""",
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=False,
+        ENABLE_ROUTE_STICKINESS=False,
+    )
+    router = EnterpriseRouter(settings)
+    state = {
+        "user_text": "esquece, quero a data de vencimento de minha fatura",
+        "sanitized_input": "esquece, quero a data de vencimento de minha fatura",
+        # Reproduz o template: latch transacional persistido, mas next_state ausente.
+        "next_state": None,
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["order_id"],
+        "selected_tool_call": {"tool_name": "cancelar_pedido", "arguments": {}},
+        "active_agent": "orders_agent",
+        "route_decision": {
+            "route": "orders_agent",
+            "agent": "orders_agent",
+            "intent": "retail_order_cancel",
+            "confidence": 0.95,
+            "method": "keyword",
+        },
+    }
+
+    decision = await router.route(state)
+
+    assert decision.intent == "billing_invoice_explanation"
+    assert decision.agent == "billing_agent"
+    assert decision.metadata["transaction_interruption"] == "intent_shift"
+    assert decision.metadata["transaction_state_recovered"] is True
+
+
+@pytest.mark.asyncio
+async def test_missing_next_state_does_not_treat_order_id_as_intent_shift(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: billing_agent
+  confidence_threshold: 0.70
+state_policies:
+  - state: COLLECTING_ORDER_PARAMETERS
+    agent: orders_agent
+intents:
+  - name: billing_invoice_explanation
+    agent: billing_agent
+    priority: 10
+    keywords: [fatura, vencimento]
+  - name: retail_order_cancel
+    agent: orders_agent
+    priority: 20
+    keywords: [cancelar pedido]
+""",
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=False,
+        ENABLE_ROUTE_STICKINESS=False,
+    )
+    router = EnterpriseRouter(settings)
+    state = {
+        "user_text": "PED-1001",
+        "sanitized_input": "PED-1001",
+        "next_state": None,
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["order_id"],
+        "selected_tool_call": {"tool_name": "cancelar_pedido", "arguments": {}},
+        "active_agent": "orders_agent",
+        "route_decision": {
+            "route": "orders_agent",
+            "agent": "orders_agent",
+            "intent": "retail_order_cancel",
+        },
+    }
+
+    decision = await router.route(state)
+    assert (decision.metadata or {}).get("transaction_interruption") is None

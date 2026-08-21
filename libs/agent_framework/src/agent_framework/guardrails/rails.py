@@ -304,13 +304,55 @@ class PrematureActionRail(Guardrail):
 
 
 class ProactiveOfferRail(Guardrail):
-    """AOFERTA calibrado: bloqueia oferta proativa não solicitada no output."""
+    """AOFERTA calibrado: bloqueia oferta proativa não solicitada no output.
+
+    Estados transacionais determinísticos de continuidade não são uma nova
+    oferta do agente. Quando o runtime já abriu uma transação e está apenas
+    coletando parâmetros obrigatórios ou aguardando confirmação, AOFERTA deve
+    permitir a mensagem sem consultar a LLM. Outros rails de saída (por exemplo
+    FRASEOLOGIA) continuam sendo executados normalmente pelo pipeline.
+    """
 
     code = "AOFERTA"
     stage = "output"
+    _TRANSACTION_CONTINUATION_STATUSES = {
+        "COLLECTING_PARAMETERS",
+        "AWAITING_CONFIRMATION",
+    }
+
+    @classmethod
+    def _transaction_continuation_status(cls, ctx: dict[str, Any]) -> str | None:
+        status = str(ctx.get("transaction_status") or "").strip().upper()
+        if status in cls._TRANSACTION_CONTINUATION_STATUSES:
+            return status
+
+        # Compatibilidade com callers que ainda só expõem o estado por meio
+        # dos resultados das tools. O runtime transacional já grava o status
+        # nesses resultados; não inferimos pelo texto da resposta.
+        for result in reversed(list(ctx.get("mcp_results") or ctx.get("tool_result") or [])):
+            if not isinstance(result, dict):
+                continue
+            result_status = str(result.get("transaction_status") or "").strip().upper()
+            if result_status in cls._TRANSACTION_CONTINUATION_STATUSES:
+                return result_status
+        return None
 
     async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
         ctx = _ctx(context)
+        continuation_status = self._transaction_continuation_status(ctx)
+        if continuation_status:
+            return RailDecision(
+                code=self.code,
+                allowed=True,
+                reason=f"continuidade_transacional:{continuation_status}",
+                sanitized_text=text,
+                metadata={
+                    "mechanism": "deterministic_transaction_bypass",
+                    "transaction_status": continuation_status,
+                    "calibrated": True,
+                },
+            )
+
         out = await classify_with_framework_llm(
             _llm(ctx),
             "AOFERTA",

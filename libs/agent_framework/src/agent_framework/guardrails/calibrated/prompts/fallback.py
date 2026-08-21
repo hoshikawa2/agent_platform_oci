@@ -80,6 +80,13 @@ _REWRITE_INSTRUCTIONS_BY_CODE: dict[str, str] = {
         "pergunta de confirmação direta e curta, mencionando o serviço ou ação "
         "pendente. Sem executar nem prometer ação."
     ),
+    "FRASEOLOGIA": (
+        "Preserve integralmente os fatos, valores, nomes de produtos e o resultado "
+        "de negócio já informado. Reescreva SOMENTE o trecho apontado como "
+        "fraseologia inadequada, trocando vocabulário de implementação, processo "
+        "interno, categoria técnica ou operação por linguagem natural de cliente. "
+        "Não invente ação, não altere o resultado e não acrescente oferta."
+    ),
 }
 
 

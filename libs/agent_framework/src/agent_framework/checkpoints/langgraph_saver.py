@@ -25,12 +25,203 @@ from typing import Any, AsyncIterator, Iterator
 from .checkpoint_repository import create_checkpoint_repository
 
 
-def _jsonable(value: Any) -> Any:
-    try:
-        json.dumps(value, default=str)
+def _parse_legacy_json_container(value: Any, expected: type) -> Any:
+    """Recover containers that older JSON backends persisted as JSON strings.
+
+    This is intentionally field-scoped: ordinary business strings must stay
+    strings, even if their text happens to look like JSON.
+    """
+    current = value
+    for _ in range(3):
+        if isinstance(current, expected):
+            return current
+        if not isinstance(current, str):
+            break
+        text = current.strip()
+        if not text:
+            break
+        if expected is dict and not text.startswith("{"):
+            break
+        if expected is list and not text.startswith("["):
+            break
+        try:
+            current = json.loads(text)
+        except Exception:
+            break
+    return current if isinstance(current, expected) else expected()
+
+
+def _strict_json_value(value: Any, *, path: str = "$") -> Any:
+    """Convert to repository-safe JSON without ever falling back to ``str``.
+
+    ``default=str`` is unsafe for LangGraph checkpoints: runtime/task objects can
+    become ordinary strings and later be consumed as typed values by Pregel.
+    Keep native JSON containers recursively and fail loudly for an unsupported
+    object instead of corrupting it silently.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    except TypeError:
-        return json.loads(json.dumps(value, default=str))
+    if isinstance(value, dict):
+        return {
+            str(key): _strict_json_value(item, path=f"{path}.{key}")
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _strict_json_value(item, path=f"{path}[{idx}]")
+            for idx, item in enumerate(value)
+        ]
+    # Common durable scalar types that JSON does not know natively.
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    try:
+        from datetime import date, datetime
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+    except Exception:
+        pass
+    try:
+        from enum import Enum
+        if isinstance(value, Enum):
+            return _strict_json_value(value.value, path=path)
+    except Exception:
+        pass
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        return _strict_json_value(value.model_dump(), path=path)
+    raise TypeError(
+        f"Checkpoint contém valor não serializável em {path}: "
+        f"{type(value).__module__}.{type(value).__qualname__}"
+    )
+
+
+def _normalize_checkpoint(checkpoint: Any) -> dict[str, Any]:
+    checkpoint = _parse_legacy_json_container(checkpoint, dict)
+    if not isinstance(checkpoint, dict):
+        return {}
+    out = dict(checkpoint)
+    out["channel_values"] = _parse_legacy_json_container(out.get("channel_values"), dict)
+    out["channel_versions"] = _parse_legacy_json_container(out.get("channel_versions"), dict)
+    raw_seen = _parse_legacy_json_container(out.get("versions_seen"), dict)
+    out["versions_seen"] = {
+        str(node): _parse_legacy_json_container(versions, dict)
+        for node, versions in raw_seen.items()
+    }
+    if "pending_sends" in out:
+        out["pending_sends"] = _parse_legacy_json_container(out.get("pending_sends"), list)
+    if "updated_channels" in out and isinstance(out.get("updated_channels"), str):
+        out["updated_channels"] = _parse_legacy_json_container(out.get("updated_channels"), list)
+    return out
+
+
+def _normalize_metadata(metadata: Any) -> dict[str, Any]:
+    value = _parse_legacy_json_container(metadata, dict)
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_config(config: Any) -> dict[str, Any]:
+    value = _parse_legacy_json_container(config, dict)
+    if not isinstance(value, dict):
+        return {}
+    out = dict(value)
+    out["configurable"] = _parse_legacy_json_container(out.get("configurable"), dict)
+    return out
+
+
+_EPHEMERAL_RUNTIME_KEYS = {"__pregel_runtime", "__pregel_store"}
+
+
+def _strip_runtime_refs(value: Any) -> Any:
+    """Recursively remove process-local runtime/store references only.
+
+    Checkpoints may legitimately contain LangGraph internal channels whose names
+    also start with ``__pregel_`` (for example task channels). Those are durable
+    graph state and must be preserved. The corruption that triggers
+    ``str.override`` is specifically a runtime/store object captured inside a
+    nested RunnableConfig and later stringified by the JSON repository.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _strip_runtime_refs(item)
+            for key, item in value.items()
+            if str(key) not in _EPHEMERAL_RUNTIME_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_runtime_refs(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_runtime_refs(item) for item in value)
+    return value
+
+
+def _durable_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a checkpoint-safe copy of a LangGraph RunnableConfig.
+
+    LangGraph injects ephemeral private values such as ``__pregel_runtime`` and
+    ``__pregel_store`` under ``configurable`` while a graph is running. They are
+    process-local and must never cross the durable checkpoint boundary.
+
+    The scrub is recursive because task/pending-write config fragments may be
+    nested below regular config fields in newer LangGraph versions.
+    """
+    if not isinstance(config, dict):
+        return {}
+    cleaned = _strip_runtime_refs(config)
+    if not isinstance(cleaned, dict):
+        return {}
+    configurable = cleaned.get("configurable")
+    if isinstance(configurable, dict):
+        cleaned = dict(cleaned)
+        cleaned["configurable"] = {
+            key: value
+            for key, value in configurable.items()
+            if not str(key).startswith("__pregel_")
+        }
+    return cleaned
+
+
+def _canonical_checkpoint_config(
+    payload: dict[str, Any],
+    request_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rebuild the RunnableConfig returned to LangGraph from durable IDs only.
+
+    Official LangGraph savers do not re-bind the full config that happened to be
+    present when a checkpoint was written. They reconstruct a fresh config from
+    ``thread_id``, ``checkpoint_ns`` and ``checkpoint_id``. Doing the same here
+    prevents a historical/factory-time runtime value from being rebound into a
+    new execution while remaining backward compatible with existing rows.
+    """
+    requested = _durable_config(request_config)
+    stored = _durable_config(_normalize_config(payload.get("config")) if isinstance(payload, dict) else None)
+    req_cfg = requested.get("configurable") if isinstance(requested.get("configurable"), dict) else {}
+    stored_cfg = stored.get("configurable") if isinstance(stored.get("configurable"), dict) else {}
+    checkpoint = payload.get("checkpoint") if isinstance(payload, dict) else {}
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+
+    thread_id = (
+        req_cfg.get("thread_id")
+        or stored_cfg.get("thread_id")
+        or payload.get("thread_id")
+        or "default"
+    )
+    checkpoint_ns = req_cfg.get("checkpoint_ns")
+    if checkpoint_ns is None:
+        checkpoint_ns = stored_cfg.get("checkpoint_ns", "")
+
+    requested_checkpoint_id = req_cfg.get("checkpoint_id")
+    checkpoint_id = (
+        requested_checkpoint_id
+        or payload.get("checkpoint_id")
+        or checkpoint.get("id")
+        or stored_cfg.get("checkpoint_id")
+    )
+
+    configurable: dict[str, Any] = {
+        "thread_id": str(thread_id),
+        "checkpoint_ns": str(checkpoint_ns or ""),
+    }
+    if checkpoint_id not in (None, ""):
+        configurable["checkpoint_id"] = str(checkpoint_id)
+    return {"configurable": configurable}
 
 
 def _thread_id(config: dict[str, Any] | None) -> str:
@@ -85,6 +276,7 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
     """Checkpoint saver nativo para LangGraph usando os repositories do framework."""
 
     def __init__(self, settings, repository=None):
+        super().__init__()
         self.settings = settings
         self.repository = repository or create_checkpoint_repository(settings)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -100,20 +292,40 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             return ex.submit(lambda: asyncio.run(coro)).result()
 
-    def _make_tuple(self, payload: dict[str, Any] | None):
+    def _make_tuple(
+        self,
+        payload: dict[str, Any] | None,
+        request_config: dict[str, Any] | None = None,
+    ):
         if not payload:
             return None
-        config = payload.get("config") or {"configurable": {"thread_id": payload.get("thread_id")}}
-        checkpoint = payload.get("checkpoint") or {}
-        metadata = payload.get("metadata") or {}
-        parent_config = payload.get("parent_config")
-        pending_writes = _normalize_pending_writes(payload.get("pending_writes") or [])
+        # Second-stage protection: never re-bind the full persisted RunnableConfig.
+        # Rebuild only the durable identifiers, as official LangGraph savers do.
+        config = _canonical_checkpoint_config(payload, request_config)
+        checkpoint = _strip_runtime_refs(_normalize_checkpoint(payload.get("checkpoint") or {}))
+        metadata = _strip_runtime_refs(_normalize_metadata(payload.get("metadata") or {}))
+        raw_parent_config = payload.get("parent_config")
+        if isinstance(raw_parent_config, dict):
+            parent_payload = {
+                "thread_id": payload.get("thread_id"),
+                "config": raw_parent_config,
+                "checkpoint_id": (raw_parent_config.get("configurable") or {}).get("checkpoint_id")
+                if isinstance(raw_parent_config.get("configurable"), dict)
+                else None,
+                "checkpoint": {},
+            }
+            parent_config = _canonical_checkpoint_config(parent_payload)
+        else:
+            parent_config = None
+        pending_writes = _normalize_pending_writes(
+            _strip_runtime_refs(payload.get("pending_writes") or [])
+        )
         try:
             from langgraph.checkpoint.base import CheckpointTuple
             return CheckpointTuple(config=config, checkpoint=checkpoint, metadata=metadata, parent_config=parent_config, pending_writes=pending_writes)
         except Exception:
             return {
-                "config": config,
+                "config": _durable_config(config),
                 "checkpoint": checkpoint,
                 "metadata": metadata,
                 "parent_config": parent_config,
@@ -121,7 +333,10 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
             }
 
     async def aget_tuple(self, config: dict[str, Any]):
-        return self._make_tuple(await self.repository.get_latest(_thread_id(config)))
+        return self._make_tuple(
+            await self.repository.get_latest(_thread_id(config)),
+            request_config=config,
+        )
 
     def get_tuple(self, config: dict[str, Any]):
         return self._run(self.aget_tuple(config))
@@ -129,20 +344,24 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
     async def aput(self, config: dict[str, Any], checkpoint: dict[str, Any], metadata: dict[str, Any] | None = None, new_versions: dict[str, Any] | None = None):
         thread_id = _thread_id(config)
         checkpoint_id = _checkpoint_id(checkpoint)
+        clean_config = _durable_config(config)
+        clean_cfg = clean_config.get("configurable") if isinstance(clean_config.get("configurable"), dict) else {}
+        checkpoint_ns = str(clean_cfg.get("checkpoint_ns") or "")
+        # Return a fresh canonical config. Never feed process-local/factory-time
+        # configurable values back into the next LangGraph super-step.
         next_config = {
-            **(config or {}),
             "configurable": {
-                **((config or {}).get("configurable") or {}),
                 "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
                 "checkpoint_id": checkpoint_id,
-            },
+            }
         }
         await self.repository.put(thread_id, {
             "thread_id": thread_id,
-            "config": _jsonable(next_config),
-            "checkpoint": _jsonable(checkpoint),
-            "metadata": _jsonable(metadata or {}),
-            "new_versions": _jsonable(new_versions or {}),
+            "config": _strict_json_value(next_config, path="$.config"),
+            "checkpoint": _strict_json_value(_strip_runtime_refs(_normalize_checkpoint(checkpoint)), path="$.checkpoint"),
+            "metadata": _strict_json_value(_strip_runtime_refs(_normalize_metadata(metadata or {})), path="$.metadata"),
+            "new_versions": _strict_json_value(_strip_runtime_refs(new_versions or {}), path="$.new_versions"),
             "checkpoint_id": checkpoint_id,
         })
         return next_config
@@ -153,19 +372,46 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
     async def aput_writes(self, config: dict[str, Any], writes: list[tuple[str, Any]], task_id: str, task_path: str = ""):
         thread_id = _thread_id(config)
         try:
-            latest = await self.repository.get_latest(thread_id) or {"thread_id": thread_id, "config": config, "checkpoint": {}, "metadata": {}}
+            latest = await self.repository.get_latest(thread_id) or {"thread_id": thread_id, "config": _durable_config(config), "checkpoint": {}, "metadata": {}}
         except:
             latest = {
                 "thread_id": thread_id,
-                "config": config,
+                "config": _durable_config(config),
                 "checkpoint": {},
                 "metadata": {},
                 "pending_writes": [],
             }
 
+        if isinstance(latest, dict):
+            # Do not keep extending a persisted RunnableConfig across super-steps.
+            # Rebuild the same canonical config that aget_tuple() will expose.
+            latest["config"] = _canonical_checkpoint_config(latest, config)
+            if isinstance(latest.get("checkpoint"), dict):
+                latest["checkpoint"] = _strip_runtime_refs(latest.get("checkpoint"))
+            if isinstance(latest.get("metadata"), dict):
+                latest["metadata"] = _strip_runtime_refs(latest.get("metadata"))
+            if isinstance(latest.get("parent_config"), dict):
+                parent_payload = {
+                    "thread_id": latest.get("thread_id") or thread_id,
+                    "config": latest.get("parent_config"),
+                    "checkpoint_id": (latest.get("parent_config", {}).get("configurable") or {}).get("checkpoint_id")
+                    if isinstance(latest.get("parent_config", {}).get("configurable"), dict)
+                    else None,
+                    "checkpoint": {},
+                }
+                latest["parent_config"] = _canonical_checkpoint_config(parent_payload)
+
         pending = list(latest.get("pending_writes") or [])
         for channel, value in writes or []:
-            pending.append({"task_id": task_id, "task_path": task_path, "channel": channel, "value": _jsonable(value)})
+            # Writes may contain nested task/RunnableConfig fragments. Scrub the
+            # private runtime before the repository's JSON ``default=str`` layer.
+            durable_value = _strip_runtime_refs(value)
+            pending.append({
+                "task_id": task_id,
+                "task_path": task_path,
+                "channel": channel,
+                "value": _strict_json_value(durable_value, path=f"$.pending_writes[{task_id}].{channel}"),
+            })
         latest["pending_writes"] = pending
         await self.repository.put(thread_id, latest)
 

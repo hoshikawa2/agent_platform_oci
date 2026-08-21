@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import logging
+import traceback
 from copy import deepcopy
 from typing import Any
 from uuid import uuid4
@@ -8,6 +10,8 @@ from uuid import uuid4
 from .models import WorkflowDefinition, WorkflowPause, WorkflowRunResult
 from .registry import DEFAULT_WORKFLOW_ACTIONS, WorkflowActionRegistry
 from .repository import FileWorkflowRepository
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve(path: Any, state: dict[str, Any]) -> Any:
@@ -88,9 +92,54 @@ def _normalize_resume(value: Any, pause: WorkflowPause) -> Any:
     return normalized
 
 
-def _exception_details(exc: Exception) -> dict[str, Any]:
-    """Preserve structured external-error facts without coupling the framework to a provider."""
-    details: dict[str, Any] = {"type": type(exc).__name__}
+def _type_shape(value: Any, *, depth: int = 0, max_depth: int = 4) -> Any:
+    """Return a value-free type map suitable for runtime diagnostics.
+
+    We intentionally do not serialize values here: RunnableConfig may contain
+    process-local LangGraph objects and customer/business data.  The diagnostic
+    only exposes keys, container sizes and Python type names.
+    """
+    if depth >= max_depth:
+        return {"type": type(value).__name__}
+    if isinstance(value, dict):
+        return {
+            "type": "dict",
+            "size": len(value),
+            "keys": {str(k): _type_shape(v, depth=depth + 1, max_depth=max_depth) for k, v in value.items()},
+        }
+    if isinstance(value, (list, tuple)):
+        sample = list(value[:5]) if isinstance(value, tuple) else value[:5]
+        return {
+            "type": type(value).__name__,
+            "size": len(value),
+            "items": [_type_shape(v, depth=depth + 1, max_depth=max_depth) for v in sample],
+        }
+    return {"type": type(value).__name__}
+
+
+def _runtime_versions() -> dict[str, str]:
+    versions: dict[str, str] = {}
+    try:
+        from importlib.metadata import version
+
+        for package in ("langgraph", "langgraph-checkpoint", "langchain-core"):
+            try:
+                versions[package] = version(package)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return versions
+
+
+def _exception_details(exc: Exception, *, runtime_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Preserve structured error facts plus a traceback for workflow runtime failures."""
+    details: dict[str, Any] = {
+        "type": type(exc).__name__,
+        "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+    }
+    if runtime_context:
+        details["runtime_diagnostics"] = runtime_context
     for attr in ("status_code", "body", "attempts", "code", "metadata"):
         value = getattr(exc, attr, None)
         if value not in (None, "", [], {}):
@@ -122,6 +171,15 @@ class WorkflowRuntime:
         self.allow_deterministic_fallback = bool(allow_deterministic_fallback)
         self._compiled: dict[tuple[str, int], Any] = {}
         self._fallback_paused: dict[str, dict[str, Any]] = {}
+
+    def _runtime_diagnostics(self, *, graph: Any | None, config: dict[str, Any], phase: str) -> dict[str, Any]:
+        return {
+            "phase": phase,
+            "config_shape": _type_shape(config),
+            "graph_type": type(graph).__name__ if graph is not None else None,
+            "checkpointer_type": type(self.checkpointer).__name__ if self.checkpointer is not None else None,
+            "versions": _runtime_versions(),
+        }
 
     def _outgoing(self, definition: WorkflowDefinition) -> dict[str, list[Any]]:
         outgoing: dict[str, list[Any]] = {}
@@ -439,9 +497,13 @@ class WorkflowRuntime:
                 import langgraph  # noqa: F401
             except ModuleNotFoundError:
                 return await self._run_fallback(definition, initial, start_node=definition.start, execution_id=eid)
+        phase = "compile"
         try:
             graph = self._compile(definition)
+            phase = "ainvoke"
+            logger.debug("workflow_langgraph_before_ainvoke diagnostics=%s", self._runtime_diagnostics(graph=graph, config=config, phase=phase))
             state = await graph.ainvoke(initial, config=config)
+            phase = "aget_state"
             snapshot = await graph.aget_state(config)
             if getattr(snapshot, "next", None):
                 interrupts = []
@@ -482,7 +544,12 @@ class WorkflowRuntime:
                 workflow_version=definition.version,
                 status="FAILED",
                 error=str(exc),
-                error_details=_exception_details(exc),
+                error_details=_exception_details(
+                    exc,
+                    runtime_context=self._runtime_diagnostics(
+                        graph=locals().get("graph"), config=config, phase=locals().get("phase", "unknown")
+                    ),
+                ),
                 output=dict(partial.get("nodes") or {}),
                 state=partial,
                 trace=list(partial.get("trace") or []),
@@ -507,9 +574,13 @@ class WorkflowRuntime:
             from langgraph.types import Command
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError("langgraph não está instalado") from exc
+        phase = "compile"
         try:
             graph = self._compile(definition)
+            phase = "ainvoke_resume"
+            logger.debug("workflow_langgraph_before_resume diagnostics=%s", self._runtime_diagnostics(graph=graph, config=config, phase=phase))
             state = await graph.ainvoke(Command(resume=resume_value), config=config)
+            phase = "aget_state_resume"
             snapshot = await graph.aget_state(config)
             if getattr(snapshot, "next", None):
                 interrupts = []
@@ -545,7 +616,12 @@ class WorkflowRuntime:
                 workflow_version=definition.version,
                 status="FAILED",
                 error=str(exc),
-                error_details=_exception_details(exc),
+                error_details=_exception_details(
+                    exc,
+                    runtime_context=self._runtime_diagnostics(
+                        graph=locals().get("graph"), config=config, phase=locals().get("phase", "unknown")
+                    ),
+                ),
                 output=dict(partial.get("nodes") or {}),
                 state=partial,
                 trace=list(partial.get("trace") or []),

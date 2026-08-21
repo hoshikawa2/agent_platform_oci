@@ -54,7 +54,20 @@ class EnterpriseRouter:
 
     async def route(self, state: dict[str, Any]) -> RouteDecision:
         session = (state.get("context") or {}).get("session", {}) or {}
-        current_state = state.get("next_state") or session.get("metadata", {}).get("workflow_state")
+        explicit_next_state = state.get("next_state")
+        tx_status_at_route = str(state.get("transaction_status") or "").strip().upper()
+        terminal_tx = tx_status_at_route in {"COMPLETED", "FAILED", "CANCELLED", "BLOCKED", "OUT_OF_SCOPE"}
+
+        # Um status transacional terminal é a fonte de verdade sobre o latch. Se
+        # um checkpoint legado/parcial ainda trouxer ``next_state`` da transação
+        # encerrada, esse valor não pode aprisionar a próxima mensagem na política
+        # de estado. O workflow_state da sessão continua disponível porque pode
+        # representar um workflow conversacional independente da transação já
+        # encerrada.
+        if terminal_tx and explicit_next_state:
+            current_state = session.get("metadata", {}).get("workflow_state")
+        else:
+            current_state = explicit_next_state or session.get("metadata", {}).get("workflow_state")
         text = state.get("sanitized_input") or state.get("user_text") or ""
 
         # Estados transacionais preservam continuidade para respostas curtas
@@ -107,6 +120,20 @@ class EnterpriseRouter:
                 await self._emit(interruption, state)
                 return interruption
 
+            # A transação continua ativa e a mensagem NÃO representa mudança de
+            # intenção. Neste caso a decisão sintética de estado precisa vencer
+            # route stickiness/continuity. Antes, o código apenas verificava uma
+            # possível interrupção e, na ausência dela, caía adiante no LLM de
+            # continuidade. Isso fazia respostas de parâmetro (ex.: ``R$ 71,99``)
+            # perderem o latch determinístico da transação e reiniciarem a seleção
+            # da tool.
+            synthetic.metadata = {
+                **(synthetic.metadata or {}),
+                "transaction_state_recovered": True,
+            }
+            await self._emit(synthetic, state)
+            return synthetic
+
         # Mensagens que expressam de forma explícita uma intenção diferente da
         # intent/agente ativos devem prevalecer sobre a route stickiness. Isso
         # evita manter um fluxo read-only (por exemplo, tracking) quando o usuário
@@ -119,7 +146,6 @@ class EnterpriseRouter:
             active_agent
             and keyword_candidate is not None
             and keyword_candidate.intent != previous_intent
-            and self._is_explicit_intent_shift(keyword_candidate)
         ):
             keyword_candidate.metadata = {
                 **(keyword_candidate.metadata or {}),
@@ -167,133 +193,129 @@ class EnterpriseRouter:
         text: str,
         state_decision: RouteDecision,
     ) -> RouteDecision | None:
-        """Detecta uma nova intenção durante coleta/confirmação transacional.
+        """Detecta semanticamente mudança de intenção durante uma transação.
 
-        A política de estado continua protegendo respostas curtas/ambíguas. Uma
-        interrupção só é aceita quando o roteador encontra uma intent diferente
-        da transação ativa. Keywords explícitas são preferidas; na ausência delas,
-        o LLM router pode decidir, desde que atinja o limiar configurado.
-
-        O método não limpa o estado por conta própria. Ele marca a decisão com
-        ``transaction_interruption=intent_shift`` para que o runtime feche o latch
-        transacional de maneira centralizada e auditável.
+        Não existe lista de palavras para desistência ou mudança de assunto. Uma
+        interrupção nasce de uma intent diferente resolvida por uma keyword
+        configurada no ``routing.yaml`` ou, na ausência dela, por uma decisão
+        semântica do LLM com o contexto da transação pendente.
         """
         active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
         started_intent = str(active_tx.get("started_from_intent") or "").strip()
         previous = state.get("route_decision") or {}
         previous_intent = str(previous.get("intent") or state.get("intent") or started_intent).strip()
 
-        # Parameter answers have precedence over intent-shift detection.  A reply
-        # such as ``R$ 71,99`` after the framework asked for ``valor`` is not a
-        # new billing-explanation intent; it is the missing transaction argument.
-        # Likewise, short entity-like replies (``TIM Music``) should remain in the
-        # pending transaction.  Only clear question/action language is allowed to
-        # escape to the router.
-        missing = [str(x) for x in (state.get("missing_parameters") or []) if str(x).strip()]
-        if missing and self._looks_like_pending_parameter_answer(text, missing):
-            return None
-
         candidate = self._route_by_keyword(text)
         if candidate is not None:
-            explicit = self._is_explicit_intent_shift(candidate)
             different = (
                 candidate.agent != state_decision.agent
                 or (started_intent and candidate.intent != started_intent)
                 or (previous_intent and not previous_intent.startswith("state:") and candidate.intent != previous_intent)
             )
-            if explicit and different:
+            if different:
                 candidate.metadata = {
                     **(candidate.metadata or {}),
                     "transaction_interruption": "intent_shift",
                     "interrupted_state": state_decision.next_state,
                     "interrupted_agent": state_decision.agent,
                     "interrupted_intent": started_intent or previous_intent,
+                    "interruption_source": "configured_routing",
                 }
                 return candidate
-            # Uma keyword reconhecida para a própria transação deve continuar
-            # protegida pelo estado; não há necessidade de chamar o LLM.
-            if not different:
-                return None
+            return None
 
         if not (self.enable_llm_router and self.llm is not None):
             return None
-        try:
-            candidate = await self._route_by_llm(text, state)
-        except Exception as exc:
-            logger.warning("Falha ao avaliar interrupção de estado transacional via LLM: %s", exc)
-            return None
 
-        different = (
-            candidate.agent != state_decision.agent
-            or (started_intent and candidate.intent != started_intent)
-            or (previous_intent and not previous_intent.startswith("state:") and candidate.intent != previous_intent)
-        )
-        if not different or candidate.confidence < self.intent_shift_threshold:
-            return None
-
-        candidate.metadata = {
-            **(candidate.metadata or {}),
-            "transaction_interruption": "intent_shift",
-            "interrupted_state": state_decision.next_state,
-            "interrupted_agent": state_decision.agent,
-            "interrupted_intent": started_intent or previous_intent,
+        allowed = [i for i in self.intents if i.enabled]
+        allowed_payload = [
+            {
+                "intent": i.name,
+                "agent": i.agent,
+                "description": i.description,
+                "examples": i.examples[:3],
+                "domain": i.domain,
+            }
+            for i in allowed
+        ]
+        transaction_context = {
+            "current_agent": state_decision.agent,
+            "current_intent": started_intent or previous_intent,
+            "transaction_status": state.get("transaction_status"),
+            "tool_name": active_tx.get("tool_name"),
+            "missing_parameters": list(state.get("missing_parameters") or []),
         }
+        system = (
+            "Você decide apenas se o turno atual continua a transação ativa ou muda de intenção. "
+            "Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
+            "Se a mensagem responde ao dado/confirmacao pendente, retorne CONTINUE. "
+            "Se o usuário passou a perseguir outro objetivo, retorne SHIFT e a nova intent permitida. "
+            "Retorne somente JSON válido com decision, intent, agent, confidence, reason."
+        )
+        user = {
+            "message": text,
+            "transaction": transaction_context,
+            "allowed_intents": allowed_payload,
+            "session_context": (state.get("context") or {}).get("session", {}),
+        }
+        try:
+            answer = await self.llm.ainvoke(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+                temperature=0.0,
+                max_tokens=512,
+                profile_name="router",
+                component_name="router",
+                generation_name="llm.transaction_intent_shift",
+            )
+            data = self._parse_json(answer)
+        except Exception as exc:
+            logger.warning("Falha ao avaliar mudança semântica de intent transacional via LLM: %s", exc)
+            return None
+
+        if str(data.get("decision") or "").strip().upper() != "SHIFT":
+            return None
+        confidence = float(data.get("confidence") or 0.0)
+        if confidence < self.intent_shift_threshold:
+            return None
+
+        intent_name = str(data.get("intent") or "").strip()
+        if not intent_name or intent_name == (started_intent or previous_intent):
+            return None
+        agent = str(data.get("agent") or self._agent_for_intent(intent_name) or "").strip()
+        if not agent:
+            return None
+
+        candidate = RouteDecision(
+            route=agent,
+            agent=agent,
+            intent=intent_name,
+            confidence=confidence,
+            reason=str(data.get("reason") or "Mudança semântica de intenção durante transação."),
+            method="llm",
+            metadata={
+                "transaction_interruption": "intent_shift",
+                "interrupted_state": state_decision.next_state,
+                "interrupted_agent": state_decision.agent,
+                "interrupted_intent": started_intent or previous_intent,
+                "interruption_source": "semantic_classifier",
+                "raw_llm_answer": answer[:1000],
+            },
+            domain=self._domain_for_intent(intent_name),
+            mcp_tools=self._tools_for_intent(intent_name),
+        )
         return candidate
 
     @staticmethod
-    def _looks_like_pending_parameter_answer(text: str, missing_parameters: list[str]) -> bool:
-        """Return True when the current turn looks like an answer to a missing field.
-
-        This is intentionally conservative: structured values are recognized by
-        parameter semantics, while a short entity-like phrase is accepted only if
-        it does not contain interrogative or explicit topic-shift language.
-        """
-        raw = str(text or "").strip()
-        if not raw:
-            return False
-        normalized = unicodedata.normalize("NFKD", raw.lower())
-        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-        normalized = re.sub(r"\s+", " ", normalized).strip()
-        names = {re.sub(r"[^a-z0-9_]+", "", str(x).lower()) for x in missing_parameters}
-
-        # Explicit conversational shifts/questions must still escape the transaction.
-        shift_tokens = (
-            "quero ", "gostaria ", "preciso ", "me diga", "me informe", "mostre",
-            "qual ", "quais ", "quando ", "onde ", "como ", "porque ", "por que ",
-            "esquece", "esqueca", "mudei de assunto", "outra coisa", "voltar para",
-            "cancelar ", "cancele ", "consultar ", "ver minha", "ver meu",
-        )
-        if "?" in raw or any(tok in normalized for tok in shift_tokens):
-            return False
-
-        # Common structured parameter families.
-        if names & {"valor", "value", "amount", "price", "preco", "preço"}:
-            if re.fullmatch(r"(?:r\$\s*)?[+-]?\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?|(?:r\$\s*)?[+-]?\d+(?:[.,]\d{1,2})?", normalized, flags=re.I):
-                return True
-        if names & {"order_id", "pedido", "pedido_id", "invoice_id", "fatura_id", "protocol", "protocolo", "protocolo_id"}:
-            if re.fullmatch(r"[a-z0-9._/-]{2,64}", normalized, flags=re.I):
-                return True
-        if names & {"data", "date", "due_date", "vencimento"}:
-            if re.fullmatch(r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?", normalized):
-                return True
-
-        # A single short noun/entity phrase is usually the requested subject/reason.
-        # Keep it in the transaction unless it contains clear routing language.
-        words = re.findall(r"[a-z0-9$+.,/_-]+", normalized)
-        if len(missing_parameters) == 1 and 1 <= len(words) <= 5:
-            return True
-        return False
-
-    @staticmethod
     def _is_explicit_intent_shift(decision: RouteDecision) -> bool:
-        """Retorna True para matches explícitos que devem vencer a stickiness.
+        """Compatibilidade: keyword configurada é um sinal explícito de routing.
 
-        A regra é configurável porque usa a keyword já declarada no routing.yaml,
-        sem listas linguísticas fixas no código. Keywords com quatro ou mais
-        caracteres são tratadas como sinais explícitos de mudança de intenção.
+        Não há regra por conteúdo ou tamanho da keyword; o framework confia na
+        configuração do domínio.
         """
-        matched = str((decision.metadata or {}).get("matched_keyword") or "").strip()
-        return len(matched) >= 4
+        return decision.method == "keyword" and bool(str((decision.metadata or {}).get("matched_keyword") or "").strip())
 
     def _route_by_state(self, current_state: str | None) -> RouteDecision | None:
         if not current_state:
@@ -457,14 +479,26 @@ class EnterpriseRouter:
         ]
         system = (
             "Você é um roteador de intenções para uma plataforma de agentes. "
-            "Classifique a mensagem do usuário em uma das intents permitidas. "
+            "Classifique semanticamente a mensagem do usuário em uma das intents permitidas. "
+            "Quando houver uma transação ativa, considere a intent que iniciou a transação, "
+            "o estado transacional e os parâmetros ainda pendentes. Se a mensagem apenas "
+            "responder ao que está pendente, mantenha a intent da transação. Se o usuário "
+            "passar a perseguir outro objetivo, classifique a nova intent. "
             "Retorne somente JSON válido com: intent, agent, confidence, reason. "
             "Não responda ao usuário final."
         )
+        active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+        transaction_context = {
+            "status": state.get("transaction_status"),
+            "started_from_intent": active_tx.get("started_from_intent"),
+            "tool_name": active_tx.get("tool_name"),
+            "missing_parameters": list(state.get("missing_parameters") or []),
+        } if active_tx else None
         user = {
             "message": text,
             "allowed_intents": allowed_payload,
             "session_context": (state.get("context") or {}).get("session", {}),
+            "transaction_context": transaction_context,
         }
         answer = await self.llm.ainvoke(
             [

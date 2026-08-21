@@ -572,8 +572,8 @@ async def test_pre_validation_rejection_clears_collecting_latches_and_is_exposed
 async def test_collecting_parameters_can_be_cancelled_explicitly():
     runtime = _ContestRuntime()
     state = {
-        "user_text": "cancele essa operação anterior",
-        "sanitized_input": "cancele essa operação anterior",
+        "user_text": "nova intenção classificada pelo router",
+        "sanitized_input": "nova intenção classificada pelo router",
         "route": "contestacao_agent",
         "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
         "transaction_status": "COLLECTING_PARAMETERS",
@@ -587,12 +587,12 @@ async def test_collecting_parameters_can_be_cancelled_explicitly():
         "selected_tool_call": {"tool_name": "contestar_cobranca", "arguments": {}},
         "missing_parameters": ["subject"],
         "next_state": "COLLECTING_CONTESTACAO_PARAMETERS",
+        "route_decision": {"metadata": {"transaction_interruption": "intent_shift"}},
     }
 
     result = await runtime.execute_tools_for_intent(state, tools=[])
 
-    assert result[-1]["transaction_status"] == "CANCELLED"
-    assert result[-1]["cancelled"] is True
+    assert result == []
     assert state["transaction_status"] == "CANCELLED"
     assert state["active_transaction"] is None
     assert state["next_state"] is None

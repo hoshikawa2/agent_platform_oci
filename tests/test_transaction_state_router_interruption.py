@@ -7,7 +7,7 @@ from agent_framework.routing.enterprise_router import EnterpriseRouter
 
 class _LLM:
     async def ainvoke(self, messages, **kwargs):
-        return '{"intent":"contas_vas_information","agent":"vas_agent","confidence":0.96,"reason":"nova consulta de serviços"}'
+        return '{"decision":"SHIFT","intent":"contas_vas_information","agent":"vas_agent","confidence":0.96,"reason":"nova consulta de serviços"}'
 
 
 @pytest.mark.asyncio
@@ -86,7 +86,7 @@ intents:
 
     class _LowConfidenceLLM:
         async def ainvoke(self, messages, **kwargs):
-            return '{"intent":"contas_vas_information","agent":"vas_agent","confidence":0.30,"reason":"incerto"}'
+            return '{"decision":"SHIFT","intent":"contas_vas_information","agent":"vas_agent","confidence":0.30,"reason":"incerto"}'
 
     settings = SimpleNamespace(
         ROUTING_CONFIG_PATH=str(routing),
@@ -320,3 +320,76 @@ intents:
 
     decision = await router.route(state)
     assert (decision.metadata or {}).get("transaction_interruption") is None
+
+@pytest.mark.asyncio
+async def test_missing_next_state_parameter_answer_recovers_transaction_state_before_continuity(tmp_path):
+    """Regressão: parâmetro de uma transação ativa não pode cair no route-continuity.
+
+    Reproduz o caso Contas de forma genérica: o latch transacional sobreviveu ao
+    checkpoint, ``next_state`` não, e o usuário fornece exatamente o parâmetro
+    faltante. A decisão deve continuar determinística (method=state), preservando
+    a tool ativa para o AgentRuntime completar os argumentos já coletados.
+    """
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: contestacao_agent
+  confidence_threshold: 0.70
+state_policies: []
+intents:
+  - name: contas_contestation
+    agent: contestacao_agent
+    priority: 20
+    keywords: [nao contratei]
+""",
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=False,
+        ENABLE_ROUTE_STICKINESS=True,
+    )
+    router = EnterpriseRouter(settings)
+    state = {
+        "user_text": "R$ 71,99",
+        "sanitized_input": "R$ 71,99",
+        "next_state": None,
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["valor"],
+        "selected_tool_call": {
+            "tool_name": "contestar_cobranca",
+            "arguments": {"subject": "Plano Exemplo"},
+        },
+        "active_agent": "contestacao_agent",
+        "route": "contestacao_agent",
+        "route_decision": {
+            "route": "contestacao_agent",
+            "agent": "contestacao_agent",
+            "intent": "contas_contestation",
+        },
+    }
+
+    decision = await router.route(state)
+
+    assert decision.method == "state"
+    assert decision.agent == "contestacao_agent"
+    assert decision.intent == "state:COLLECTING_PARAMETERS"
+    assert decision.next_state == "COLLECTING_PARAMETERS"
+    assert decision.metadata["transaction_state_recovered"] is True
+
+
+def test_agent_state_declares_durable_transaction_latch():
+    """O schema do host deve manter os campos que o AgentRuntime persiste."""
+    import importlib.util
+    from pathlib import Path
+
+    state_path = Path(__file__).parents[2] / "app" / "state.py"
+    spec = importlib.util.spec_from_file_location("contas_agent_state_v10", state_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    annotations = module.AgentState.__annotations__
+    assert "active_transaction" in annotations
+    assert "last_transaction" in annotations

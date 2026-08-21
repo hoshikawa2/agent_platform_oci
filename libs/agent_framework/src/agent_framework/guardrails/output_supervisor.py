@@ -10,6 +10,7 @@ from .rail_result import RailResult
 from .parallel_executor import ParallelRailExecutor
 from .llm_rails import LLMOutputGRLRail
 from .config_loader import load_guardrails_config
+from .framework_llm_client import classify_with_framework_llm
 
 logger = logging.getLogger("agent_framework.guardrails.output_supervisor")
 
@@ -122,10 +123,80 @@ class OutputSupervisor:
                         )
                     )
 
+        # FRASEOLOGIA é um rail de wording. Quando ele for o único rail impeditivo,
+        # não descarte uma resposta factual/grounded: faça uma única reescrita
+        # cirúrgica, depois submeta o texto reescrito a TODOS os rails novamente.
+        # A flag no contexto impede loop infinito caso a nova versão continue
+        # inadequada.
+        phraseology_block = next(
+            (r for r in results if str(r.code or "").upper() == "FRASEOLOGIA" and r.action == RailAction.BLOCK),
+            None,
+        )
+        other_impediments = [
+            r for r in results
+            if r is not phraseology_block and r.action in {RailAction.BLOCK, RailAction.RETRY, RailAction.HANDOVER}
+        ]
+        if (
+            phraseology_block is not None
+            and not other_impediments
+            and int(ctx.get("__phraseology_rewrite_attempt", 0)) < 1
+        ):
+            rewritten = await self._rewrite_phraseology(candidate, phraseology_block, ctx)
+            if rewritten and rewritten.strip() and rewritten.strip() != candidate.strip():
+                rewrite_ctx = dict(ctx)
+                rewrite_ctx["__phraseology_rewrite_attempt"] = 1
+                rewrite_ctx["phraseology_original_candidate"] = candidate
+                rewrite_ctx["phraseology_original_reason"] = phraseology_block.reason
+                decision = await self.evaluate(rewritten.strip(), rewrite_ctx)
+                decision.results.insert(0, RailResult(
+                    code="FRASEOLOGIA_REWRITE",
+                    action=RailAction.OBSERVE,
+                    reason=phraseology_block.reason,
+                    metadata={
+                        "rewritten": True,
+                        "original_code": "FRASEOLOGIA",
+                        "rewrite_attempt": 1,
+                    },
+                ))
+                decision.metadata = {
+                    **dict(decision.metadata or {}),
+                    "phraseology_rewritten": True,
+                    "phraseology_rewrite_attempts": 1,
+                }
+                return decision
+
         decision = self.aggregate(candidate, list(results), ctx)
         await self._emit_events(results, decision, ctx)
         await self._emit_final(decision, ctx)
         return decision
+
+
+    async def _rewrite_phraseology(self, candidate: str, result: RailResult, context: dict[str, Any]) -> str | None:
+        """Reescreve apenas wording bloqueado por FRASEOLOGIA.
+
+        A saída é sempre reavaliada por ``evaluate`` antes de ser liberada. Uma
+        falha do LLM ou uma resposta vazia mantém o comportamento fail-closed.
+        """
+        try:
+            rewrite_context = {
+                **dict(context or {}),
+                "guardrail_code": "FRASEOLOGIA",
+                "guardrail_reason": result.reason,
+            }
+            out = await classify_with_framework_llm(
+                self.llm,
+                "FALLBACK",
+                {"text": candidate, "context": rewrite_context},
+                profile_name="grl",
+                component_name="guardrail.fraseologia.rewrite",
+                generation_name="guardrail.fraseologia.rewrite",
+            )
+            # O prompt FALLBACK usa ``reason`` como texto final reescrito.
+            rewritten = str(out.get("reason") or "").strip()
+            return rewritten or None
+        except Exception:
+            logger.exception("output_supervisor.phraseology_rewrite_failed")
+            return None
 
     def aggregate(self, candidate: str, results: list[RailResult], context: dict[str, Any] | None = None) -> RailDecisionV2:
         ctx = context or {}

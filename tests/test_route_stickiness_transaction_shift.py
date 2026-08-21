@@ -10,9 +10,9 @@ def test_explicit_keyword_shift_preempts_stickiness():
     assert EnterpriseRouter._is_explicit_intent_shift(d) is True
 
 
-def test_short_generic_keyword_does_not_preempt():
+def test_configured_keyword_is_explicit_regardless_of_literal_length():
     d = RouteDecision(route="x", agent="x", intent="x", method="keyword", metadata={"matched_keyword": "id"})
-    assert EnterpriseRouter._is_explicit_intent_shift(d) is False
+    assert EnterpriseRouter._is_explicit_intent_shift(d) is True
 
 
 def test_same_agent_explicit_intent_shift_must_preempt_stickiness():

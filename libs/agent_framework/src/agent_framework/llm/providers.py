@@ -5,11 +5,68 @@ import os
 from typing import Any
 
 from .base import LLMProvider
+from .types import LLMResponse
 from .profile_resolver import LLMProfileResolver
 from agent_framework.observability.token_cost import TokenUsageCollector
 from agent_framework.billing.usage_repository import UsageRepository, UsageRecord
 
 logger = logging.getLogger("agent_framework.llm")
+
+
+def _coerce_reasoning_text(value: Any) -> str | None:
+    """Normalize provider-specific reasoning payloads without inventing content."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    if isinstance(value, (list, tuple)):
+        chunks: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item
+            else:
+                text = getattr(item, "text", None) or getattr(item, "content", None)
+                if text is None and isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+            if text:
+                chunks.append(str(text))
+        joined = "".join(chunks).strip()
+        return joined or None
+    if isinstance(value, dict):
+        for key in ("content", "text", "reasoning_content", "reasoning"):
+            text = _coerce_reasoning_text(value.get(key))
+            if text:
+                return text
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _extract_reasoning_content(obj: Any) -> str | None:
+    """Best-effort extraction across OpenAI-compatible and OCI response shapes."""
+    if obj is None:
+        return None
+
+    for attr in ("reasoning_content", "reasoning"):
+        text = _coerce_reasoning_text(getattr(obj, attr, None))
+        if text:
+            return text
+
+    if isinstance(obj, dict):
+        for key in ("reasoning_content", "reasoning"):
+            text = _coerce_reasoning_text(obj.get(key))
+            if text:
+                return text
+
+    extra = getattr(obj, "model_extra", None)
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "reasoning"):
+            text = _coerce_reasoning_text(extra.get(key))
+            if text:
+                return text
+
+    return None
 
 
 def _clean_config_value(value: Any) -> str | None:
@@ -100,6 +157,9 @@ class MockLLMProvider(LLMProvider):
         self.model = "mock-llm"
 
     async def ainvoke(self, messages, **kwargs):
+        return (await self.ainvoke_response(messages, **kwargs)).content
+
+    async def ainvoke_response(self, messages, **kwargs):
         profile_name = kwargs.get("profile_name", "default")
         component_name = kwargs.get("component_name") or kwargs.get("component") or profile_name or "default"
         generation_name = kwargs.get("generation_name") or f"llm.{component_name}"
@@ -125,7 +185,15 @@ class MockLLMProvider(LLMProvider):
             generation.set_metadata(**usage)
         if self.usage_repository:
             await self.usage_repository.record(UsageRecord.from_usage("mock", model, generation_name, usage, llm_metadata))
-        return answer
+        return LLMResponse(
+            content=answer,
+            reasoning_content=None,
+            provider="mock",
+            model=model,
+            profile_name=profile_name,
+            usage=dict(usage),
+            metadata=dict(llm_metadata),
+        )
 
 
 class OCICompatibleOpenAIProvider(LLMProvider):
@@ -208,6 +276,9 @@ class OCICompatibleOpenAIProvider(LLMProvider):
         return self._clients[key]
 
     async def ainvoke(self, messages, **kwargs):
+        return (await self.ainvoke_response(messages, **kwargs)).content
+
+    async def ainvoke_response(self, messages, **kwargs):
         profile_name = kwargs.pop("profile_name", None)
         component_name = kwargs.pop("component_name", None) or kwargs.pop("component", None) or profile_name or "default"
         generation_name = kwargs.pop("generation_name", None) or f"llm.{component_name}"
@@ -227,7 +298,7 @@ class OCICompatibleOpenAIProvider(LLMProvider):
 
         if provider == "mock":
             mock = MockLLMProvider(self.settings, telemetry=self.telemetry, usage_repository=self.usage_repository)
-            return await mock.ainvoke(
+            return await mock.ainvoke_response(
                 messages,
                 model=model,
                 profile_name=resolved_profile_name,
@@ -241,7 +312,7 @@ class OCICompatibleOpenAIProvider(LLMProvider):
 
         if provider == "oci_sdk":
             sdk = OCISDKProvider(self.settings, telemetry=self.telemetry, usage_repository=self.usage_repository)
-            return await sdk.ainvoke(
+            return await sdk.ainvoke_response(
                 messages,
                 model=model,
                 temperature=temperature,
@@ -337,7 +408,9 @@ class OCICompatibleOpenAIProvider(LLMProvider):
                     model_parameters=model_parameters,
                 ) as generation:
                     resp = await client.chat.completions.create(**request_kwargs)
-                    answer = resp.choices[0].message.content or ""
+                    message = resp.choices[0].message
+                    answer = message.content or ""
+                    reasoning_content = _extract_reasoning_content(message)
 
                     usage_metadata = self.token_collector.enrich(model, getattr(resp, "usage", None))
                     usage_metadata.update({
@@ -358,7 +431,15 @@ class OCICompatibleOpenAIProvider(LLMProvider):
                         UsageRecord.from_usage(provider, model, generation_name, usage_metadata, llm_metadata)
                     )
 
-                return answer
+                return LLMResponse(
+                    content=answer,
+                    reasoning_content=reasoning_content,
+                    provider=provider,
+                    model=model,
+                    profile_name=resolved_profile_name,
+                    usage=dict(usage_metadata),
+                    metadata=dict(llm_metadata),
+                )
             except Exception as exc:
                 logger.exception(
                     "Erro ao chamar LLM provider=%s component=%s profile=%s model=%s: %s",
@@ -576,7 +657,26 @@ class OCISDKProvider(LLMProvider):
 
         return str(chat_response)
 
+    @staticmethod
+    def _extract_reasoning_content(response) -> str | None:
+        data = getattr(response, "data", response)
+        chat_response = getattr(data, "chat_response", None) or data
+
+        text = _extract_reasoning_content(chat_response)
+        if text:
+            return text
+
+        choices = getattr(chat_response, "choices", None) or []
+        if choices:
+            first = choices[0]
+            message = getattr(first, "message", None)
+            return _extract_reasoning_content(message) or _extract_reasoning_content(first)
+        return None
+
     async def ainvoke(self, messages, **kwargs):
+        return (await self.ainvoke_response(messages, **kwargs)).content
+
+    async def ainvoke_response(self, messages, **kwargs):
         import asyncio
 
         model = _clean_config_value(kwargs.get("model") or self.model)
@@ -667,6 +767,7 @@ class OCISDKProvider(LLMProvider):
             ) as generation:
                 response = await asyncio.to_thread(client.chat, details)
                 answer = self._extract_answer(response)
+                reasoning_content = self._extract_reasoning_content(response)
 
                 usage_metadata = {
                     "prompt_tokens": max(1, len(str(messages)) // 4),
@@ -693,7 +794,15 @@ class OCISDKProvider(LLMProvider):
                     )
                 )
 
-            return answer
+            return LLMResponse(
+                content=answer,
+                reasoning_content=reasoning_content,
+                provider="oci_sdk",
+                model=model,
+                profile_name=profile_name,
+                usage=dict(usage_metadata),
+                metadata=dict(llm_metadata),
+            )
 
 
 def create_llm(settings, telemetry=None, usage_repository: UsageRepository | None = None) -> LLMProvider:

@@ -74,11 +74,21 @@ def _format_conversation_history(
             msgs.pop()
     lines: list[str] = []
     for msg in msgs:
-        cls = type(msg).__name__
-        if cls in _SKIPPED_CLASSES:
-            continue
-        role = _ROLE_BY_CLASS.get(cls, cls.lower())
-        content = _message_content_to_str(getattr(msg, "content", ""))
+        if isinstance(msg, dict):
+            role = str(msg.get("role") or msg.get("type") or "").lower()
+            if role in {"system", "tool", "function"}:
+                continue
+            if role == "human":
+                role = "user"
+            elif role in {"ai", "bot"}:
+                role = "assistant"
+            content = _message_content_to_str(msg.get("content", ""))
+        else:
+            cls = type(msg).__name__
+            if cls in _SKIPPED_CLASSES:
+                continue
+            role = _ROLE_BY_CLASS.get(cls, cls.lower())
+            content = _message_content_to_str(getattr(msg, "content", ""))
         if content.strip():
             lines.append(f"[{role}] {_truncate(content, per_message_limit)}")
     return "\n".join(lines)

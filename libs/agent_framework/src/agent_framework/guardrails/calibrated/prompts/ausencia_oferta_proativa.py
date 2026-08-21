@@ -48,6 +48,10 @@ Decida na ordem, PARE no primeiro match:
    casa aqui, siga para o passo 5.
    Vale o pedido generico ("quero cancelar", "todos") sobre o que a conversa
    trata, e vale confirmar ou pedir permissao para executar essa acao.
+   IMPORTANTE: se o cliente acabou de PEDIR cancelamento/contestacao/ajuste do
+   mesmo alvo, a fala do agente que apenas pede CONFIRMACAO da transacao e
+   allowed=true. A confirmacao NAO precisa repetir a justificativa do cliente
+   ("nao reconheco", "esta caro" etc.); o pedido transacional anterior basta.
    Vale tambem trocar uma variante transacional por outra DA MESMA FAMILIA sobre
    o MESMO escopo, sempre limitada ao valor JA COBRADO no item (ressarcimento <->
    devolucao <-> reembolso <-> cancelamento <-> credito em fatura): negar o dobro e

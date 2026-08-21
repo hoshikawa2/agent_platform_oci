@@ -568,3 +568,69 @@ async def test_pre_validation_rejection_clears_collecting_latches_and_is_exposed
     patch = runtime.transaction_state_patch(state)
     assert patch["transaction_pre_validation"] == state["transaction_pre_validation"]
     assert patch["next_state"] is None
+@pytest.mark.asyncio
+async def test_collecting_parameters_can_be_cancelled_explicitly():
+    runtime = _ContestRuntime()
+    state = {
+        "user_text": "cancele essa operação anterior",
+        "sanitized_input": "cancele essa operação anterior",
+        "route": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "active_transaction": {
+            "transaction_id": "tx-1",
+            "tool_name": "contestar_cobranca",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "contas_contestation",
+        },
+        "selected_tool_call": {"tool_name": "contestar_cobranca", "arguments": {}},
+        "missing_parameters": ["subject"],
+        "next_state": "COLLECTING_CONTESTACAO_PARAMETERS",
+    }
+
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+
+    assert result[-1]["transaction_status"] == "CANCELLED"
+    assert result[-1]["cancelled"] is True
+    assert state["transaction_status"] == "CANCELLED"
+    assert state["active_transaction"] is None
+    assert state["next_state"] is None
+    assert state["missing_parameters"] == []
+
+
+@pytest.mark.asyncio
+async def test_route_intent_shift_clears_collecting_transaction_before_new_tools():
+    runtime = _ContestRuntime()
+    state = {
+        "user_text": "quais são meus serviços?",
+        "sanitized_input": "quais são meus serviços?",
+        "route": "vas_agent",
+        "intent": "contas_vas_information",
+        "route_decision": {
+            "route": "vas_agent",
+            "agent": "vas_agent",
+            "intent": "contas_vas_information",
+            "metadata": {"transaction_interruption": "intent_shift"},
+        },
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "active_transaction": {
+            "transaction_id": "tx-2",
+            "tool_name": "contestar_cobranca",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "contas_contestation",
+        },
+        "selected_tool_call": {"tool_name": "contestar_cobranca", "arguments": {}},
+        "missing_parameters": ["subject"],
+        "next_state": "COLLECTING_CONTESTACAO_PARAMETERS",
+    }
+
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+
+    assert result == []
+    assert state["transaction_status"] == "CANCELLED"
+    assert state["active_transaction"] is None
+    assert state["next_state"] is None
+    assert state["missing_parameters"] == []
+    assert state["tool_policy_result"]["action"] == "cancelled_by_intent_shift"

@@ -179,6 +179,8 @@ src/agent_framework/persistence/__init__.py
 src/agent_framework/persistence/mongodb_store.py
 src/agent_framework/persistence/oracle_store.py
 src/agent_framework/persistence/sqlite_store.py
+src/agent_framework/presentation/__init__.py
+src/agent_framework/presentation/renderers.py
 src/agent_framework/rag/__init__.py
 src/agent_framework/rag/embedding_provider.py
 src/agent_framework/rag/graph_store.py

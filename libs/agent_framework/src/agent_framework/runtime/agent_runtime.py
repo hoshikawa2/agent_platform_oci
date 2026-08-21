@@ -1232,6 +1232,30 @@ class AgentRuntimeMixin:
         return result
 
     @staticmethod
+    def _transaction_cancel_requested(text: str) -> bool:
+        """Reconhece cancelamento explícito de uma transação pendente.
+
+        Mantém o conjunto deliberadamente pequeno para não confundir uma nova
+        ação de negócio (ex.: "cancelar meu serviço") com o cancelamento do
+        próprio fluxo pendente.
+        """
+        normalized = " ".join(str(text or "").strip().casefold().split())
+        exact = {
+            "cancelar", "cancele", "cancela", "desistir", "desisto",
+            "não quero continuar", "nao quero continuar",
+            "não quero mais", "nao quero mais",
+            "deixa pra lá", "deixa pra la",
+        }
+        if normalized in exact:
+            return True
+        contextual = (
+            r"^(?:cancele|cancela|cancelar)\s+(?:essa|esta|a|o)?\s*(?:operação|operacao|solicitação|solicitacao|transação|transacao|pedido|processo)(?:\s+anterior)?$",
+            r"^(?:não|nao)\s+quero\s+mais\s+(?:contestar|continuar|prosseguir)(?:\s+.*)?$",
+            r"^(?:esqueça|esqueca)\s+(?:essa|esta|a)?\s*(?:solicitação|solicitacao|operação|operacao|transação|transacao)(?:\s+anterior)?$",
+        )
+        return any(re.match(pattern, normalized) for pattern in contextual)
+
+    @staticmethod
     def _confirmation_decision(text: str) -> str | None:
         normalized = " ".join((text or "").strip().lower().split())
         normalized = re.sub(r"[.!?]+$", "", normalized).strip()
@@ -2032,6 +2056,30 @@ class AgentRuntimeMixin:
         state["available_mcp_tools"] = available_tools
         text = state.get("sanitized_input") or state.get("user_text") or ""
         self._normalize_transaction_lifecycle(state)
+
+        # Uma transação em coleta/confirmação não pode aprisionar a sessão. O
+        # EnterpriseRouter sinaliza uma nova intent explícita em metadata; além
+        # disso, cancelamentos explícitos devem funcionar também durante coleta
+        # de parâmetros (antes, só funcionavam em AWAITING_CONFIRMATION).
+        active_before_interruption = self._active_transaction(state)
+        route_meta = (state.get("route_decision") or {}).get("metadata") or {}
+        interruption = str(route_meta.get("transaction_interruption") or "").strip().lower()
+        cancel_requested = self._transaction_cancel_requested(str(text))
+        if active_before_interruption and (interruption == "intent_shift" or cancel_requested):
+            interrupted_tool = active_before_interruption.get("tool_name")
+            self._finish_active_transaction(state, "CANCELLED")
+            state["tool_policy_result"] = {
+                "action": "cancelled_by_intent_shift" if interruption == "intent_shift" else "cancelled_by_user",
+                "tool_name": interrupted_tool,
+            }
+            if cancel_requested and interruption != "intent_shift":
+                return [{
+                    "ok": True,
+                    "tool_name": interrupted_tool,
+                    "transaction_status": "CANCELLED",
+                    "cancelled": True,
+                    "reason": "user_cancelled_pending_transaction",
+                }]
 
         # Clarificação de resultado de tool tem precedência: reutiliza a mesma tool
         # e argumentos, alterando apenas o parâmetro escolhido pelo usuário.

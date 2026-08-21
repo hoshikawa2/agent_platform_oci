@@ -1778,11 +1778,25 @@ class AgentRuntimeMixin:
         tool_name = pending.get("tool_name") or "a operação solicitada"
         args = pending.get("arguments") or {}
         order_id = args.get("order_id")
+        subject = str(args.get("subject") or "").strip()
         target = f" para o pedido {order_id}" if order_id else ""
         labels = {
             "solicitar_devolucao": "a solicitação de devolução",
             "solicitar_troca": "a solicitação de troca",
         }
+
+        # Confirmações são texto voltado ao cliente. Quando uma ação de
+        # cancelamento possui ``subject``, use o nome comercial solicitado
+        # em vez de expor o identificador técnico da tool (por exemplo,
+        # ``cancelar_vas_avulso`` -> "cancelar vas avulso"). Isso também
+        # evita que guardrails de fraseologia bloqueiem uma confirmação
+        # transacional legítima por conter nomenclatura interna.
+        if tool_name.startswith("cancelar_") and subject:
+            return (
+                f"Você confirma o cancelamento do serviço {subject}? "
+                "Responda 'sim' para executar ou 'não' para cancelar."
+            )
+
         action = labels.get(tool_name, tool_name.replace("_", " "))
         return f"Você confirma {action}{target}? Responda 'sim' para executar ou 'não' para cancelar."
 

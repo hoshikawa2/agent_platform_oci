@@ -26,6 +26,8 @@ class AgentState(TypedDict, total=False):
     available_mcp_tools: list[str]
     selected_tool_call: dict[str, Any]
     pending_tool_call: dict[str, Any]
+    active_transaction: dict[str, Any]
+    last_transaction: dict[str, Any]
     transaction_status: str
     confirmation_required: bool
     confirmation_received: bool

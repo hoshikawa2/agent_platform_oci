@@ -55,7 +55,7 @@ def _active_tx(status="COLLECTING_PARAMETERS", arguments=None):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("message", ["PED-1001", "12345", "R$ 71,99", "10/09/2026"])
+@pytest.mark.parametrize("message", ["PED-1001", "o pedido é o PED-1001", "12345", "R$ 71,99", "10/09/2026"])
 async def test_matrix_collecting_parameter_answers_keep_transaction(message, tmp_path):
     router = _router(tmp_path)
     state = {
@@ -73,6 +73,25 @@ async def test_matrix_collecting_parameter_answers_keep_transaction(message, tmp
     assert decision.method == "state"
     assert decision.agent == "orders_agent"
     assert (decision.metadata or {}).get("transaction_interruption") is None
+
+
+@pytest.mark.asyncio
+async def test_matrix_specific_same_agent_intent_shift_still_preempts_collection(tmp_path):
+    router = _router(tmp_path)
+    state = {
+        "user_text": "quero rastrear pedido",
+        "sanitized_input": "quero rastrear pedido",
+        "next_state": "COLLECTING_ORDER_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["order_id"],
+        "active_transaction": _active_tx(arguments={}),
+        "active_agent": "orders_agent",
+        "intent": "state:COLLECTING_ORDER_PARAMETERS",
+        "route_decision": {"agent": "orders_agent", "intent": "retail_order_cancel"},
+    }
+    decision = await router.route(state)
+    assert decision.intent == "retail_order_tracking"
+    assert decision.metadata["transaction_interruption"] == "intent_shift"
 
 
 @pytest.mark.asyncio

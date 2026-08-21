@@ -208,6 +208,21 @@ rag:
 | `RUNTIME_TIMEOUT` | Timeout geral | resposta controlada |
 
 
+
+## Contrato Durável de Estado Transacional
+
+Hosts que utilizam `AgentRuntime` com transações multi-turno DEVEM declarar no `AgentState` os campos `active_transaction` e `last_transaction`. O primeiro é a fonte canônica da transação em andamento e deve sobreviver a checkpoint/resume; o segundo mantém o snapshot da última transação terminal.
+
+```python
+active_transaction: dict[str, Any]
+last_transaction: dict[str, Any]
+```
+
+`selected_tool_call` e `pending_tool_call` são campos auxiliares/compatibilidade e não substituem o latch canônico. Durante `COLLECTING_PARAMETERS`, a retomada da transação e o consumo de parâmetros pendentes têm precedência sobre keyword routing genérico. Uma mudança de intenção só deve interromper a transação quando for inequívoca ou explicitamente solicitada pelo usuário.
+
+O contrato completo, ciclo de vida, precedência de roteamento, checklist e testes regressivos estão em [`docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md`](../docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md).
+
+
 ## Requisitos Não Funcionais
 
 | Categoria | Requisito |
@@ -233,6 +248,8 @@ rag:
 - [ ] Output guardrails executam antes da resposta final.
 - [ ] Judges geram JudgeResult.
 - [ ] Memória e checkpoint são persistidos conforme provider.
+- [ ] Hosts transacionais declaram `active_transaction` e `last_transaction` no `AgentState`.
+- [ ] Durante `COLLECTING_PARAMETERS`, respostas a parâmetros pendentes têm precedência sobre keyword routing genérico.
 - [ ] Erros geram NOC e resposta controlada.
 
 

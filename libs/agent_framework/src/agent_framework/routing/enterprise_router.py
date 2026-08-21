@@ -213,16 +213,54 @@ class EnterpriseRouter:
                 or (previous_intent and not previous_intent.startswith("state:") and candidate.intent != previous_intent)
             )
             if different:
-                candidate.metadata = {
-                    **(candidate.metadata or {}),
-                    "transaction_interruption": "intent_shift",
-                    "interrupted_state": state_decision.next_state,
-                    "interrupted_agent": state_decision.agent,
-                    "interrupted_intent": started_intent or previous_intent,
-                    "interruption_source": "configured_routing",
-                }
-                return candidate
-            return None
+                tx_status = str(state.get("transaction_status") or "").strip().upper()
+                missing = list(state.get("missing_parameters") or [])
+                same_agent = candidate.agent == state_decision.agent
+                matched_keyword = str((candidate.metadata or {}).get("matched_keyword") or "").strip()
+                informative_tokens = [
+                    token
+                    for token in self._keyword_tokens(matched_keyword)
+                    if len(token) > 1
+                ]
+
+                # Durante coleta de parâmetros, uma keyword genérica de uma única
+                # palavra do MESMO agente não pode preemptar a transação. Ex.:
+                # ``o pedido é o PED-1001`` enquanto ``order_id`` está pendente.
+                # Nesse caso ``pedido`` pode casar com ``retail_order_tracking``,
+                # mas a mensagem é perfeitamente compatível com a resposta ao
+                # parâmetro solicitado. Keywords mais específicas (duas ou mais
+                # palavras informativas) continuam aptas a representar mudança
+                # explícita de intenção. Se o roteador LLM estiver habilitado,
+                # deixamos a decisão semântica abaixo desempatar o caso fraco.
+                weak_same_agent_keyword_during_collection = (
+                    tx_status == "COLLECTING_PARAMETERS"
+                    and bool(missing)
+                    and same_agent
+                    and len(informative_tokens) <= 1
+                )
+
+                if not weak_same_agent_keyword_during_collection:
+                    candidate.metadata = {
+                        **(candidate.metadata or {}),
+                        "transaction_interruption": "intent_shift",
+                        "interrupted_state": state_decision.next_state,
+                        "interrupted_agent": state_decision.agent,
+                        "interrupted_intent": started_intent or previous_intent,
+                        "interruption_source": "configured_routing",
+                    }
+                    return candidate
+
+                logger.debug(
+                    "Keyword transacional fraca não preemptou coleta de parâmetro: "
+                    "keyword=%r intent=%s missing=%s",
+                    matched_keyword,
+                    candidate.intent,
+                    missing,
+                )
+                # Não retorne aqui: se houver LLM router, ele pode confirmar uma
+                # mudança semântica real; sem LLM, a transação permanece ativa.
+            else:
+                return None
 
         if not (self.enable_llm_router and self.llm is not None):
             return None

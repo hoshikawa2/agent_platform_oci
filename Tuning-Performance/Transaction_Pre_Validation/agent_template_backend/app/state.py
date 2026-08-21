@@ -27,6 +27,7 @@ class AgentState(TypedDict, total=False):
     selected_tool_call: dict[str, Any]
     pending_tool_call: dict[str, Any]
     active_transaction: dict[str, Any]
+    last_transaction: dict[str, Any]
     transaction_status: str
     transaction_pre_validation: dict[str, Any]
     transaction_evidence: list[dict[str, Any]]

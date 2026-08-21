@@ -215,6 +215,21 @@ dataset:
           groundedness: 0.70
 ```
 
+
+## Contrato obrigatório para agentes transacionais
+
+Ao criar um agente que usa tools transacionais do framework, o desenvolvedor não deve criar um motor paralelo de coleta/confirmação. Deve reutilizar `AgentRuntime` e garantir que o `AgentState` do host mantenha o latch durável:
+
+```python
+active_transaction: dict[str, Any]
+last_transaction: dict[str, Any]
+```
+
+Durante uma transação ativa, parâmetros já coletados são preservados e novos valores são mesclados incrementalmente. Em `COLLECTING_PARAMETERS`, uma resposta que satisfaz um parâmetro pendente tem precedência sobre keywords genéricas. Mudanças de intenção explícitas e inequívocas continuam permitidas.
+
+Antes de publicar um novo template/host, execute os cenários multi-turno descritos no [`Transaction State Developer Guide`](../docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md).
+
+
 ## Testes
 
 | Teste | Escopo |
@@ -273,6 +288,7 @@ dataset:
 ## Critérios de Aceite
 
 - [ ] Novo agente é criado sem alterar core do framework.
+- [ ] Se houver transações multi-turno, `AgentState` declara `active_transaction` e `last_transaction`.
 - [ ] Configuração ocorre por YAML e `.env`.
 - [ ] Agente usa BusinessContext.
 - [ ] Agente acessa MCP por router/gateway.

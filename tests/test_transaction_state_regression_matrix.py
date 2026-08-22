@@ -34,6 +34,20 @@ intents:
 """
 
 
+class _ParameterLLM:
+    async def ainvoke(self, messages, **kwargs):
+        import json
+        prompt = messages[-1]["content"]
+        if kwargs.get("profile_name") == "transaction_parameter_extraction":
+            pending = json.loads(prompt.split("pending_parameters: ", 1)[1].split("\n", 1)[0])
+            user = prompt.split("user_message: ", 1)[1].split("\nFormato obrigatório:", 1)[0].strip()
+            out = {name: None for name in pending}
+            if len(pending) == 1 and user not in {"quero rastrear pedido", "quero ver minha fatura"}:
+                out[pending[0]] = user
+            return json.dumps(out, ensure_ascii=False)
+        return '{}'
+
+
 def _router(tmp_path, *, stickiness=True):
     routing = tmp_path / "routing.yaml"
     routing.write_text(ROUTING_YAML, encoding="utf-8")
@@ -42,7 +56,7 @@ def _router(tmp_path, *, stickiness=True):
         ENABLE_LLM_ROUTER=False,
         ENABLE_ROUTE_STICKINESS=stickiness,
     )
-    return EnterpriseRouter(settings)
+    return EnterpriseRouter(settings, llm=_ParameterLLM())
 
 
 def _active_tx(status="COLLECTING_PARAMETERS", arguments=None):

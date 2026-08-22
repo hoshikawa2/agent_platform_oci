@@ -9,6 +9,7 @@ from typing import Any
 from .config_loader import load_intents, load_router_defaults, load_state_policies
 from .continuity import SemanticRouteContinuity
 from .models import IntentDefinition, RouteDecision, RouterStatePolicy
+from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
 
 logger = logging.getLogger("agent_framework.routing")
 
@@ -78,6 +79,12 @@ class EnterpriseRouter:
         # pendente antes de executar a nova intent.
         state_decision = self._route_by_state(current_state)
         if state_decision:
+            consumed = await self._transaction_parameter_precedence(
+                state, text=str(text), state_decision=state_decision
+            )
+            if consumed is not None:
+                await self._emit(consumed, state)
+                return consumed
             interruption = await self._transaction_state_interruption_candidate(
                 state, text=str(text), state_decision=state_decision
             )
@@ -109,6 +116,17 @@ class EnterpriseRouter:
                 method="state",
                 next_state=tx_status,
             )
+            consumed = await self._transaction_parameter_precedence(
+                state, text=str(text), state_decision=synthetic
+            )
+            if consumed is not None:
+                consumed.metadata = {
+                    **(consumed.metadata or {}),
+                    "transaction_state_recovered": True,
+                }
+                await self._emit(consumed, state)
+                return consumed
+
             interruption = await self._transaction_state_interruption_candidate(
                 state, text=str(text), state_decision=synthetic
             )
@@ -186,6 +204,63 @@ class EnterpriseRouter:
         return decision
 
 
+    async def _transaction_parameter_precedence(
+        self,
+        state: dict[str, Any],
+        *,
+        text: str,
+        state_decision: RouteDecision,
+    ) -> RouteDecision | None:
+        """Consume a turn as transaction parameters before evaluating intent shift.
+
+        Only COLLECTING_PARAMETERS participates. The LLM extracts values for the
+        currently missing parameters; if at least one value is found, the state
+        route wins deterministically and intent-shift classification is skipped.
+        """
+        tx_status = str(state.get("transaction_status") or "").strip().upper()
+        if tx_status == "AWAITING_CONFIRMATION":
+            confirmation = parse_transaction_confirmation(text)
+            if confirmation is None:
+                return None
+            state_decision.metadata = {
+                **(state_decision.metadata or {}),
+                "transaction_turn_consumed": True,
+                "transaction_confirmation_decision": confirmation,
+                "transaction_confirmation_source": "deterministic",
+            }
+            return state_decision
+        if tx_status != "COLLECTING_PARAMETERS":
+            return None
+        missing = [str(name) for name in (state.get("missing_parameters") or []) if str(name).strip()]
+        if not missing:
+            return None
+        active = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+        tool_name = str(active.get("tool_name") or ((state.get("selected_tool_call") or {}).get("tool_name") if isinstance(state.get("selected_tool_call"), dict) else "") or "").strip()
+        if not tool_name:
+            return None
+        known = dict(active.get("arguments") or {})
+        schema = active.get("parameter_schema") if isinstance(active.get("parameter_schema"), dict) else {}
+        description = str(active.get("tool_description") or "")
+        values = await extract_transaction_parameters(
+            self.llm,
+            text=text,
+            tool_name=tool_name,
+            missing_parameters=missing,
+            known_arguments=known,
+            parameter_schema=schema,
+            tool_description=description,
+        )
+        if not values:
+            return None
+        state_decision.metadata = {
+            **(state_decision.metadata or {}),
+            "transaction_turn_consumed": True,
+            "transaction_parameter_values": values,
+            "transaction_parameter_source": "llm",
+            "transaction_parameter_missing_before": missing,
+        }
+        return state_decision
+
     async def _transaction_state_interruption_candidate(
         self,
         state: dict[str, Any],
@@ -213,52 +288,15 @@ class EnterpriseRouter:
                 or (previous_intent and not previous_intent.startswith("state:") and candidate.intent != previous_intent)
             )
             if different:
-                tx_status = str(state.get("transaction_status") or "").strip().upper()
-                missing = list(state.get("missing_parameters") or [])
-                same_agent = candidate.agent == state_decision.agent
-                matched_keyword = str((candidate.metadata or {}).get("matched_keyword") or "").strip()
-                informative_tokens = [
-                    token
-                    for token in self._keyword_tokens(matched_keyword)
-                    if len(token) > 1
-                ]
-
-                # Durante coleta de parâmetros, uma keyword genérica de uma única
-                # palavra do MESMO agente não pode preemptar a transação. Ex.:
-                # ``o pedido é o PED-1001`` enquanto ``order_id`` está pendente.
-                # Nesse caso ``pedido`` pode casar com ``retail_order_tracking``,
-                # mas a mensagem é perfeitamente compatível com a resposta ao
-                # parâmetro solicitado. Keywords mais específicas (duas ou mais
-                # palavras informativas) continuam aptas a representar mudança
-                # explícita de intenção. Se o roteador LLM estiver habilitado,
-                # deixamos a decisão semântica abaixo desempatar o caso fraco.
-                weak_same_agent_keyword_during_collection = (
-                    tx_status == "COLLECTING_PARAMETERS"
-                    and bool(missing)
-                    and same_agent
-                    and len(informative_tokens) <= 1
-                )
-
-                if not weak_same_agent_keyword_during_collection:
-                    candidate.metadata = {
-                        **(candidate.metadata or {}),
-                        "transaction_interruption": "intent_shift",
-                        "interrupted_state": state_decision.next_state,
-                        "interrupted_agent": state_decision.agent,
-                        "interrupted_intent": started_intent or previous_intent,
-                        "interruption_source": "configured_routing",
-                    }
-                    return candidate
-
-                logger.debug(
-                    "Keyword transacional fraca não preemptou coleta de parâmetro: "
-                    "keyword=%r intent=%s missing=%s",
-                    matched_keyword,
-                    candidate.intent,
-                    missing,
-                )
-                # Não retorne aqui: se houver LLM router, ele pode confirmar uma
-                # mudança semântica real; sem LLM, a transação permanece ativa.
+                candidate.metadata = {
+                    **(candidate.metadata or {}),
+                    "transaction_interruption": "intent_shift",
+                    "interrupted_state": state_decision.next_state,
+                    "interrupted_agent": state_decision.agent,
+                    "interrupted_intent": started_intent or previous_intent,
+                    "interruption_source": "configured_routing",
+                }
+                return candidate
             else:
                 return None
 

@@ -30,20 +30,45 @@ import pytest
 from agent_framework.runtime.agent_runtime import AgentRuntimeMixin
 
 
+class _TransactionTestLLM:
+    async def ainvoke(self, messages, **kwargs):
+        import json
+        prompt = messages[-1]["content"]
+        if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
+            pending = json.loads(prompt.split("pending_parameters: ", 1)[1].split("\n", 1)[0])
+            user = prompt.split("user_message: ", 1)[1].split("\nFormato obrigatório:", 1)[0].strip()
+            out = {name: None for name in pending}
+            low = user.lower()
+            if "order_id" in out:
+                import re
+                m = re.search(r"\b(?:ped[- ]?)?(\d+)\b", low, re.I)
+                if m:
+                    out["order_id"] = ("PED-" + m.group(1)) if "ped" in m.group(0).lower() else m.group(1)
+            if "reason" in out and ("arrepend" in low or "desisti" in low):
+                out["reason"] = "Arrependimento da compra" if "arrepend" in low else "desisti da compra"
+            return {"content": json.dumps(out, ensure_ascii=False)}
+        return {"content": "{}"}
+
+
 class _PolicyRouter:
     def __init__(self):
         from types import SimpleNamespace
         self.registry = SimpleNamespace(
             tools={"consultar_pedido": object(), "solicitar_devolucao": object()},
             get_tool=lambda name: {
-                "consultar_pedido": SimpleNamespace(selection_keywords=["consultar pedido", "pedido"]),
-                "solicitar_devolucao": SimpleNamespace(selection_keywords=["devolver pedido", "devolver", "devolução", "arrependimento"]),
+                "consultar_pedido": SimpleNamespace(selection_keywords=["consultar pedido", "pedido"], args_schema={}, requires=[]),
+                "solicitar_devolucao": SimpleNamespace(
+                    selection_keywords=["devolver pedido", "devolver", "devolução", "arrependimento"],
+                    args_schema={"order_id": "string", "reason": "string"},
+                    requires=["order_id", "reason"],
+                    description="Solicita devolução de pedido",
+                ),
             }.get(name),
         )
 
     def resolve_execution_policy(self, tool_name, arguments=None):
         if tool_name == "solicitar_devolucao":
-            return {"operation_type": "transactional", "require_confirmation": True, "policy_source": "test"}
+            return {"operation_type": "transactional", "require_confirmation": True, "requires": ["order_id", "reason"], "policy_source": "test"}
         return {"operation_type": "read_only", "require_confirmation": False, "policy_source": "test"}
 
     def validate_execution_policy(self, tool_name, arguments=None):
@@ -56,6 +81,7 @@ class _PolicyRouter:
 class _Runtime(AgentRuntimeMixin):
     def __init__(self):
         self.tool_router = _PolicyRouter()
+        self.llm = _TransactionTestLLM()
         self.calls = []
 
     async def _call_mcp_tool(self, tool_name, arguments, state):
@@ -163,14 +189,20 @@ async def test_collecting_parameters_does_not_replace_collected_subject_with_sta
 
 class _InitialContestLLM:
     async def ainvoke(self, messages, **kwargs):
-        prompt = messages[0]["content"]
-        if "Campo: subject" in prompt:
-            return {"content": '{"subject": "TIM CTRL Redes Sociais 8.0"}'}
-        if "Campo: valor" in prompt:
-            return {"content": '{"valor": null}'}
-        if "Campo: motivo" in prompt:
-            return {"content": '{"motivo": "não contratei"}'}
-        return {"content": '{}'}
+        import json
+        prompt = messages[-1]["content"]
+        if kwargs.get("profile_name") == "transaction_parameter_extraction":
+            pending = json.loads(prompt.split("pending_parameters: ", 1)[1].split("\n", 1)[0])
+            out = {name: None for name in pending}
+            if "subject" in out:
+                out["subject"] = "TIM CTRL Redes Sociais 8.0"
+            return {"content": json.dumps(out, ensure_ascii=False)}
+        if kwargs.get("profile_name") == "mcp_parameter_extraction":
+            if "Campo: motivo" in prompt:
+                return {"content": '{"motivo": "não contratei"}'}
+            if "Campo: valor" in prompt:
+                return {"content": '{"valor": null}'}
+        return {"content": "{}"}
 
 
 class _InitialContestRouter(_ContestPolicyRouter):

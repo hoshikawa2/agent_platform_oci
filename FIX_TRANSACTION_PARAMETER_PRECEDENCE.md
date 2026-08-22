@@ -1,32 +1,102 @@
-# Transaction parameter precedence fix
+# Precedência transacional + extração LLM de parâmetros
 
-Correção para a regressão em que uma resposta curta que preenchia um parâmetro pendente (ex.: `R$ 71,99` para `valor`) era classificada pelo LLM Router como uma nova intent e interrompia a transação.
+Esta correção remove a extração textual hardcoded de parâmetros transacionais e faz a coleta de `policy.requires` por um extrator LLM genérico.
 
-## Regra aplicada
+## Regra de precedência
 
-Durante `COLLECTING_PARAMETERS` a ordem passa a ser:
-
-1. resposta compatível com parâmetro pendente -> mantém a política de estado e continua a transação;
-2. cancelamento explícito -> cancela a transação;
-3. nova intenção clara/pergunta explícita -> interrompe a transação e volta ao roteamento normal;
-4. caso ambíguo -> permanece em clarificação.
-
-Exemplo corrigido:
+Enquanto existir uma transação ativa, o framework trata o turno nesta ordem:
 
 ```text
-não fiz essa contratação TIM CTRL Redes Sociais 8.0
--> informe valor
-R$ 71,99
--> valor=71.99; continua contestar_cobranca; executa pré-validação
+ACTIVE_TRANSACTION
+       |
+       +-- COLLECTING_PARAMETERS
+       |      |
+       |      +-- LLM tenta extrair SOMENTE os parâmetros ainda pendentes
+       |      |
+       |      +-- extraiu >= 1 ?
+       |             |
+       |             +-- SIM -> continua a transação; NÃO avalia intent_shift
+       |             |
+       |             +-- NÃO -> libera EnterpriseRouter para avaliar intent_shift
+       |
+       +-- AWAITING_CONFIRMATION
+              |
+              +-- reconhece confirmação/rejeição explícita
+              |
+              +-- reconheceu ?
+                     |
+                     +-- SIM -> continua/cancela a transação; NÃO avalia intent_shift
+                     |
+                     +-- NÃO -> libera EnterpriseRouter para avaliar intent_shift
 ```
 
-A mensagem `R$ 71,99` não pode mais virar `contas_invoice_explanation` enquanto `valor` estiver pendente.
+## TransactionParameterExtractor
 
-## Testes
+Novo componente:
 
-Foram adicionados testes para:
+`libs/agent_framework/src/agent_framework/runtime/transaction_parameters.py`
 
-- valor monetário com LLM sugerindo outra intent;
-- entidade curta como resposta de parâmetro;
-- pergunta clara durante coleta ainda interrompendo a transação;
-- regressões existentes de intent-shift e transactional tool flow.
+A extração textual dos parâmetros de negócio é feita exclusivamente por LLM. O componente recebe:
+
+- nome da tool/transação ativa;
+- parâmetros atualmente pendentes;
+- argumentos já conhecidos;
+- schema/tipos declarados em `tools.yaml` quando disponíveis;
+- descrição da tool;
+- mensagem atual do usuário.
+
+Ele não conhece nomes de domínio como `order_id`, `reason`, `subject`, `valor`, TIM ou retail. Não há regex de entidades de negócio.
+
+A LLM pode interpretar, por exemplo:
+
+- `PED-1001` quando só há um parâmetro compatível pendente;
+- `o pedido é PED-1001`;
+- `PED-1001, desisti da compra` preenchendo dois parâmetros no mesmo turno;
+- respostas com o nome do parâmetro seguido do valor;
+- respostas apenas com o valor, quando semanticamente inequívocas.
+
+Em caso de dúvida, o prompt manda retornar `null`. Uma nova solicitação não deve ser transformada em valor de parâmetro.
+
+## Separação de responsabilidades
+
+`tool_policies.yaml` continua sendo a fonte de verdade para `requires`.
+
+`tools.yaml` pode fornecer tipos via `args_schema` e descrição da tool para melhorar a interpretação sem introduzir código específico de domínio.
+
+`mcp_parameter_mapping.yaml` continua responsável pelos parâmetros auxiliares/contrato MCP. As strategies do mapper são explicitamente excluídas dos campos presentes em `policy.requires`, para não misturar extração MCP com coleta transacional.
+
+O `EnterpriseRouter` usa o mesmo extrator LLM apenas como *probe* de precedência. Se pelo menos um parâmetro pendente for encontrado, o turno permanece no estado transacional. Os valores extraídos são colocados no metadata da decisão e reutilizados pelo runtime, evitando uma segunda chamada LLM no mesmo turno.
+
+## Profile LLM
+
+Foi adicionado aos templates:
+
+```yaml
+transaction_parameter_extraction:
+  provider: oci_openai
+  model: openai.gpt-4.1-mini
+  temperature: 0
+  max_tokens: 500
+  timeout_seconds: 8
+```
+
+Generation/component:
+
+- `llm.transaction_parameter_extraction`
+- `transaction_parameter_extraction`
+
+## Limpeza de estado
+
+Em `intent_shift`, `transaction_pre_validation` da transação abandonada é removido para não contaminar a nova transação. O resultado de pre-validation continua preservado enquanto pertence à própria transação para auditoria.
+
+## Testes adicionados
+
+`tests/test_transaction_parameter_llm_precedence.py`
+
+Cobertura:
+
+1. dois parâmetros extraídos no mesmo turno;
+2. um parâmetro preenchido ganha precedência sobre keyword que indicaria outra intent;
+3. nenhum parâmetro encontrado libera `intent_shift`;
+4. ausência do antigo `_extract_action_arguments()` hardcoded;
+5. confirmação `sim` ganha precedência sobre intent shift.

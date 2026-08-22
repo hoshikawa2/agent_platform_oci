@@ -72,3 +72,10 @@ profiles:
     temperature: 0
     max_tokens: 80
     timeout_seconds: 5
+
+  transaction_parameter_extraction:
+    provider: oci_openai
+    model: openai.gpt-4.1-mini
+    temperature: 0
+    max_tokens: 500
+    timeout_seconds: 8

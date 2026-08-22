@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 
 from agent_framework.memory.summary_memory import MemoryContext, render_recent_messages
+from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
 
 
 logger = logging.getLogger(__name__)
@@ -571,6 +572,7 @@ class AgentRuntimeMixin:
         state: dict[str, Any],
         *,
         overwrite_from_message: bool = False,
+        exclude_fields: Iterable[str] = (),
     ) -> dict[str, Any]:
         """Executa regras ``extract`` declaradas para a tool escolhida.
 
@@ -586,11 +588,14 @@ class AgentRuntimeMixin:
             return dict(arguments or {})
 
         resolved = dict(arguments or {})
+        excluded = {str(name) for name in (exclude_fields or ())}
         runtime = self.get_runtime_context(state)
         message = runtime.sanitized_input or runtime.original_text or runtime.user_text
         llm = getattr(self, "llm", None)
 
         for field_name, rule in rules.items():
+            if str(field_name) in excluded:
+                continue
             from_message = str(rule.get("from") or "message").lower() == "message"
             if not from_message:
                 continue
@@ -1233,46 +1238,59 @@ class AgentRuntimeMixin:
 
     @staticmethod
     def _confirmation_decision(text: str) -> str | None:
-        normalized = " ".join((text or "").strip().lower().split())
-        normalized = re.sub(r"[.!?]+$", "", normalized).strip()
-        if normalized in {"sim", "confirmo", "sim, confirmo", "pode fazer", "pode prosseguir", "sim, desejo", "sim, desejo trocar", "sim, confirmo a devolução", "sim, confirmo a troca"}:
-            return "confirm"
-        if normalized in {"não", "nao", "cancelar", "cancele", "não confirmo", "nao confirmo"}:
-            return "reject"
-        return None
+        return parse_transaction_confirmation(text)
 
-    @staticmethod
-    def _extract_action_arguments(text: str) -> dict[str, Any]:
-        """Extrai apenas entidades explicitamente informadas na mensagem.
+    def _transaction_parameter_schema(self, tool_name: str, policy: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return generic schema metadata for transactional required parameters."""
+        cfg = self._tool_config(tool_name)
+        raw_schema = dict(getattr(cfg, "args_schema", {}) or {}) if cfg is not None else {}
+        required = [str(name) for name in ((policy or {}).get("requires") or getattr(cfg, "requires", []) or [])]
+        if not required:
+            return raw_schema
+        return {name: raw_schema.get(name, "string") for name in required}
 
-        Não usa a mensagem inteira como ``reason``: frases como "quero devolver
-        uma compra" expressam a ação, mas não necessariamente o motivo. Defaults
-        declarados no mapper continuam sendo aplicados por ``build_tool_arguments``.
+    def _transaction_tool_description(self, tool_name: str) -> str:
+        cfg = self._tool_config(tool_name)
+        return str(getattr(cfg, "description", "") or "") if cfg is not None else ""
+
+    async def _extract_transaction_parameters(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        missing_parameters: list[str],
+        known_arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Use the dedicated LLM extractor for pending transaction parameters.
+
+        A route decision may already contain the extraction performed by the
+        router solely to enforce parameter-before-intent-shift precedence.  Reuse
+        it to avoid a second LLM call in the same turn.
         """
-        raw = text or ""
-        args: dict[str, Any] = {}
-        match = re.search(
-            r"(?:pedido|ordem)\s*(?:n[ºo°.]?\s*)?(?:é\s*(?:o\s*)?|[:#=-]\s*)?([A-Za-z0-9_-]+)",
-            raw,
-            flags=re.IGNORECASE,
-        )
-        if match:
-            args["order_id"] = match.group(1)
+        route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+        cached = route_meta.get("transaction_parameter_values")
+        if isinstance(cached, dict):
+            allowed = set(str(x) for x in missing_parameters)
+            reused = {str(k): v for k, v in cached.items() if str(k) in allowed and v not in _EMPTY_VALUES}
+            if reused:
+                return reused
 
-        reason_match = re.search(
-            r"(?:porque|pois|motivo\s*[:=-]?|por\s+(?:arrependimento|defeito|erro|atraso)|me\s+arrependi(?:\s+da\s+compra)?|arrependimento)\s*(.*)",
-            raw,
-            flags=re.IGNORECASE,
+        active = self._active_transaction(state) or {}
+        schema = active.get("parameter_schema") if isinstance(active.get("parameter_schema"), dict) else None
+        if not schema:
+            policy = self._resolve_tool_execution_policy(tool_name, known_arguments or {})
+            schema = self._transaction_parameter_schema(tool_name, policy)
+        description = str(active.get("tool_description") or self._transaction_tool_description(tool_name) or "")
+        text = state.get("sanitized_input") or state.get("user_text") or ""
+        return await extract_transaction_parameters(
+            getattr(self, "llm", None),
+            text=str(text),
+            tool_name=tool_name,
+            missing_parameters=list(missing_parameters or []),
+            known_arguments=known_arguments or {},
+            parameter_schema=schema,
+            tool_description=description,
         )
-        if reason_match:
-            reason = reason_match.group(1).strip(" .,:;-")
-            if not reason:
-                matched_phrase = reason_match.group(0).strip(" .,:;-")
-                if re.search(r"me\s+arrependi|arrependimento", matched_phrase, flags=re.IGNORECASE):
-                    reason = "Arrependimento da compra"
-            if reason:
-                args["reason"] = reason
-        return args
 
     def _transactional_action_match(self, text: str, tools: list[str] | None = None) -> str | None:
         """Detecta solicitação transacional usando metadados de tools.yaml.
@@ -1515,12 +1533,19 @@ class AgentRuntimeMixin:
     ) -> dict[str, Any]:
         current = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
         txid = transaction_id or current.get("transaction_id") or str(uuid.uuid4())
+        if str(current.get("tool_name") or "") != str(tool_name):
+            state["transaction_pre_validation"] = None
+        cfg = self._tool_config(tool_name)
+        policy = self._resolve_tool_execution_policy(tool_name, arguments or {})
         tx = {
             "transaction_id": txid,
             "tool_name": tool_name,
             "arguments": dict(arguments or {}),
             "status": status,
             "started_from_intent": current.get("started_from_intent") or state.get("intent"),
+            "requires": list(policy.get("requires") or getattr(cfg, "requires", []) or []),
+            "parameter_schema": self._transaction_parameter_schema(tool_name, policy),
+            "tool_description": self._transaction_tool_description(tool_name),
         }
         state["active_transaction"] = tx
         return tx
@@ -2057,6 +2082,7 @@ class AgentRuntimeMixin:
         if active_before_interruption and interruption == "intent_shift":
             interrupted_tool = active_before_interruption.get("tool_name")
             self._finish_active_transaction(state, "CANCELLED")
+            state["transaction_pre_validation"] = None
             state["tool_policy_result"] = {
                 "action": "cancelled_by_intent_shift",
                 "tool_name": interrupted_tool,
@@ -2080,28 +2106,40 @@ class AgentRuntimeMixin:
             tool_name = selected.get("tool_name")
             if tool_name:
                 previous_args = dict(selected.get("arguments") or {})
-                new_args = self.build_tool_arguments(
+                policy = self._resolve_tool_execution_policy(tool_name, previous_args)
+                missing_before = self._missing_required_arguments(policy, previous_args)
+
+                # Parâmetros TRANSACIONAIS são interpretados exclusivamente pelo
+                # extrator LLM genérico. Não existem regexes/nome de entidade
+                # hardcoded no framework. O extrator recebe apenas os parâmetros
+                # ainda pendentes da policy e pode consumir um ou vários no turno.
+                extracted = await self._extract_transaction_parameters(
                     state,
                     tool_name=tool_name,
-                    intent=state.get("intent"),
-                    aliases=aliases,
-                    extra_args=self._extract_action_arguments(text),
+                    missing_parameters=missing_before,
+                    known_arguments=previous_args,
                 )
-                # Durante coleta incremental, valores de contexto podem ainda conter
-                # parâmetros de uma operação anterior. O que já foi coletado para a
-                # transação pendente prevalece; o turno atual só preenche lacunas.
-                non_empty_new = {k: v for k, v in new_args.items() if v not in (None, "", [], {})}
-                arguments = {**non_empty_new, **previous_args}
+                arguments = {**previous_args, **extracted}
 
-                # Campos de envelope pertencem ao turno corrente e devem permanecer
-                # atualizados, mesmo quando os parâmetros de negócio ficam congelados.
-                for per_turn_key in ("query", "operator_instructions", "interaction_key"):
-                    if non_empty_new.get(per_turn_key) not in (None, "", [], {}):
-                        arguments[per_turn_key] = non_empty_new[per_turn_key]
-
-                # Reutiliza o contrato declarativo para preencher somente os campos
-                # ainda faltantes; campos previamente coletados não são sobrescritos.
-                arguments = await self._extract_mcp_parameters(tool_name, arguments, state)
+                # Argumentos estruturados já presentes no contexto são aceitos de
+                # forma genérica (não são parsing textual). Para required fields,
+                # só completam lacunas que a fala atual/LLM não preencheu; valores
+                # previamente coletados nunca são sobrescritos.
+                contextual = self.build_tool_arguments(
+                    state, tool_name=tool_name, intent=state.get("intent"), aliases=aliases
+                )
+                required_set = set(str(name) for name in (policy.get("requires") or []))
+                for key, value in contextual.items():
+                    if value in _EMPTY_VALUES:
+                        continue
+                    if key in required_set:
+                        if arguments.get(key) in _EMPTY_VALUES:
+                            arguments[key] = value
+                    else:
+                        arguments[key] = value
+                arguments = await self._extract_mcp_parameters(
+                    tool_name, arguments, state, exclude_fields=policy.get("requires") or []
+                )
                 policy = self._resolve_tool_execution_policy(tool_name, arguments)
                 missing = self._missing_required_arguments(policy, arguments)
                 if missing:
@@ -2250,23 +2288,46 @@ class AgentRuntimeMixin:
         if not selected_action:
             return results
 
-        explicit_action_args = self._extract_action_arguments(text)
         action_args = self.build_tool_arguments(
             state,
             tool_name=selected_action,
             intent=state.get("intent"),
             aliases=aliases,
-            extra_args=explicit_action_args,
         )
-        # Nova transação: parâmetros declarados ``from: message`` não podem ser
-        # herdados de context.tool_arguments de uma operação anterior.
+        # Campos que o contrato MCP declara como vindos da mensagem corrente não
+        # podem herdar valores textuais de uma transação anterior. Isto é apenas
+        # uma regra de freshness do envelope MCP; a extração de policy.requires
+        # continua exclusivamente no TransactionParameterExtractor LLM abaixo.
         action_args = self._drop_stale_message_extracted_arguments(
-            selected_action, action_args, explicit_fields=explicit_action_args.keys()
+            selected_action, action_args, explicit_fields=()
         )
-        # A mensagem atual é a fonte de verdade para esses campos no primeiro
-        # turno transacional.
+        policy = self._resolve_tool_execution_policy(selected_action, action_args)
+        required = [str(name) for name in (policy.get("requires") or [])]
+
+        # Valores já estruturados no contexto podem satisfazer requirements sem
+        # parsing textual. Para qualquer required field ainda ausente, a fala do
+        # usuário é interpretada exclusivamente pelo extrator LLM transacional.
+        missing_initial = self._missing_required_arguments(policy, action_args)
+        # No primeiro turno, a fala atual pode fornecer/corrigir qualquer required
+        # field, inclusive um valor que exista no contexto estruturado mas pertença
+        # a uma transação anterior. O extrator continua restrito ao contrato
+        # ``requires`` e só sobrescreve quando a LLM realmente extrai um valor.
+        extracted_initial = await self._extract_transaction_parameters(
+            state,
+            tool_name=selected_action,
+            missing_parameters=required,
+            known_arguments={k: v for k, v in action_args.items() if k not in set(required)},
+        )
+        action_args.update(extracted_initial)
+
+        # O mapper MCP continua responsável somente por parâmetros auxiliares que
+        # não pertencem ao contrato transacional.
         action_args = await self._extract_mcp_parameters(
-            selected_action, action_args, state, overwrite_from_message=True
+            selected_action,
+            action_args,
+            state,
+            overwrite_from_message=True,
+            exclude_fields=required,
         )
         policy = self._resolve_tool_execution_policy(selected_action, action_args)
         selected = {"tool_name": selected_action, "arguments": action_args}

@@ -32,7 +32,7 @@ profiles:
     max_tokens: 700
   judge:
     provider: oci_openai
-    model: xopenai.gpt-4.1
+    model: openai.gpt-4.1
     temperature: 0
     max_tokens: 800
   rag_rewriter:
@@ -72,6 +72,13 @@ profiles:
     provider: oci_openai
     model: openai.gpt-4.1
     temperature: 0.2
+  mcp_parameter_extraction:
+    provider: oci_openai
+    model: openai.gpt-4.1-mini
+    temperature: 0
+    max_tokens: 80
+    timeout_seconds: 5
+
   transaction_parameter_extraction:
     provider: oci_openai
     model: openai.gpt-4.1-mini

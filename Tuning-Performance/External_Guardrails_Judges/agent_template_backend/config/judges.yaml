@@ -1,0 +1,6 @@
+enabled: true
+fail_closed: true
+sample_rate: 1.0
+judges:
+  - {name: response_quality, enabled: true, threshold: 0.70}
+  - {name: external_business_quality, type: external, class: app.extensions.example_judges:ExternalBusinessJudge, enabled: true, threshold: 0.50}

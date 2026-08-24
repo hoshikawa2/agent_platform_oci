@@ -11,6 +11,7 @@ input:
 output:
   - code: REVPREC
     enabled: true
+    on_deny: retry
 
 retrieval: []
 tool: []

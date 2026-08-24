@@ -22,7 +22,7 @@ class PhraseologyRail:
                 "remova linguagem interna" if blocked else ""
             ),
             sanitized_text=text,
-            metadata={"calibrated": True},
+            metadata={"calibrated": True, "remediation": {"type": "rewrite", "max_attempts": 1, "prompt_id": "FALLBACK"}},
         )
 
 
@@ -87,7 +87,7 @@ async def test_phraseology_block_is_rewritten_once_and_all_rails_are_revalidated
     assert "R$ 71,99" in decision.candidate
     assert len(phrase.calls) == 2
     assert len(allow.calls) == 2
-    assert decision.metadata["phraseology_rewritten"] is True
+    assert decision.metadata["guardrail_rewritten"] is True
     assert any(r.code == "FRASEOLOGIA_REWRITE" for r in decision.results)
 
 

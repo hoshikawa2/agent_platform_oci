@@ -33,3 +33,6 @@ where = ["src"]
 [build-system]
 requires = ["setuptools>=80", "wheel>=0.45"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+"agent_framework" = ["config/*.yaml", "guardrails/calibrated/capabilities/*.yaml"]

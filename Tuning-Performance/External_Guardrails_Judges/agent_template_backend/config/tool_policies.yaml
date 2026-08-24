@@ -1,0 +1,27 @@
+version: 1
+
+# Arquivo opcional da aplicação. A ausência mantém o comportamento dos
+# templates anteriores e as políticas legadas declaradas em tools.yaml.
+defaults:
+  operation_type: read_only
+  require_confirmation: false
+
+tool_policies:
+  cancelar_pedido:
+    operation_type: transactional
+    require_confirmation: true
+    requires: [order_id]
+
+
+  solicitar_troca:
+    operation_type: transactional
+    require_confirmation: true
+
+  solicitar_devolucao:
+    operation_type: transactional
+    require_confirmation: true
+
+# Exemplo para uma operação real que só pode executar após confirmação:
+#  cancelar_servico:
+#    operation_type: transactional
+#    require_confirmation: true

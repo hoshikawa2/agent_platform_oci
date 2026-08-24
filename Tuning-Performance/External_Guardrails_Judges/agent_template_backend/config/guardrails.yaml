@@ -1,0 +1,9 @@
+enabled: true
+input:
+  - {code: INPUT_SIZE, enabled: true}
+  - {code: PINJ, enabled: true}
+output:
+  - {code: DLEX_OUT, enabled: true}
+  - {code: EXTERNAL_BUSINESS_POLICY, type: external, class: app.extensions.example_guardrails:ExternalBusinessPolicyRail, enabled: true}
+retrieval: []
+tool: []

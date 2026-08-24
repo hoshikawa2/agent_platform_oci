@@ -1,5 +1,6 @@
 pyproject.toml
 src/agent_framework/__init__.py
+src/agent_framework/extensions.py
 src/agent_framework/gateway_policy_context.py
 src/agent_framework/idempotency.py
 src/agent_framework/observer.py
@@ -36,6 +37,7 @@ src/agent_framework/checkpoints/checkpoint_repository.py
 src/agent_framework/checkpoints/langgraph_saver.py
 src/agent_framework/config/__init__.py
 src/agent_framework/config/agent_registry.py
+src/agent_framework/config/observability_mapping.yaml
 src/agent_framework/config/settings.py
 src/agent_framework/events/__init__.py
 src/agent_framework/events/oci_streaming.py
@@ -73,6 +75,7 @@ src/agent_framework/guardrails/calibrated/llm_client.py
 src/agent_framework/guardrails/calibrated/llm_rails.py
 src/agent_framework/guardrails/calibrated/output_sanitization.py
 src/agent_framework/guardrails/calibrated/pipeline.py
+src/agent_framework/guardrails/calibrated/capabilities/pinj_guardrail.yaml
 src/agent_framework/guardrails/calibrated/prompts/__init__.py
 src/agent_framework/guardrails/calibrated/prompts/_context.py
 src/agent_framework/guardrails/calibrated/prompts/ausencia_oferta_proativa.py
@@ -132,6 +135,7 @@ src/agent_framework/llm/__init__.py
 src/agent_framework/llm/base.py
 src/agent_framework/llm/profile_resolver.py
 src/agent_framework/llm/providers.py
+src/agent_framework/llm/types.py
 src/agent_framework/mcp/__init__.py
 src/agent_framework/mcp/client.py
 src/agent_framework/mcp/models.py
@@ -150,6 +154,7 @@ src/agent_framework/models/__init__.py
 src/agent_framework/models/identity.py
 src/agent_framework/models/session.py
 src/agent_framework/observability/__init__.py
+src/agent_framework/observability/code_mapper.py
 src/agent_framework/observability/context.py
 src/agent_framework/observability/control_events.py
 src/agent_framework/observability/decorators.py
@@ -196,6 +201,8 @@ src/agent_framework/routing/enterprise_router.py
 src/agent_framework/routing/models.py
 src/agent_framework/runtime/__init__.py
 src/agent_framework/runtime/agent_runtime.py
+src/agent_framework/runtime/transaction_input.py
+src/agent_framework/runtime/transaction_parameters.py
 src/agent_framework/security/__init__.py
 src/agent_framework/security/authentication.py
 src/agent_framework/security/factory.py

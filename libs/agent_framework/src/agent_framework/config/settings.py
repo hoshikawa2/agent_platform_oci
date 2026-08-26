@@ -103,12 +103,32 @@ class Settings(BaseSettings):
     ENABLE_REDIS_CACHE: bool = False
     CACHE_KEY_PREFIX: str = 'agentfw'
 
+    # RAG backend selector. 'standard' preserves the existing framework RAG;
+    # 'kbdb' consumes the enterprise KBDB stable serving facade without changing agents.
+    RAG_PROVIDER: Literal['standard','kbdb'] = 'standard'
     VECTOR_STORE_PROVIDER: Literal['memory','sqlite','autonomous','oracle','mongodb'] = 'memory'
     GRAPH_STORE_PROVIDER: Literal['memory','autonomous','oracle'] = 'memory'
     ORACLE_GRAPH_NAME: str = 'AGENTFW_GRAPH'
     ORACLE_GRAPH_AUTO_CREATE: bool = False
     RAG_TOP_K: int = 5
+    KBDB_DB_USER: str | None = None
+    KBDB_DB_PASSWORD: str | None = None
+    KBDB_DB_DSN: str | None = None
+    KBDB_DB_WALLET_LOCATION: str | None = None
+    KBDB_DB_WALLET_PASSWORD: str | None = None
+    KBDB_SEARCH_TYPE: Literal['hybrid','vector','keyword'] = 'hybrid'
+    KBDB_NODE_EXPANSION: bool = True
+    KBDB_NODE_MAX_RELATED: int = 8
+    KBDB_GRAPH_CROSS_REF: bool = False
+    KBDB_MAX_CROSS_REF_HOPS: int = 1
+    KBDB_DOCUMENT_TYPE: str | None = 'customer_safe'
+    KBDB_METADATA_JSON: str | None = None
+    KBDB_MIN_SCORE: float | None = None
+    # MCP só pula retrieval quando declarar explicitamente rag_sufficient/knowledge_sufficient.
     SKIP_RAG_WHEN_MCP_SUFFICIENT: bool = True
+    # Preserva comportamento legado do RAG standard; KBDB enterprise é grounded-only por padrão.
+    RAG_GROUNDED_ONLY: bool = False
+    KBDB_GROUNDED_ONLY: bool = True
     ENABLE_RAG_QUERY_REWRITE: bool = False
     ENABLE_RAG_CONTEXT_COMPRESSION: bool = False
     ENABLE_RAG_GENERATION: bool = False

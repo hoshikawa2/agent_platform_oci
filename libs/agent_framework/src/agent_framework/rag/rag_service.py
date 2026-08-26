@@ -42,10 +42,20 @@ class RagService:
         self.settings=settings
         self.telemetry=telemetry
         self.llm=llm
-        self.vector_store=create_vector_store(settings, embedding_provider=embedding_provider, telemetry=telemetry)
-        self.graph_store=create_graph_store(settings, telemetry=telemetry)
+        self.provider=getattr(settings, 'RAG_PROVIDER', 'standard')
+        self._kbdb=None
+        if self.provider == 'kbdb':
+            from .kbdb_service import KbdbRagService
+            self._kbdb=KbdbRagService(settings, telemetry=telemetry)
+            self.vector_store=None
+            self.graph_store=None
+        else:
+            self.vector_store=create_vector_store(settings, embedding_provider=embedding_provider, telemetry=telemetry)
+            self.graph_store=create_graph_store(settings, telemetry=telemetry)
 
     async def add_documents(self, texts: list[str], metadatas: list[dict] | None = None, namespace: str='default') -> list[str]:
+        if self._kbdb:
+            return await self._kbdb.add_documents(texts, metadatas=metadatas, namespace=namespace)
         start=time.time()
         ids=await self.vector_store.add_texts(texts, metadatas=metadatas, namespace=namespace)
         if self.telemetry:
@@ -57,11 +67,15 @@ class RagService:
     async def retrieve(self, query: str, *, namespace: str='default', k: int | None=None, graph_node: str | None=None, rewrite: bool = False) -> RagResult:
         start=time.time(); k=k or self.settings.RAG_TOP_K
         effective_query = await self.rewrite_query(query, namespace=namespace) if rewrite else query
+        if self._kbdb:
+            result = await self._kbdb.retrieve(effective_query, namespace=namespace, k=k, graph_node=graph_node, rewrite=False)
+            result.metadata.update({'original_query': query, 'rewritten': rewrite and effective_query != query})
+            return result
         docs=await self.vector_store.similarity_search(effective_query, k=k, namespace=namespace)
         neighbors=[]
         if graph_node:
             neighbors=await self.graph_store.neighbors(graph_node)
-        result=RagResult(query=effective_query, documents=docs, graph_neighbors=neighbors, latency_ms=int((time.time()-start)*1000), metadata={'namespace':namespace,'k':k, 'original_query': query, 'rewritten': rewrite and effective_query != query})
+        result=RagResult(query=effective_query, documents=docs, graph_neighbors=neighbors, latency_ms=int((time.time()-start)*1000), metadata={'provider':'standard','namespace':namespace,'k':k, 'original_query': query, 'rewritten': rewrite and effective_query != query})
         if self.telemetry:
             await self.telemetry.rag_event('retrieve.completed', effective_query, len(docs), {
                 'namespace': namespace, 'k': k, 'latency_ms': result.latency_ms, 'graph_neighbors': len(neighbors),

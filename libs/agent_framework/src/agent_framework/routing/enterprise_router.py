@@ -10,6 +10,7 @@ from .config_loader import load_intents, load_router_defaults, load_state_polici
 from .continuity import SemanticRouteContinuity
 from .models import IntentDefinition, RouteDecision, RouterStatePolicy
 from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
+from agent_framework.workflows.input_contract import match_expected_input
 
 logger = logging.getLogger("agent_framework.routing")
 
@@ -71,6 +72,50 @@ class EnterpriseRouter:
             current_state = explicit_next_state or session.get("metadata", {}).get("workflow_state")
         text = state.get("sanitized_input") or state.get("user_text") or ""
 
+        # A paused conversational workflow owns the next turn when the current
+        # input satisfies its declarative ``expected_input`` contract. This check
+        # must happen before route continuity; otherwise a generic reply such as
+        # "sim" can be misread as END_SESSION instead of resuming the workflow.
+        pending_workflow = state.get("pending_domain_workflow")
+        if isinstance(pending_workflow, dict) and pending_workflow.get("execution_id"):
+            pause = pending_workflow.get("pause") if isinstance(pending_workflow.get("pause"), dict) else {}
+            expected_input = pause.get("expected_input") if isinstance(pause, dict) else None
+            matched = match_expected_input(str(text), expected_input)
+            if matched is not None:
+                previous = state.get("route_decision") or {}
+                owner_agent = str(
+                    pending_workflow.get("owner_agent")
+                    or state.get("active_agent")
+                    or previous.get("agent")
+                    or state.get("route")
+                    or self.fallback_agent
+                ).strip()
+                owner_intent = str(
+                    pending_workflow.get("owner_intent")
+                    or previous.get("intent")
+                    or state.get("intent")
+                    or f"workflow_resume:{pending_workflow.get('workflow_name') or 'paused'}"
+                ).strip()
+                decision = RouteDecision(
+                    route=owner_agent,
+                    agent=owner_agent,
+                    intent=owner_intent,
+                    confidence=1.0,
+                    reason="Entrada consumida pelo contrato expected_input do workflow pausado.",
+                    method="state",
+                    domain=previous.get("domain") or state.get("domain"),
+                    mcp_tools=[str(pending_workflow.get("resume_tool") or "retomar_workflow")],
+                    metadata={
+                        "route_bypassed": True,
+                        "workflow_resume": True,
+                        "workflow_name": pending_workflow.get("workflow_name"),
+                        "workflow_execution_id": pending_workflow.get("execution_id"),
+                        "normalized_input": matched,
+                    },
+                )
+                await self._emit(decision, state)
+                return decision
+
         # Estados transacionais preservam continuidade para respostas curtas
         # (parâmetros, "sim", "não"), mas NÃO podem aprisionar a sessão. Antes
         # de aplicar a política de estado, procuramos uma mudança explícita de
@@ -79,18 +124,49 @@ class EnterpriseRouter:
         # pendente antes de executar a nova intent.
         state_decision = self._route_by_state(current_state)
         if state_decision:
-            consumed = await self._transaction_parameter_precedence(
-                state, text=str(text), state_decision=state_decision
-            )
-            if consumed is not None:
-                await self._emit(consumed, state)
-                return consumed
+            tx_status = str(state.get("transaction_status") or "").strip().upper()
+
+            # Confirmation is the only transaction input with absolute precedence:
+            # an explicit yes/no answers the confirmation contract itself.
+            if tx_status == "AWAITING_CONFIRMATION":
+                consumed = await self._transaction_parameter_precedence(
+                    state, text=str(text), state_decision=state_decision
+                )
+                if consumed is not None:
+                    await self._emit(consumed, state)
+                    return consumed
+
+            # While collecting parameters, a turn may both contain a usable field
+            # value and express a new, incompatible goal.  When semantic routing is
+            # available, classify CONTINUE vs SHIFT before extraction so a field
+            # value cannot shield a real intent change.  Without semantic routing we
+            # preserve the previous conservative behavior (parameter first), because
+            # a broad configured keyword alone cannot reliably distinguish a new
+            # goal from a legitimate parameter utterance.
+            semantic_shift_available = bool(self.enable_llm_router and self.llm is not None)
+            if tx_status == "COLLECTING_PARAMETERS" and not semantic_shift_available:
+                consumed = await self._transaction_parameter_precedence(
+                    state, text=str(text), state_decision=state_decision
+                )
+                if consumed is not None:
+                    await self._emit(consumed, state)
+                    return consumed
+
             interruption = await self._transaction_state_interruption_candidate(
                 state, text=str(text), state_decision=state_decision
             )
             if interruption is not None:
                 await self._emit(interruption, state)
                 return interruption
+
+            if tx_status == "COLLECTING_PARAMETERS" and semantic_shift_available:
+                consumed = await self._transaction_parameter_precedence(
+                    state, text=str(text), state_decision=state_decision
+                )
+                if consumed is not None:
+                    await self._emit(consumed, state)
+                    return consumed
+
             await self._emit(state_decision, state)
             return state_decision
 
@@ -116,16 +192,30 @@ class EnterpriseRouter:
                 method="state",
                 next_state=tx_status,
             )
-            consumed = await self._transaction_parameter_precedence(
-                state, text=str(text), state_decision=synthetic
-            )
-            if consumed is not None:
-                consumed.metadata = {
-                    **(consumed.metadata or {}),
-                    "transaction_state_recovered": True,
-                }
-                await self._emit(consumed, state)
-                return consumed
+            if tx_status == "AWAITING_CONFIRMATION":
+                consumed = await self._transaction_parameter_precedence(
+                    state, text=str(text), state_decision=synthetic
+                )
+                if consumed is not None:
+                    consumed.metadata = {
+                        **(consumed.metadata or {}),
+                        "transaction_state_recovered": True,
+                    }
+                    await self._emit(consumed, state)
+                    return consumed
+
+            semantic_shift_available = bool(self.enable_llm_router and self.llm is not None)
+            if tx_status == "COLLECTING_PARAMETERS" and not semantic_shift_available:
+                consumed = await self._transaction_parameter_precedence(
+                    state, text=str(text), state_decision=synthetic
+                )
+                if consumed is not None:
+                    consumed.metadata = {
+                        **(consumed.metadata or {}),
+                        "transaction_state_recovered": True,
+                    }
+                    await self._emit(consumed, state)
+                    return consumed
 
             interruption = await self._transaction_state_interruption_candidate(
                 state, text=str(text), state_decision=synthetic
@@ -137,6 +227,18 @@ class EnterpriseRouter:
                 }
                 await self._emit(interruption, state)
                 return interruption
+
+            if tx_status == "COLLECTING_PARAMETERS" and semantic_shift_available:
+                consumed = await self._transaction_parameter_precedence(
+                    state, text=str(text), state_decision=synthetic
+                )
+                if consumed is not None:
+                    consumed.metadata = {
+                        **(consumed.metadata or {}),
+                        "transaction_state_recovered": True,
+                    }
+                    await self._emit(consumed, state)
+                    return consumed
 
             # A transação continua ativa e a mensagem NÃO representa mudança de
             # intenção. Neste caso a decisão sintética de estado precisa vencer
@@ -174,10 +276,17 @@ class EnterpriseRouter:
             await self._emit(keyword_candidate, state)
             return keyword_candidate
 
-        decision = await self.continuity.evaluate(state, intents=self.intents)
-        if decision:
-            await self._emit(decision, state)
-            return decision
+        # Uma transação terminal encerra também a elegibilidade de route
+        # stickiness/continuity herdada daquele fluxo no próximo roteamento.
+        # O histórico conversacional continua intacto, mas o agente/intenção
+        # anterior não pode capturar uma nova mensagem depois de COMPLETED,
+        # FAILED, CANCELLED, BLOCKED ou OUT_OF_SCOPE. Nesses casos a mensagem
+        # volta ao roteamento normal (keyword/LLM/fallback).
+        if not terminal_tx:
+            decision = await self.continuity.evaluate(state, intents=self.intents)
+            if decision:
+                await self._emit(decision, state)
+                return decision
 
         decision = self._route_by_keyword(text)
         if decision:
@@ -211,11 +320,13 @@ class EnterpriseRouter:
         text: str,
         state_decision: RouteDecision,
     ) -> RouteDecision | None:
-        """Consume a turn as transaction parameters before evaluating intent shift.
+        """Consume a turn as transaction input after shift precedence is resolved.
 
-        Only COLLECTING_PARAMETERS participates. The LLM extracts values for the
-        currently missing parameters; if at least one value is found, the state
-        route wins deterministically and intent-shift classification is skipped.
+        AWAITING_CONFIRMATION consumes an explicit confirmation before any shift
+        classification.  COLLECTING_PARAMETERS reaches this method only after the
+        router has established that the current turn does not represent an
+        incompatible intent-shift; then extracted values may continue the active
+        transaction deterministically.
         """
         tx_status = str(state.get("transaction_status") or "").strip().upper()
         if tx_status == "AWAITING_CONFIRMATION":
@@ -280,25 +391,33 @@ class EnterpriseRouter:
         previous = state.get("route_decision") or {}
         previous_intent = str(previous.get("intent") or state.get("intent") or started_intent).strip()
 
-        candidate = self._route_by_keyword(text)
-        if candidate is not None:
+        configured_candidate = self._route_by_keyword(text)
+        if configured_candidate is not None:
             different = (
-                candidate.agent != state_decision.agent
-                or (started_intent and candidate.intent != started_intent)
-                or (previous_intent and not previous_intent.startswith("state:") and candidate.intent != previous_intent)
+                configured_candidate.agent != state_decision.agent
+                or (started_intent and configured_candidate.intent != started_intent)
+                or (previous_intent and not previous_intent.startswith("state:") and configured_candidate.intent != previous_intent)
             )
-            if different:
-                candidate.metadata = {
-                    **(candidate.metadata or {}),
+            if not different:
+                return None
+
+            # During parameter collection, a configured keyword may be present in
+            # a perfectly valid parameter answer (for example an order identifier
+            # utterance containing the generic word "pedido").  When semantic
+            # classification is available, use the configured route only as a
+            # candidate hint and let the LLM decide CONTINUE vs SHIFT.  This avoids
+            # both failure modes: parameter extraction cannot hide a real new goal,
+            # and a broad keyword cannot steal a legitimate parameter turn.
+            if not (self.enable_llm_router and self.llm is not None):
+                configured_candidate.metadata = {
+                    **(configured_candidate.metadata or {}),
                     "transaction_interruption": "intent_shift",
                     "interrupted_state": state_decision.next_state,
                     "interrupted_agent": state_decision.agent,
                     "interrupted_intent": started_intent or previous_intent,
                     "interruption_source": "configured_routing",
                 }
-                return candidate
-            else:
-                return None
+                return configured_candidate
 
         if not (self.enable_llm_router and self.llm is not None):
             return None
@@ -320,6 +439,15 @@ class EnterpriseRouter:
             "transaction_status": state.get("transaction_status"),
             "tool_name": active_tx.get("tool_name"),
             "missing_parameters": list(state.get("missing_parameters") or []),
+            "configured_candidate": (
+                {
+                    "intent": configured_candidate.intent,
+                    "agent": configured_candidate.agent,
+                    "confidence": configured_candidate.confidence,
+                }
+                if configured_candidate is not None
+                else None
+            ),
         }
         system = (
             "Você decide apenas se o turno atual continua a transação ativa ou muda de intenção. "
@@ -377,6 +505,9 @@ class EnterpriseRouter:
                 "interrupted_agent": state_decision.agent,
                 "interrupted_intent": started_intent or previous_intent,
                 "interruption_source": "semantic_classifier",
+                "configured_routing_hint": (
+                    configured_candidate.intent if configured_candidate is not None else None
+                ),
                 "raw_llm_answer": answer[:1000],
             },
             domain=self._domain_for_intent(intent_name),

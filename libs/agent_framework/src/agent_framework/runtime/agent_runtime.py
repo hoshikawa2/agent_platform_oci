@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from agent_framework.memory.summary_memory import MemoryContext, render_recent_messages
 from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
+from agent_framework.workflows.input_contract import match_expected_input
 
 
 logger = logging.getLogger(__name__)
@@ -344,6 +345,23 @@ class AgentRuntimeMixin:
         deduped = list(dict.fromkeys(queries))
         return required, "\n".join(deduped)
 
+    @classmethod
+    def _mcp_rag_sufficient(cls, mcp_results: list[dict[str, Any]]) -> bool:
+        """Retorna True somente quando o domínio declara que MCP basta para este turno.
+
+        Um tool result bem-sucedido não é, por si só, evidência de suficiência
+        semântica. Para pular retrieval, a tool/workflow deve declarar
+        ``rag_sufficient=true`` ou ``knowledge_sufficient=true`` em seu payload.
+        Isso evita que o framework conheça nomes de tools ou termos de negócio.
+        """
+        for item in mcp_results or []:
+            if not isinstance(item, dict) or not item.get("ok"):
+                continue
+            for mapping in cls._iter_mapping_values(item.get("result")):
+                if bool(mapping.get("rag_sufficient")) or bool(mapping.get("knowledge_sufficient")):
+                    return True
+        return False
+
 
     @classmethod
     def _mcp_llm_composition_directive(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, list[str]]:
@@ -372,20 +390,31 @@ class AgentRuntimeMixin:
 
     async def _retrieve_rag_context(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         rag_service = getattr(self, "rag_service", None)
-        if not rag_service:
-            return "", {"enabled": False}
         settings = getattr(self, "settings", None)
+        if not rag_service:
+            return "", {
+                "enabled": False,
+                "attempted": False,
+                "status": "no_service",
+                "reason": "rag_service_not_configured",
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
+            }
         mcp_results = state.get("mcp_results") or []
         requires_rag, rag_query_override = self._mcp_rag_directive(mcp_results)
+        explicit_mcp_sufficient = self._mcp_rag_sufficient(mcp_results)
         if (
             not requires_rag
             and bool(getattr(settings, "SKIP_RAG_WHEN_MCP_SUFFICIENT", True))
-            and any(r.get("ok") and r.get("result") for r in mcp_results)
+            and explicit_mcp_sufficient
         ):
-            text = str(state.get("sanitized_input") or state.get("user_text") or "").lower()
-            policy_terms = ("política", "politica", "regra", "prazo", "como funciona", "por que", "porque")
-            if not any(term in text for term in policy_terms):
-                return "", {"enabled": False, "skipped": True, "reason": "mcp_sufficient"}
+            return "", {
+                "enabled": False,
+                "skipped": True,
+                "reason": "mcp_explicitly_sufficient",
+                "required_by_tool": False,
+                "mcp_explicitly_sufficient": True,
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
+            }
         runtime = self.get_runtime_context(state)
         namespace = (
             (state.get("agent_profile") or {}).get("rag_namespace")
@@ -411,10 +440,13 @@ class AgentRuntimeMixin:
             # observabilidade e para decisões posteriores.
             return "", {
                 "enabled": False,
+                "attempted": True,
                 "failed": True,
                 "technical_error": True,
                 "technical_error_in_rag": True,
+                "status": "error",
                 "error": str(exc),
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
                 "namespace": namespace,
                 "query": rag_query,
                 "query_overridden_by_tool": bool(rag_query_override),
@@ -442,24 +474,41 @@ class AgentRuntimeMixin:
             if any(not bool(getattr(d, "allowed", True)) for d in decisions):
                 return "", {
                     "enabled": False,
+                    "attempted": True,
                     "blocked": True,
+                    "status": "blocked",
                     "reason": "retrieval_guardrail",
+                    "provider": result.metadata.get("provider") or getattr(settings, "RAG_PROVIDER", "standard"),
+                    "namespace": namespace,
+                    "query": rag_query,
+                    "document_count": len(result.documents),
                     "guardrails": retrieval_decisions,
                 }
             context = guarded_context
+        document_count = len(result.documents)
+        provider = result.metadata.get("provider") or getattr(settings, "RAG_PROVIDER", "standard")
+        status = "executed" if context and document_count else "empty"
         return context, {
             "enabled": True,
+            "attempted": True,
+            "status": status,
+            "provider": provider,
             "namespace": namespace,
             "query": rag_query,
             "query_overridden_by_tool": bool(rag_query_override),
             "required_by_tool": bool(requires_rag),
+            "mcp_explicitly_sufficient": explicit_mcp_sufficient,
             "latency_ms": result.latency_ms,
-            "document_count": len(result.documents),
+            "document_count": document_count,
             "graph_neighbors": len(result.graph_neighbors),
             "top_document_ids": [d.id for d in result.documents[:5]],
             "top_scores": [d.score for d in result.documents[:5]],
             "rewritten": result.metadata.get("rewritten"),
             "effective_query": result.query,
+            "confidence": result.metadata.get("confidence"),
+            "low_confidence": result.metadata.get("low_confidence"),
+            "fallback_reason": result.metadata.get("fallback_reason"),
+            "warnings": result.metadata.get("warnings") or [],
             "guardrails": retrieval_decisions,
         }
 
@@ -1241,13 +1290,58 @@ class AgentRuntimeMixin:
         return parse_transaction_confirmation(text)
 
     def _transaction_parameter_schema(self, tool_name: str, policy: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Return generic schema metadata for transactional required parameters."""
+        """Return schema metadata for transactional required parameters.
+
+        Backward compatibility is intentional:
+        - legacy ``args_schema: {field: string}`` remains valid;
+        - enriched ``args_schema`` entries may provide ``type``/``description``;
+        - when a legacy entry has no description, a declarative description from
+          ``mcp_parameter_mapping.yaml`` is used when available.
+
+        The framework never assigns domain meaning to a parameter name.  It only
+        forwards metadata declared by the agent so the generic LLM extractor can
+        interpret the user's wording more accurately.
+        """
         cfg = self._tool_config(tool_name)
         raw_schema = dict(getattr(cfg, "args_schema", {}) or {}) if cfg is not None else {}
         required = [str(name) for name in ((policy or {}).get("requires") or getattr(cfg, "requires", []) or [])]
-        if not required:
-            return raw_schema
-        return {name: raw_schema.get(name, "string") for name in required}
+
+        # Optional semantic metadata already declared by the agent for MCP
+        # extraction.  This is only a fallback; args_schema remains authoritative.
+        extract_rules: dict[str, dict[str, Any]] = {}
+        router = getattr(self, "tool_router", None)
+        if router is not None and hasattr(router, "parameter_extract_rules"):
+            try:
+                extract_rules = dict(router.parameter_extract_rules(tool_name) or {})
+            except Exception:
+                # Schema construction must never break legacy agents merely
+                # because optional descriptive metadata cannot be loaded.
+                extract_rules = {}
+
+        names = required or [str(name) for name in raw_schema.keys()]
+        normalized: dict[str, Any] = {}
+        for name in names:
+            raw = raw_schema.get(name, "string")
+            rule = extract_rules.get(name) if isinstance(extract_rules.get(name), dict) else {}
+            fallback_description = str((rule or {}).get("description") or "").strip() or None
+
+            if isinstance(raw, dict):
+                entry = dict(raw)
+                entry.setdefault("type", "string")
+                if not entry.get("description") and fallback_description:
+                    entry["description"] = fallback_description
+                normalized[name] = entry
+            elif fallback_description:
+                normalized[name] = {
+                    "type": raw or "string",
+                    "description": fallback_description,
+                }
+            else:
+                # Preserve the exact legacy representation when there is no
+                # additional metadata to contribute.
+                normalized[name] = raw or "string"
+
+        return normalized
 
     def _transaction_tool_description(self, tool_name: str) -> str:
         cfg = self._tool_config(tool_name)
@@ -1343,16 +1437,49 @@ class AgentRuntimeMixin:
         return f"WAITING_{self._agent_state_prefix(current)}_CONFIRMATION"
 
     @staticmethod
-    def _workflow_resume_decision(text: str) -> str:
+    def _workflow_resume_decision(text: str, pending: dict[str, Any] | None = None) -> str:
+        # Prefer the workflow's declarative input contract. This removes domain
+        # semantics from the framework: SIM/NAO, numeric choices or free text are
+        # interpreted only from ``expected_input`` persisted by the paused flow.
+        pause = (pending or {}).get("pause") if isinstance(pending, dict) else None
+        expected = pause.get("expected_input") if isinstance(pause, dict) else None
+        matched = match_expected_input(text, expected)
+        if matched is not None:
+            return matched
+
+        # Backward compatibility for old checkpoints that predate expected_input.
+        # This branch is intentionally limited to the previous generic yes/no
+        # behavior and is not used when the workflow provides a contract.
+        if isinstance(expected, dict):
+            return "OUTRO"
         normalized = " ".join((text or "").strip().lower().split())
         normalized = re.sub(r"[.!?]+$", "", normalized).strip()
         yes = {"sim", "s", "claro", "isso", "correto", "pode", "pode sim", "entendi", "conseguiu", "resolveu"}
-        no = {"não", "nao", "n", "não resolveu", "nao resolveu", "não entendi", "nao entendi", "não", "negativo"}
+        no = {"não", "nao", "n", "não resolveu", "nao resolveu", "não entendi", "nao entendi", "negativo"}
         if normalized in yes or normalized.startswith("sim "):
             return "SIM"
         if normalized in no or normalized.startswith("não ") or normalized.startswith("nao "):
             return "NAO"
         return "OUTRO"
+
+    @staticmethod
+    def _workflow_pause_descriptor(workflow: dict[str, Any]) -> dict[str, Any]:
+        """Recover the complete pause descriptor from a workflow result.
+
+        Runtime v2 exposes ``pause`` as a compact public summary, while the
+        LangGraph interrupt carries ``expected_input`` and ``resume_from``. Keep
+        both forms compatible without coupling this logic to a domain workflow.
+        """
+        descriptor = dict(workflow.get("pause") or {}) if isinstance(workflow.get("pause"), dict) else {}
+        state = workflow.get("state") if isinstance(workflow.get("state"), dict) else {}
+        interrupts = state.get("__interrupt__") if isinstance(state, dict) else None
+        if isinstance(interrupts, list) and interrupts:
+            first = interrupts[0]
+            value = first.get("value") if isinstance(first, dict) else None
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    descriptor.setdefault(key, item)
+        return descriptor
 
     @staticmethod
     def _workflow_payload_from_tool_result(result: dict[str, Any]) -> dict[str, Any] | None:
@@ -1379,12 +1506,26 @@ class AgentRuntimeMixin:
                 executed.append(workflow_name)
             state["business_workflows_executed"] = executed
         if workflow.get("status") != "PAUSED":
+            # Clearing must be materialized in the graph-state patch. ``pop``/absence
+            # is not enough with LangGraph state merging: an older latch can survive
+            # into the next turn and incorrectly resume a workflow that already
+            # completed. Only clear the currently owned execution (or an unlabeled
+            # legacy latch); never clear a different concurrently tracked workflow.
+            pending = state.get("pending_domain_workflow")
+            pending_execution = (pending or {}).get("execution_id") if isinstance(pending, dict) else None
+            workflow_execution = metadata.get("workflow_execution_id") or workflow.get("execution_id")
+            if not pending_execution or not workflow_execution or str(pending_execution) == str(workflow_execution):
+                state["pending_domain_workflow"] = None
+                if state.get("transaction_status") == "WORKFLOW_PAUSED":
+                    state["transaction_status"] = None
             return
         state["pending_domain_workflow"] = {
             "workflow_name": metadata.get("workflow_name") or workflow.get("workflow_name"),
             "execution_id": metadata.get("workflow_execution_id") or workflow.get("execution_id"),
             "resume_tool": metadata.get("resume_tool") or "retomar_workflow",
-            "pause": workflow.get("pause") or {},
+            "owner_agent": state.get("active_agent") or state.get("route"),
+            "owner_intent": state.get("intent"),
+            "pause": self._workflow_pause_descriptor(workflow),
         }
         state["transaction_status"] = "WORKFLOW_PAUSED"
 
@@ -1396,7 +1537,7 @@ class AgentRuntimeMixin:
         arguments = {
             "workflow_name": pending.get("workflow_name"),
             "execution_id": pending.get("execution_id"),
-            "resposta_usuario": self._workflow_resume_decision(text),
+            "resposta_usuario": self._workflow_resume_decision(text, pending),
         }
         result = await self._call_mcp_tool(tool_name, arguments, state)
         workflow = self._workflow_payload_from_tool_result(result)
@@ -1404,7 +1545,10 @@ class AgentRuntimeMixin:
         if workflow and workflow.get("status") == "PAUSED":
             pass
         else:
-            state.pop("pending_domain_workflow", None)
+            # Explicit tombstone: transaction_state_patch() must carry the clear
+            # through LangGraph's state merge. Removing the key locally would let
+            # the previous PAUSED latch remain durable in the graph state.
+            state["pending_domain_workflow"] = None
             if state.get("transaction_status") == "WORKFLOW_PAUSED":
                 state["transaction_status"] = None
         return result
@@ -2000,11 +2144,19 @@ class AgentRuntimeMixin:
         return None
 
     def build_direct_mcp_answer(self, state: dict[str, Any], mcp_results: list[dict[str, Any]], *, agent_label: str) -> str | None:
-        """Resposta determinística para consultas estruturadas simples."""
+        """Retorna resposta MCP direta somente quando a aplicação declarar isso explicitamente.
+
+        Um resultado de tool não implica, por si só, que a pergunta do usuário foi
+        respondida. O core do framework não conhece nomes de tools nem formatos de
+        domínio. Para encerrar o fluxo antes de RAG/LLM, a configuração da tool deve
+        declarar ``response.direct: true`` e fornecer uma política de apresentação
+        válida. Sem essa declaração, o fluxo continua para retrieval/composição.
+        """
         requires_rag, _ = self._mcp_rag_directive(mcp_results)
         requires_llm_composition, _ = self._mcp_llm_composition_directive(mcp_results)
         if requires_rag or requires_llm_composition:
             return None
+
         ok = [r for r in mcp_results if r.get("ok") and isinstance(r.get("result"), dict)]
         for item in ok:
             workflow = self._workflow_payload_from_tool_result(item)
@@ -2014,11 +2166,18 @@ class AgentRuntimeMixin:
                 if prompt:
                     return str(prompt)
             if workflow and workflow.get("status") == "COMPLETED":
+                # A completed workflow is not automatically a direct answer. Only
+                # the terminal node may provide an explicit message. Searching
+                # backwards for any prior ``mensagem`` can replay a prompt emitted
+                # before a pause (e.g. the question the user has just answered) and
+                # suppress the normal LLM/orchestrator composition of terminal data.
                 nodes = workflow.get("output") if isinstance(workflow.get("output"), dict) else {}
-                # prefer last business message emitted by a workflow action
-                for value in reversed(list(nodes.values())):
-                    if isinstance(value, dict) and str(value.get("mensagem") or "").strip():
-                        return str(value["mensagem"]).strip()
+                workflow_state = workflow.get("state") if isinstance(workflow.get("state"), dict) else {}
+                terminal_node = str(workflow_state.get("current_node") or "").strip()
+                terminal_output = nodes.get(terminal_node) if terminal_node else None
+                if isinstance(terminal_output, dict) and str(terminal_output.get("mensagem") or "").strip():
+                    return str(terminal_output["mensagem"]).strip()
+
         text = state.get("sanitized_input") or state.get("user_text") or ""
         if (
             len(ok) != 1
@@ -2026,30 +2185,79 @@ class AgentRuntimeMixin:
             or self._transactional_action_match(str(text)) is not None
         ):
             return None
+
         tool = ok[0].get("tool_name")
         data = ok[0]["result"]
+        router = getattr(self, "tool_router", None)
+        registry = getattr(router, "registry", None)
+        cfg = registry.get_tool(str(tool)) if registry and tool else None
+        policy = dict(getattr(cfg, "response", None) or {}) if cfg else {}
 
-        # Primeiro tenta o contrato genérico e declarativo de apresentação.
-        # Se a aplicação não o configurou, preserva exatamente o fallback legado
-        # abaixo para não quebrar projetos existentes.
-        declared = self._render_declared_tool_response(tool, data, agent_label=agent_label, state=state)
-        if declared is not None:
-            return declared
+        # Importante: renderer/template descreve COMO apresentar uma resposta;
+        # somente ``direct: true`` declara que ela é semanticamente suficiente
+        # para encerrar o turno antes de RAG/LLM.
+        if not bool(policy.get("direct", False)):
+            return None
 
-        if tool == "consultar_pedido":
-            oid=data.get("order_id"); status=data.get("status"); total=data.get("valor_total")
-            lines=[f"[{agent_label}] Pedido {oid}: status {status}."]
-            if total is not None: lines.append(f"Valor total: R$ {float(total):.2f}.".replace('.', ','))
-            items=data.get("itens") or []
-            if items: lines.append("Itens: " + "; ".join(str(i.get("descricao") or i.get("nome") or i.get("sku")) for i in items) + ".")
-            return " ".join(lines)
-        if tool == "consultar_entrega":
-            return f"[{agent_label}] Entrega do pedido {data.get('order_id')}: transportadora {data.get('transportadora')}, rastreio {data.get('codigo_rastreio')}, previsão {data.get('previsao_entrega')}."
-        if tool == "consultar_plano":
-            return f"[{agent_label}] Seu plano é {data.get('plano')}, com {data.get('internet_gb')} GB e status {data.get('status')}."
-        if tool == "consultar_fatura":
-            return f"[{agent_label}] Fatura consultada: {data}."
-        return None
+        return self._render_declared_tool_response(tool, data, agent_label=agent_label, state=state)
+
+    def _clear_active_interaction_context_on_route_shift(self, state: dict[str, Any]) -> bool:
+        """Invalidate active conversational latches when routing leaves their owner.
+
+        This is deliberately generic.  It compares the current route decision with
+        the owner recorded by a paused workflow; it does not inspect domain, tool,
+        workflow or intent names.  Durable checkpoints/history remain intact.
+        """
+        pending_workflow = state.get("pending_domain_workflow")
+        if not isinstance(pending_workflow, dict) or not pending_workflow.get("execution_id"):
+            return False
+
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        route_metadata = route_decision.get("metadata") if isinstance(route_decision.get("metadata"), dict) else {}
+        if route_metadata.get("workflow_resume"):
+            return False
+
+        current_intent = str(route_decision.get("intent") or state.get("intent") or "").strip()
+        current_agent = str(route_decision.get("agent") or route_decision.get("route") or state.get("route") or "").strip()
+        owner_intent = str(pending_workflow.get("owner_intent") or "").strip()
+        owner_agent = str(pending_workflow.get("owner_agent") or "").strip()
+
+        intent_changed = bool(owner_intent and current_intent and owner_intent != current_intent)
+        agent_changed = bool(owner_agent and current_agent and owner_agent != current_agent)
+        if not (intent_changed or agent_changed):
+            return False
+
+        state["last_interrupted_domain_workflow"] = {
+            **pending_workflow,
+            "status": "CANCELLED",
+            "reason": "intent_shift",
+        }
+        state["pending_domain_workflow"] = None
+
+        # The active interaction owns all operational latches, not the durable
+        # audit trail. Clear only live state so a new semantic route starts clean.
+        active_tx = self._active_transaction(state)
+        if isinstance(active_tx, dict) and active_tx.get("tool_name"):
+            self._finish_active_transaction(state, "CANCELLED")
+        else:
+            state["active_transaction"] = None
+            state["selected_tool_call"] = {}
+            state["pending_tool_call"] = {}
+            state["missing_parameters"] = []
+            state["confirmation_required"] = False
+            state["confirmation_received"] = False
+            state["next_state"] = None
+
+        if state.get("transaction_status") in {"WORKFLOW_PAUSED", "COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION", "CANCELLED"}:
+            state["transaction_status"] = None
+        state["transaction_pre_validation"] = None
+        state["pending_tool_clarification"] = None
+        state["tool_policy_result"] = {
+            "action": "cleared_by_intent_shift",
+            "workflow_execution_id": pending_workflow.get("execution_id"),
+        }
+        state["mcp_results"] = []
+        return True
 
     async def execute_tools_for_intent(
         self,
@@ -2087,6 +2295,8 @@ class AgentRuntimeMixin:
                 "action": "cancelled_by_intent_shift",
                 "tool_name": interrupted_tool,
             }
+
+        self._clear_active_interaction_context_on_route_shift(state)
 
         # Clarificação de resultado de tool tem precedência: reutiliza a mesma tool
         # e argumentos, alterando apenas o parâmetro escolhido pelo usuário.
@@ -2573,9 +2783,21 @@ class AgentRuntimeMixin:
                 f"(persistidas pelo framework, não inferidas pela memória conversacional):\n{transaction_evidence}"
             )
         if rag_context is not None:
-            sections.append(f"Contexto RAG nativo do framework:\n{rag_context or '[sem contexto RAG]'}")
+            sections.append(f"Contexto de conhecimento (RAG):\n{rag_context or '[sem contexto RAG]'}")
         if rag_metadata is not None:
             sections.append(f"Metadados RAG:\n{rag_metadata}")
+            provider = str(rag_metadata.get("provider") or getattr(getattr(self, "settings", None), "RAG_PROVIDER", "standard"))
+            grounded_only = bool(getattr(getattr(self, "settings", None), "RAG_GROUNDED_ONLY", False))
+            if provider == "kbdb":
+                grounded_only = bool(getattr(getattr(self, "settings", None), "KBDB_GROUNDED_ONLY", True))
+            if grounded_only:
+                sections.append(
+                    "Política de grounding obrigatória:\n"
+                    "- Use como fatos somente evidências presentes nos resultados MCP, no contexto RAG e no business context fornecido.\n"
+                    "- Não complete lacunas usando conhecimento paramétrico do modelo, memória geral ou suposições.\n"
+                    "- Se a informação pedida não estiver sustentada pelas evidências disponíveis, diga explicitamente que não há informação suficiente na base consultada.\n"
+                    "- Se o RAG estiver vazio, bloqueado ou com erro, ainda é permitido responder apenas a partes comprovadas por MCP/business context; não invente a parte documental ausente."
+                )
         for title, value in (extra_sections or {}).items():
             sections.append(f"{title}:\n{value}")
         return MessageBuilder(state).system(system_prompt).user("\n\n".join(sections)).build()

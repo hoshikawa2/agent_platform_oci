@@ -1,6 +1,6 @@
 def build_aoferta_prompt(text: str, context: str = "") -> str:
     return f"""
-Voce e um auditor de atendimento ao cliente do provedor. Decida se a fala do agente
+Voce e um auditor de atendimento ao cliente da TIM. Decida se a fala do agente
 abaixo e oferta proativa indevida.
 
 Voce julga SO acao TRANSACIONAL: cancelar, ajustar, contestar, creditar, devolver,
@@ -20,6 +20,16 @@ Decida na ordem, PARE no primeiro match:
 1. A fala nao oferece nem anuncia acao transacional -> allowed=true. Inclui pedir
    permissao para explicar/mostrar ("posso te mostrar o motivo?") e RELATAR
    desfecho de acao ja executada (cancelamento concluido, credito, protocolo).
+
+1b. COLETA DE PARAMETROS / CLARIFICACAO NAO E ACAO TRANSACIONAL. Se a fala
+   apenas pede um dado necessario para continuar uma solicitacao ja em andamento
+   (valor, data, servico, produto, cobranca, mes, motivo ou outro dado de negocio),
+   -> allowed=true. Julgue SOMENTE a fala atual: nao antecipe a acao que PODERA
+   ocorrer depois que o dado for informado. Pedir um parametro nao cancela, nao
+   contesta, nao ajusta, nao credita, nao devolve e nao concede nada.
+   Esta regra vale mesmo quando o alvo citado anteriormente e plano/linha ou outro
+   alvo que seria bloqueado no passo 2b caso a fala estivesse efetivamente oferecendo
+   ou executando uma acao transacional.
 
 2. A fala oferece PROCEDIMENTO que o agente nao executa: "abrir analise",
    "encaminhar para verificacao", "abrir chamado", "verificar e retornar",
@@ -126,6 +136,21 @@ Exemplos (as falas do agente sao as saidas canonicas do orquestrador):
 [user] minha fatura era pra vir com desconto de R$ 10,00 e veio cheia, R$ 49,90
 [assistant] Entendo que o desconto de R$ 10,00 não foi aplicado. Gostaria que eu contestasse esse valor?
 {{"allowed": false, "reason": "'Gostaria que eu contestasse esse valor?': desconto e valor que o agente concede — como credito ou isencao —, o pedido nao libera e trocar o verbo por contestar nao muda o alvo (passo 2b)"}}
+
+# 10 - coleta de parametro de uma transacao em andamento NAO e oferta (passo 1b)
+[user] nao contratei TIM CTRL Redes Sociais 8.0
+[assistant] Para prosseguir, informe valor.
+{{"allowed": true, "reason": ""}}
+
+# 11 - pedir dado de negocio para continuar NAO antecipa a acao futura (passo 1b)
+[user] quero contestar essa cobranca
+[assistant] Qual foi o valor da cobranca?
+{{"allowed": true, "reason": ""}}
+
+# 12 - continua proibido oferecer a acao sobre plano/linha (passo 2b)
+[user] nao contratei TIM CTRL Redes Sociais 8.0
+[assistant] Posso cancelar esse plano para voce.
+{{"allowed": false, "reason": "'Posso cancelar esse plano para voce.': oferece cancelamento de plano/linha, alvo de dano comercial (passo 2b)"}}
 
 ------------------------------------{context}
 Resposta a avaliar:

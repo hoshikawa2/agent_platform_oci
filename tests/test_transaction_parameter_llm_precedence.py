@@ -133,7 +133,7 @@ async def test_transaction_extractor_handles_multiple_parameters_without_hardcod
 
 
 @pytest.mark.asyncio
-async def test_collecting_one_parameter_consumes_turn_before_intent_shift(tmp_path):
+async def test_collecting_one_parameter_consumes_turn_after_classifier_continues(tmp_path):
     routing = tmp_path / "routing.yaml"
     routing.write_text(
         """
@@ -291,3 +291,165 @@ intents:
     assert decision.metadata["transaction_turn_consumed"] is True
     assert decision.metadata["transaction_confirmation_decision"] == "confirm"
     assert "transaction_interruption" not in decision.metadata
+
+@pytest.mark.asyncio
+async def test_incompatible_intent_shift_wins_even_when_turn_could_fill_pending_parameter(tmp_path):
+    """A value-like turn cannot shield an incompatible new goal from intent-shift.
+
+    Regression for the edge case where the active transaction is collecting a
+    field, but the same utterance clearly starts another transactional intent.
+    The framework must classify the goal first; parameter extraction is allowed
+    only after the classifier says CONTINUE.
+    """
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: support_agent
+  confidence_threshold: 0.70
+state_policies:
+  - state: COLLECTING_SUPPORT_PARAMETERS
+    agent: support_agent
+intents:
+  - name: retail_support_exchange_return
+    agent: support_agent
+    priority: 20
+    keywords: [devolver pedido]
+  - name: retail_order_cancel
+    agent: orders_agent
+    priority: 30
+    keywords: [cancelar pedido]
+""",
+        encoding="utf-8",
+    )
+
+    class _ShiftAndExtractLLM:
+        def __init__(self):
+            self.extraction_calls = 0
+            self.shift_calls = 0
+
+        async def ainvoke(self, messages, **kwargs):
+            prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+            if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
+                self.extraction_calls += 1
+                # This demonstrates the dangerous overlap: if extraction ran
+                # first, it could consume a field from the same utterance.
+                return json.dumps({"reason": "cancelar pedido PED-2002"})
+            self.shift_calls += 1
+            return json.dumps({
+                "decision": "SHIFT",
+                "intent": "retail_order_cancel",
+                "agent": "orders_agent",
+                "confidence": 0.99,
+                "reason": "usuário passou a cancelar outro pedido",
+            })
+
+    llm = _ShiftAndExtractLLM()
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=True,
+        ENABLE_ROUTE_STICKINESS=False,
+    )
+    router = EnterpriseRouter(settings, llm=llm)
+    state = {
+        "user_text": "agora quero cancelar pedido PED-2002",
+        "sanitized_input": "agora quero cancelar pedido PED-2002",
+        "next_state": "COLLECTING_SUPPORT_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["reason"],
+        "active_agent": "support_agent",
+        "intent": "state:COLLECTING_SUPPORT_PARAMETERS",
+        "active_transaction": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "retail_support_exchange_return",
+            "parameter_schema": {"reason": "string"},
+        },
+    }
+
+    decision = await router.route(state)
+
+    assert decision.intent == "retail_order_cancel"
+    assert decision.agent == "orders_agent"
+    assert decision.metadata["transaction_interruption"] == "intent_shift"
+    assert llm.shift_calls == 1
+    assert llm.extraction_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_semantic_shift_wins_before_parameter_extraction_when_no_keyword_matches(tmp_path):
+    """Semantic SHIFT must win even if extraction could return a pending field."""
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: support_agent
+  confidence_threshold: 0.70
+state_policies:
+  - state: COLLECTING_SUPPORT_PARAMETERS
+    agent: support_agent
+intents:
+  - name: retail_support_exchange_return
+    agent: support_agent
+    priority: 20
+    keywords: [devolver pedido]
+  - name: retail_order_cancel
+    agent: orders_agent
+    priority: 30
+    keywords: []
+""",
+        encoding="utf-8",
+    )
+
+    class _SemanticShiftAndExtractLLM:
+        def __init__(self):
+            self.extraction_calls = 0
+            self.shift_calls = 0
+
+        async def ainvoke(self, messages, **kwargs):
+            prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+            if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
+                self.extraction_calls += 1
+                return json.dumps({"reason": "encerrar a compra"})
+            self.shift_calls += 1
+            return json.dumps({
+                "decision": "SHIFT",
+                "intent": "retail_order_cancel",
+                "agent": "orders_agent",
+                "confidence": 0.98,
+                "reason": "novo objetivo transacional incompatível",
+            })
+
+    llm = _SemanticShiftAndExtractLLM()
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=True,
+        ENABLE_ROUTE_STICKINESS=False,
+    )
+    router = EnterpriseRouter(settings, llm=llm)
+    state = {
+        "user_text": "mudei de ideia, quero encerrar a compra PED-2002",
+        "sanitized_input": "mudei de ideia, quero encerrar a compra PED-2002",
+        "next_state": "COLLECTING_SUPPORT_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["reason"],
+        "active_agent": "support_agent",
+        "intent": "state:COLLECTING_SUPPORT_PARAMETERS",
+        "active_transaction": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "retail_support_exchange_return",
+            "parameter_schema": {"reason": "string"},
+        },
+    }
+
+    decision = await router.route(state)
+
+    assert decision.intent == "retail_order_cancel"
+    assert decision.agent == "orders_agent"
+    assert decision.metadata["transaction_interruption"] == "intent_shift"
+    assert decision.metadata["interruption_source"] == "semantic_classifier"
+    assert llm.shift_calls == 1
+    assert llm.extraction_calls == 0

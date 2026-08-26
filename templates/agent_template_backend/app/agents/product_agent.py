@@ -75,15 +75,30 @@ class ProductAgent(AgentRuntimeMixin):
             }
 
         rag_context, rag_metadata = await self._retrieve_rag_context(state)
-        if rag_metadata.get("enabled"):
+        rag_event_payload = {
+            "provider": rag_metadata.get("provider"),
+            "status": rag_metadata.get("status"),
+            "attempted": rag_metadata.get("attempted"),
+            "enabled": rag_metadata.get("enabled"),
+            "document_count": rag_metadata.get("document_count"),
+            "graph_neighbors": rag_metadata.get("graph_neighbors"),
+            "latency_ms": rag_metadata.get("latency_ms"),
+            "reason": rag_metadata.get("reason"),
+            "error": rag_metadata.get("error"),
+            "query": rag_metadata.get("query"),
+            "namespace": rag_metadata.get("namespace"),
+        }
+        await self._emit_ic(
+            "IC.PRODUCT_RAG_CONTEXT_EVALUATED",
+            state,
+            rag_event_payload,
+            component="agent.product.rag",
+        )
+        if rag_metadata.get("enabled") and rag_metadata.get("status") == "executed":
             await self._emit_ic(
                 "IC.PRODUCT_RAG_CONTEXT_RETRIEVED",
                 state,
-                {
-                    "document_count": rag_metadata.get("document_count"),
-                    "graph_neighbors": rag_metadata.get("graph_neighbors"),
-                    "latency_ms": rag_metadata.get("latency_ms"),
-                },
+                rag_event_payload,
                 component="agent.product.rag",
             )
 

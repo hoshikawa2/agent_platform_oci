@@ -11176,3 +11176,7 @@ A adoção das funcionalidades do `Tuning-Performance` pode proporcionar:
 * comportamento consistente entre diferentes agentes e projetos.
 
 O conteúdo desta pasta deve ser tratado como uma extensão adicional do framework. Sua utilização requer implementação, configuração, testes funcionais e validação das regras de negócio antes da implantação em produção.
+
+### RAG provider alternativo (KBDB Enterprise)
+
+O RAG original continua sendo o default (`RAG_PROVIDER=standard`). Para usar a arquitetura KBDB enterprise como alternativa de serving, configure `RAG_PROVIDER=kbdb`. Os agentes continuam usando o mesmo `RagService`/`_retrieve_rag_context()` e os dois backends não são executados simultaneamente. Consulte `docs/RAG_PROVIDER_KBDB.md`.

@@ -190,6 +190,7 @@ src/agent_framework/rag/__init__.py
 src/agent_framework/rag/embedding_provider.py
 src/agent_framework/rag/graph_store.py
 src/agent_framework/rag/ingest.py
+src/agent_framework/rag/kbdb_service.py
 src/agent_framework/rag/rag_service.py
 src/agent_framework/rag/vector_store.py
 src/agent_framework/repositories/__init__.py
@@ -215,6 +216,7 @@ src/agent_framework/supervisor/router_supervisor.py
 src/agent_framework/supervisor/supervisor.py
 src/agent_framework/workflows/__init__.py
 src/agent_framework/workflows/graph.py
+src/agent_framework/workflows/input_contract.py
 src/agent_framework/workflows/models.py
 src/agent_framework/workflows/registry.py
 src/agent_framework/workflows/repository.py

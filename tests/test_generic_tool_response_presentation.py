@@ -43,7 +43,7 @@ def test_renderer_mode_uses_application_registered_renderer():
         return f"[{agent_label}] {result['name']} / {state['intent']}"
 
     register_tool_response_renderer("test.entity", renderer)
-    rt = _Runtime({"consultar_algo": {"mode": "renderer", "renderer": "test.entity"}})
+    rt = _Runtime({"consultar_algo": {"mode": "renderer", "renderer": "test.entity", "direct": True}})
     answer = rt.build_direct_mcp_answer(
         {"user_text": "consulta", "intent": "test_intent"},
         _result("consultar_algo", {"name": "OK"}),
@@ -52,21 +52,74 @@ def test_renderer_mode_uses_application_registered_renderer():
     assert answer == "[TestAgent] OK / test_intent"
 
 
-def test_missing_renderer_falls_back_without_breaking_runtime():
-    rt = _Runtime({"consultar_plano": {"mode": "renderer", "renderer": "missing.renderer"}})
+def test_missing_renderer_does_not_break_runtime_or_use_domain_fallback():
+    rt = _Runtime({"consultar_plano": {"mode": "renderer", "renderer": "missing.renderer", "direct": True}})
     answer = rt.build_direct_mcp_answer(
         {"user_text": "qual meu plano"},
         _result("consultar_plano", {"plano": "Controle", "internet_gb": 50, "status": "ATIVO"}),
         agent_label="ProductAgent",
     )
-    assert answer == "[ProductAgent] Seu plano é Controle, com 50 GB e status ATIVO."
+    assert answer is None
 
 
-def test_no_declared_response_keeps_legacy_fallback():
+def test_renderer_without_explicit_direct_continues_to_llm_or_rag():
+    def renderer(*, tool_name, result, state, agent_label):
+        return f"[{agent_label}] {result['plano']}"
+
+    register_tool_response_renderer("test.plan", renderer)
+    rt = _Runtime({"consultar_plano": {"mode": "renderer", "renderer": "test.plan"}})
+    answer = rt.build_direct_mcp_answer(
+        {"user_text": "como funciona a tarifação do plano?"},
+        _result("consultar_plano", {"plano": "Controle", "internet_gb": 50, "status": "ATIVO"}),
+        agent_label="ProductAgent",
+    )
+    assert answer is None
+
+
+def test_no_declared_response_has_no_domain_hardcoded_fallback():
     rt = _Runtime({})
     answer = rt.build_direct_mcp_answer(
         {"user_text": "qual meu plano"},
         _result("consultar_plano", {"plano": "Controle", "internet_gb": 50, "status": "ATIVO"}),
         agent_label="ProductAgent",
     )
-    assert answer == "[ProductAgent] Seu plano é Controle, com 50 GB e status ATIVO."
+    assert answer is None
+
+
+def test_completed_workflow_does_not_replay_message_from_non_terminal_node():
+    rt = AgentRuntimeMixin()
+    state = {"user_text": "nao", "sanitized_input": "nao"}
+    result = {
+        "ok": True,
+        "tool_name": "resume_workflow",
+        "result": {
+            "status": "COMPLETED",
+            "workflow_name": "example",
+            "output": {
+                "format": {"mensagem": "Pergunta antiga?"},
+                "decide": {"ok": True},
+                "check": {"has_items": True},
+            },
+            "state": {"current_node": "check"},
+        },
+    }
+    assert rt.build_direct_mcp_answer(state, [result], agent_label="Agent") is None
+
+
+def test_completed_workflow_uses_only_terminal_node_explicit_message():
+    rt = AgentRuntimeMixin()
+    state = {"user_text": "ok", "sanitized_input": "ok"}
+    result = {
+        "ok": True,
+        "tool_name": "resume_workflow",
+        "result": {
+            "status": "COMPLETED",
+            "workflow_name": "example",
+            "output": {
+                "format": {"mensagem": "Pergunta antiga?"},
+                "finish": {"mensagem": "Resposta final."},
+            },
+            "state": {"current_node": "finish"},
+        },
+    }
+    assert rt.build_direct_mcp_answer(state, [result], agent_label="Agent") == "Resposta final."

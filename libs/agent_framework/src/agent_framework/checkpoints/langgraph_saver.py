@@ -18,6 +18,7 @@ returned using CheckpointTuple; otherwise a simple dict is returned for tests.
 """
 
 import asyncio
+import base64
 import json
 import uuid
 from typing import Any, AsyncIterator, Iterator
@@ -92,6 +93,200 @@ def _strict_json_value(value: Any, *, path: str = "$") -> Any:
         f"Checkpoint contém valor não serializável em {path}: "
         f"{type(value).__module__}.{type(value).__qualname__}"
     )
+
+
+
+_TYPED_SERDE_MARKER = "__agent_framework_langgraph_typed__"
+
+
+def _is_langgraph_interrupt(value: Any) -> bool:
+    """Return True only for LangGraph's native Interrupt primitive.
+
+    Keep this deliberately narrow.  The repository contract remains strict JSON
+    everywhere else so an unrelated future runtime object cannot silently change
+    the durable checkpoint format.
+    """
+    cls = type(value)
+    return cls.__module__ == "langgraph.types" and cls.__qualname__ == "Interrupt"
+
+
+def _typed_serde_envelope(serializer: Any, value: Any, *, path: str) -> dict[str, Any]:
+    dumps_typed = getattr(serializer, "dumps_typed", None)
+    if not callable(dumps_typed):
+        raise TypeError(f"Serializer LangGraph não suporta dumps_typed em {path}")
+    type_name, payload = dumps_typed(value)
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError(
+            f"Serializer LangGraph retornou payload inválido em {path}: "
+            f"{type(payload).__module__}.{type(payload).__qualname__}"
+        )
+    return {
+        _TYPED_SERDE_MARKER: True,
+        "type": str(type_name),
+        "data": base64.b64encode(bytes(payload)).decode("ascii"),
+    }
+
+
+
+
+def _encode_checkpoint_value(
+    serializer: Any,
+    value: Any,
+    *,
+    path: str = "$.checkpoint",
+    in_channel_values: bool = False,
+    in_interrupt_channel: bool = False,
+) -> Any:
+    """Serialize the checkpoint without widening its historical JSON contract.
+
+    The only typed exception is LangGraph's native ``Interrupt`` and only while
+    traversing the special ``__interrupt__`` channel under ``channel_values``.
+    Every other checkpoint value keeps the strict-JSON behavior, so future
+    runtime/business objects cannot silently start using typed serde.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            skey = str(key)
+            child_in_channel_values = in_channel_values or (
+                path == "$.checkpoint" and skey == "channel_values"
+            )
+            child_in_interrupt_channel = in_interrupt_channel or (
+                child_in_channel_values and skey == "__interrupt__"
+            )
+            out[skey] = _encode_checkpoint_value(
+                serializer,
+                item,
+                path=f"{path}.{skey}",
+                in_channel_values=child_in_channel_values,
+                in_interrupt_channel=child_in_interrupt_channel,
+            )
+        return out
+    if isinstance(value, (list, tuple)):
+        return [
+            _encode_checkpoint_value(
+                serializer,
+                item,
+                path=f"{path}[{idx}]",
+                in_channel_values=in_channel_values,
+                in_interrupt_channel=in_interrupt_channel,
+            )
+            for idx, item in enumerate(value)
+        ]
+    if in_channel_values and in_interrupt_channel and _is_langgraph_interrupt(value):
+        return _typed_serde_envelope(serializer, value, path=path)
+    return _strict_json_value(value, path=path)
+
+
+def _decode_checkpoint_value(
+    serializer: Any,
+    value: Any,
+    *,
+    path: str = "$.checkpoint",
+    in_channel_values: bool = False,
+    in_interrupt_channel: bool = False,
+) -> Any:
+    """Inverse of :func:`_encode_checkpoint_value`, with the same narrow scope."""
+    if isinstance(value, dict):
+        if in_channel_values and in_interrupt_channel and value.get(_TYPED_SERDE_MARKER) is True:
+            loads_typed = getattr(serializer, "loads_typed", None)
+            if not callable(loads_typed):
+                raise TypeError("Serializer LangGraph não suporta loads_typed")
+            type_name = value.get("type")
+            raw = value.get("data")
+            if not isinstance(type_name, str) or not isinstance(raw, str):
+                raise TypeError(f"Envelope de serialização LangGraph inválido em {path}")
+            return loads_typed((type_name, base64.b64decode(raw.encode("ascii"))))
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            skey = str(key)
+            child_in_channel_values = in_channel_values or (
+                path == "$.checkpoint" and skey == "channel_values"
+            )
+            child_in_interrupt_channel = in_interrupt_channel or (
+                child_in_channel_values and skey == "__interrupt__"
+            )
+            out[skey] = _decode_checkpoint_value(
+                serializer,
+                item,
+                path=f"{path}.{skey}",
+                in_channel_values=child_in_channel_values,
+                in_interrupt_channel=child_in_interrupt_channel,
+            )
+        return out
+    if isinstance(value, list):
+        return [
+            _decode_checkpoint_value(
+                serializer,
+                item,
+                path=f"{path}[{idx}]",
+                in_channel_values=in_channel_values,
+                in_interrupt_channel=in_interrupt_channel,
+            )
+            for idx, item in enumerate(value)
+        ]
+    return value
+
+def _encode_pending_write_value(
+    serializer: Any,
+    value: Any,
+    *,
+    path: str,
+    in_interrupt_channel: bool = False,
+) -> Any:
+    """Serialize pending writes with a narrowly-scoped Interrupt exception.
+
+    ``Interrupt`` is accepted only in LangGraph's special ``__interrupt__``
+    branch (either the write channel itself or a nested ``__interrupt__`` key).
+    Other non-JSON objects still fail loudly.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            skey = str(key)
+            child_interrupt = in_interrupt_channel or skey == "__interrupt__"
+            out[skey] = _encode_pending_write_value(
+                serializer,
+                item,
+                path=f"{path}.{skey}",
+                in_interrupt_channel=child_interrupt,
+            )
+        return out
+    if isinstance(value, (list, tuple)):
+        return [
+            _encode_pending_write_value(
+                serializer,
+                item,
+                path=f"{path}[{idx}]",
+                in_interrupt_channel=in_interrupt_channel,
+            )
+            for idx, item in enumerate(value)
+        ]
+    if in_interrupt_channel and _is_langgraph_interrupt(value):
+        return _typed_serde_envelope(serializer, value, path=path)
+    return _strict_json_value(value, path=path)
+
+
+def _serde_decode(serializer: Any, value: Any) -> Any:
+    """Restore values encoded by :func:`_serde_encode` recursively."""
+    if isinstance(value, dict):
+        if value.get(_TYPED_SERDE_MARKER) is True:
+            loads_typed = getattr(serializer, "loads_typed", None)
+            if not callable(loads_typed):
+                raise TypeError("Serializer LangGraph não suporta loads_typed")
+            type_name = value.get("type")
+            raw = value.get("data")
+            if not isinstance(type_name, str) or not isinstance(raw, str):
+                raise TypeError("Envelope de serialização LangGraph inválido")
+            return loads_typed((type_name, base64.b64decode(raw.encode("ascii"))))
+        return {key: _serde_decode(serializer, item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_serde_decode(serializer, item) for item in value]
+    return value
 
 
 def _normalize_checkpoint(checkpoint: Any) -> dict[str, Any]:
@@ -277,6 +472,7 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
 
     def __init__(self, settings, repository=None):
         super().__init__()
+        self.serde = getattr(self, "serde", None)
         self.settings = settings
         self.repository = repository or create_checkpoint_repository(settings)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -302,8 +498,10 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
         # Second-stage protection: never re-bind the full persisted RunnableConfig.
         # Rebuild only the durable identifiers, as official LangGraph savers do.
         config = _canonical_checkpoint_config(payload, request_config)
-        checkpoint = _strip_runtime_refs(_normalize_checkpoint(payload.get("checkpoint") or {}))
-        metadata = _strip_runtime_refs(_normalize_metadata(payload.get("metadata") or {}))
+        checkpoint_value = _decode_checkpoint_value(self.serde, payload.get("checkpoint") or {})
+        metadata_value = payload.get("metadata") or {}
+        checkpoint = _strip_runtime_refs(_normalize_checkpoint(checkpoint_value))
+        metadata = _strip_runtime_refs(_normalize_metadata(metadata_value))
         raw_parent_config = payload.get("parent_config")
         if isinstance(raw_parent_config, dict):
             parent_payload = {
@@ -317,8 +515,9 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
             parent_config = _canonical_checkpoint_config(parent_payload)
         else:
             parent_config = None
+        pending_value = _serde_decode(self.serde, payload.get("pending_writes") or [])
         pending_writes = _normalize_pending_writes(
-            _strip_runtime_refs(payload.get("pending_writes") or [])
+            _strip_runtime_refs(pending_value)
         )
         try:
             from langgraph.checkpoint.base import CheckpointTuple
@@ -359,7 +558,7 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
         await self.repository.put(thread_id, {
             "thread_id": thread_id,
             "config": _strict_json_value(next_config, path="$.config"),
-            "checkpoint": _strict_json_value(_strip_runtime_refs(_normalize_checkpoint(checkpoint)), path="$.checkpoint"),
+            "checkpoint": _encode_checkpoint_value(self.serde, _strip_runtime_refs(_normalize_checkpoint(checkpoint)), path="$.checkpoint"),
             "metadata": _strict_json_value(_strip_runtime_refs(_normalize_metadata(metadata or {})), path="$.metadata"),
             "new_versions": _strict_json_value(_strip_runtime_refs(new_versions or {}), path="$.new_versions"),
             "checkpoint_id": checkpoint_id,
@@ -410,7 +609,12 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
                 "task_id": task_id,
                 "task_path": task_path,
                 "channel": channel,
-                "value": _strict_json_value(durable_value, path=f"$.pending_writes[{task_id}].{channel}"),
+                "value": _encode_pending_write_value(
+                    self.serde,
+                    durable_value,
+                    path=f"$.pending_writes[{task_id}].{channel}",
+                    in_interrupt_channel=(str(channel) == "__interrupt__"),
+                ),
             })
         latest["pending_writes"] = pending
         await self.repository.put(thread_id, latest)

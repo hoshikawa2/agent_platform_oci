@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_framework.routing.enterprise_router import EnterpriseRouter
+from agent_framework.routing.models import RouteDecision
 from agent_framework.runtime.agent_runtime import AgentRuntimeMixin
 
 
@@ -428,3 +429,76 @@ async def test_matrix_terminal_stale_next_state_does_not_lock_generic_followup(s
     decision = await router.route(state)
     assert decision.method != "state"
     assert (decision.metadata or {}).get("transaction_state_recovered") is not True
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "CANCELLED", "BLOCKED", "OUT_OF_SCOPE"])
+async def test_matrix_terminal_transaction_skips_route_continuity(status, tmp_path):
+    """Terminal transaction must release conversational stickiness on next turn."""
+    router = _router(tmp_path, stickiness=False)
+
+    class _ContinuityMustNotRun:
+        async def evaluate(self, state, *, intents):
+            raise AssertionError("route continuity must not run after terminal transaction")
+
+    router.continuity = _ContinuityMustNotRun()
+    router.enable_llm_router = False
+    router.llm = None
+    state = {
+        "user_text": "nova solicitação sem keyword configurada",
+        "sanitized_input": "nova solicitação sem keyword configurada",
+        "transaction_status": status,
+        "next_state": None,
+        "active_transaction": None,
+        "active_agent": "orders_agent",
+        "intent": "retail_order_cancel",
+        "route_decision": {"agent": "orders_agent", "intent": "retail_order_cancel"},
+        "context": {"session": {}},
+    }
+
+    decision = await router.route(state)
+    assert decision.method == "fallback"
+    assert decision.intent == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_terminal_out_of_scope_allows_new_llm_intent_instead_of_continuity(tmp_path):
+    """Regression for OUT_OF_SCOPE -> unrelated/new semantic request on next turn."""
+    router = _router(tmp_path, stickiness=False)
+
+    class _ContinuityMustNotRun:
+        async def evaluate(self, state, *, intents):
+            raise AssertionError("stale continuity must not capture a post-terminal turn")
+
+    router.continuity = _ContinuityMustNotRun()
+    router.enable_llm_router = True
+    router.llm = object()
+
+    async def _fake_llm(text, state):
+        return RouteDecision(
+            route="vas_agent",
+            agent="vas_agent",
+            intent="retail_vas_cancel",
+            confidence=0.99,
+            reason="new semantic intent",
+            method="llm",
+            mcp_tools=["consultar_vas", "cancelar_vas_avulso"],
+        )
+
+    router._route_by_llm = _fake_llm
+    state = {
+        "user_text": "eu quero cancelar um serviço diferente",
+        "sanitized_input": "eu quero cancelar um serviço diferente",
+        "transaction_status": "OUT_OF_SCOPE",
+        "next_state": None,
+        "active_transaction": None,
+        "active_agent": "contestacao_agent",
+        "intent": "contas_contestation",
+        "route_decision": {"agent": "contestacao_agent", "intent": "contas_contestation"},
+        "context": {"session": {}},
+    }
+
+    decision = await router.route(state)
+    assert decision.method == "llm"
+    assert decision.agent == "vas_agent"
+    assert decision.intent == "retail_vas_cancel"
+    assert decision.mcp_tools == ["consultar_vas", "cancelar_vas_avulso"]

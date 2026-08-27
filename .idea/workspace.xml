@@ -6,120 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/.oca/custom_code_review_guidelines.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Arquitetura_Geral_Agent_Framework_OCI.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/FIX_DEADLOCK_SEQUENCE_CROSS_LOOP.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/IMPLEMENTACAO_WORKFLOWS_TRANSACIONAIS.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/INVENTARIO_AGENT_GATEWAY_MCP_GATEWAY.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Implementando_Basic_Auth.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Long_Term_Memory_Implementation_Guide_EN.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/MANUAL_AGENT_PLATFORM_GATEWAYS.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/MANUAL_EXECUCAO_AGENT_GATEWAY_MCP_GATEWAY_FRONTEND.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/MCP_GATEWAY_RUNBOOK.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Manual de Roteamento Multi-Agent.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Manual_Desenvolvedor_AI_Agent_Framework_OCI.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Manual_Integracao_MCP_Servers_Agent_Framework.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Manual_Long_Term_Memory_PT.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_AGENT_GATEWAY_AND_MCP_GATEWAY_EVOLUTION.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_CHECKPOINT_ENTERPRISE.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_ENTERPRISE_ROUTING.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_FIRST_ENTERPRISE_DELTA.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_FIRST_ENTERPRISE_PLUS.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_FIRST_MAX_OPERATIONAL_FIXES.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_FIRST_READY.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_GUARDRAILS_IMPLEMENTADOS.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_MAX_OPERACIONAL.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_MCP.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_MULTI_AGENT_ISOLATION.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_ROUTE_STICKINESS_SEMANTICA.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_ROUTING_MODES.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_SEMANTIC_ROUTE_STICKINESS.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_TEMPLATE_BUSINESS_CONTEXT_V2.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_TESTES_UNITARIOS.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_TOOL_POLICIES.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_old.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/README_old2.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/RELEASE_NOTES_GENERIC_DETERMINISTIC_INTENT_SHIFT_V15.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/RELEASE_NOTES_MCP_PARAMETER_EXTRACTION_FIX.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/RELEASE_NOTES_ROUTE_STICKINESS_DETERMINISTIC_INTENT_SHIFT_V14.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/RELEASE_NOTES_ROUTE_STICKINESS_TRANSACTION_SHIFT.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/RELEASE_NOTES_TOOL_POLICIES.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Release Notes/DIFF_AGENT_FRAMEWORK_LOCAL_VS_OCI_2026-08-12.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/Route_Stickiness_Semantica_Agent_Framework_OCI.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/TEST_RESULTS_ROUTE_STICKINESS.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/VALIDACAO_TRANSACIONAL_BACKEND_MCP.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/docs_GLOBAL_SUPERVISOR_VALIDATION.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/docs_VALIDATION_GUARDRAILS_IC.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Documentacao/img.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README_en.md" beforeDir="false" afterPath="$PROJECT_DIR$/README_en.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/01_billing_agent_invoice_policy.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/02_orders_agent_lifecycle_policy.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/03_product_agent_catalog_policy.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/04_support_agent_sla_policy.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/05_business_context_rag_flow.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/ADR_TRANSACTIONAL_WORKFLOW_ENGINE.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/EXTERNAL_GUARDRAILS_JUDGES.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/JUDGES_TRANSACTIONAL_SAMPLING_FIX.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/LLM_RICH_RESPONSE.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/MCP_GATEWAY_DISCOVERY.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/MODULAR_REMAP.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/PERFORMANCE_OPTIMIZATIONS_MCP_JUDGES_RAG.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/RAG_PROVIDER_KBDB.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/README_rag_samples.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/TRANSACTION_OPERATIONAL_EVIDENCE_FIX.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/TRANSACTION_STATE_DEVELOPER_GUIDE_en.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/docs_GLOBAL_SUPERVISOR_VALIDATION.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/docs_VALIDATION_GUARDRAILS_IC.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/01_authentication.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/02_deterministic_transactional_workflow.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/03_domain_requested_llm_composition.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/04_domain_requested_rag.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/05_long_term_memory.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/06_offline_workflow_regression.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/07_pause_resume_workflow.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/08_route_stickiness.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/09_voice_interruption_replay.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/10_workflow_error_recovery.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/11_clarification.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/12_durable_idempotency.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/13_dynamic_transaction_states.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/14_post_finalization_replay.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/15_retrieval_tool_guardrails.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/README.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/01_authentication.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/02_deterministic_transactional_workflow.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/03_domain_requested_llm_composition.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/04_domain_requested_rag.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/05_long_term_memory.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/06_offline_workflow_regression.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/07_pause_resume_workflow.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/08_route_stickiness.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/09_voice_interruption_replay.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/10_workflow_error_recovery.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/11_clarification.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/12_durable_idempotency.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/13_dynamic_transaction_states.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/14_post_finalization_replay.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/15_retrieval_tool_guardrails.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/en/README.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/01_authentication.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/02_deterministic_transactional_workflow.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/03_domain_requested_llm_composition.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/04_domain_requested_rag.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/05_long_term_memory.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/06_offline_workflow_regression.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/07_pause_resume_workflow.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/08_route_stickiness.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/09_voice_interruption_replay.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/10_workflow_error_recovery.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/11_clarification.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/12_durable_idempotency.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/13_dynamic_transaction_states.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/14_post_finalization_replay.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/15_retrieval_tool_guardrails.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/features/pt-BR/README.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/developer/pt/02_routing_stickiness_and_intent_shift.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/developer/pt/02_routing_stickiness_and_intent_shift.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -209,7 +96,7 @@
       <workItem from="1785414225783" duration="148000" />
       <workItem from="1785414447653" duration="704000" />
       <workItem from="1785630146329" duration="316000" />
-      <workItem from="1787832640995" duration="1220000" />
+      <workItem from="1787832640995" duration="3537000" />
     </task>
     <task id="LOCAL-00001" summary="Ajustes na documentação e remanejamento dos folders">
       <option name="closed" value="true" />

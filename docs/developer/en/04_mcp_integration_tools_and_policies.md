@@ -1,54 +1,323 @@
-
-### MCP, Tools, Policies and Parameter Extraction
+### MCP, Tools, Policies, and Parameter Extraction
 
 ### How to use this manual
 
 This is a **specialized reference manual**. It does not replace the main tutorial.
 
-- To build an agent end to end, use [`README_en.md`](../../../README_en.md).
-- Use this document when implementing, deep-diving or troubleshooting **tools, MCP Servers, mappings, read-only/transactional policies and parameter extraction**.
-- Historical examples consolidated here must be interpreted against the current framework API.
-- If documentation differs, the current code and root README take precedence.
+- To create an agent from start to finish, use [`README_en.md`](../../../README_en.md).
+- Use this document when you need to implement, deepen, or diagnose **tools, MCP Servers, mappings, read-only/transactional policies, and parameter extraction**.
+- Historical examples consolidated here should be read in light of the framework's current API.
+- In case of divergence, the code for the version and the current `README_en.md` take precedence.
 
 ### Relationship with the main tutorial
 
-`README_en.md` introduces this capability as part of the normal development flow. This manual consolidates details previously spread across `docs/`, `Documentacao/`, release notes, validation records and specialized guides.
+The `README_en.md` presents this capability in the normal development flow. This manual brings together details that were distributed across `docs/`, `Documentacao/`, release notes, validations, and specialized guides.
 
-Its purpose is to answer **“how does this feature work in depth and how do I troubleshoot it?”** without becoming a second copy of the main tutorial.
+The goal here is to answer **“how does this feature work in depth and how do I solve problems with it?”**, without turning this file into a second copy of the main tutorial.
 
 ### Scope
 
-Tools, mcp servers, mappings, read-only/transactional policies and parameter extraction.
+Tools, MCP servers, mappings, read-only/transactional policies, and parameter extraction.
 
 ### Consolidated technical content
 
-### MCP Integration, Tools, Policies and Parameter Extraction
+### MCP Integration, Tools, Policies, and Parameter Extraction
 
-This guide explains how agents consume business capabilities through MCP without embedding service logic in the framework.
+Development manual for integrating MCP Servers, registering tools, isolating tools by agent, configuring read-only/transactional policies, confirmation, and contextual parameter extraction.
 
-### MCP role
+### How to use this document
 
-MCP is the integration boundary for tools. The framework/runtime selects and prepares a tool call; the MCP layer connects that logical tool to a service. Business authorization, atomicity and backend transaction guarantees remain responsibilities of the MCP Server/service implementation.
+This is the consolidated development document for this subject. It brings together architecture, configuration, examples, runtime behavior, compatibility, tests, and troubleshooting that were previously distributed across several files. Source sections were preserved when they provided distinct technical details; release notes were incorporated as current behavior or correction history.
 
-### Registering an MCP Server
+### Complete MCP Server integration manual
 
-For local execution, register the server in the backend/gateway MCP configuration with its transport, endpoint, enabled flag and description. Docker/Kubernetes configurations should use the service DNS name rather than localhost.
+> Content consolidated from `Documentacao/Manual_Integracao_MCP_Servers_Agent_Framework.docx`.
 
-```yaml
+MCP Server Integration Manual  
+Multi-Agent Framework - Router, Supervisor, Tools, and External Servers  
+This document explains MCP concepts, how the current project integrates MCP servers, how to start the example Telecom and Retail servers, how to configure tools per agent, and how to evolve the implementation toward a solution that more closely follows the official MCP standard. The goal is to serve as a development, local-operations, and container/OCI deployment guide.
+
+### MCP concepts
+
+MCP stands for Model Context Protocol. It defines a standardized way for AI applications to access external context, tools, and capabilities from systems outside the model. Instead of putting integrations directly into the prompt or agent, MCP separates responsibilities: the agent decides what it needs, and an MCP server exposes tools, resources, and prompts in a controlled way.  
+In the official standard, MCP uses JSON-RPC messages and defines transports such as stdio and Streamable HTTP. The current project uses a simplified HTTP implementation to make understanding and local testing easier, with REST endpoints `/mcp/tools/list` and `/mcp/tools/call`. This is appropriate for tutorials and prototyping, but it can later evolve to an official MCP client.
+
+### How the current project organizes MCP
+
+The relevant project structure is:
+```
+projeto_multi_agent_isolado/
+  agent_framework/
+    src/agent_framework/mcp/
+      client.py
+      models.py
+      registry.py
+      tool_router.py
+
+  agent_template_backend/
+    config/
+      mcp_servers.yaml
+      mcp_servers.docker.yaml
+      tools.yaml
+      mcp_parameter_mapping.yaml
+    app/
+      main.py
+      workflows/agent_graph.py
+
+  mcp_servers/
+    telecom_mcp_server/
+      main.py
+      requirements.txt
+      Dockerfile
+    retail_mcp_server/
+      main.py
+      requirements.txt
+      Dockerfile
+
+  scripts/
+    run_mcp_servers.sh
+  docker-compose.yml
+```
+
+### Main components
+
+
+### Simplified HTTP contract used by the project
+
+```
+GET  /mcp/tools/list
+POST /mcp/tools/call
+
+Payload de chamada:
+{
+  "tool_name": "consultar_fatura",
+  "arguments": {
+    "msisdn": "11999999999",
+    "invoice_id": "INV-001"
+  }
+}
+
+Resposta esperada:
+{
+  "ok": true,
+  "result": { ... },
+  "metadata": {
+    "server": "telecom",
+    "tool": "consultar_fatura"
+  }
+}
+```
+
+### How to start the example MCP servers
+
+The project includes two example MCP servers: Telecom and Retail. They are independent FastAPI apps. The Telecom server runs on port 8100 and exposes tools such as `consultar_fatura`, `consultar_pagamentos`, `consultar_plano`, and `listar_servicos`. The Retail server runs on port 8200 and exposes tools such as `consultar_pedido`, `consultar_entrega`, `solicitar_troca`, and `solicitar_devolucao`.
+
+### Local startup through the script
+
+```
+cd projeto_multi_agent_isolado
+bash ./scripts/run_mcp_servers.sh
+```
+The script creates a venv in the root directory, installs the MCP-server dependencies, and starts both uvicorn processes in the background:
+```
+Telecom MCP: http://localhost:8100
+Retail MCP:  http://localhost:8200
+```
+
+### Manual startup of Telecom MCP
+
+```
+cd projeto_multi_agent_isolado
+python -m venv .venv
+source .venv/bin/activate
+pip install -r mcp_servers/telecom_mcp_server/requirements.txt
+uvicorn --app-dir mcp_servers/telecom_mcp_server main:app --host 0.0.0.0 --port 8100
+```
+
+### Manual startup of Retail MCP
+
+```
+cd projeto_multi_agent_isolado
+source .venv/bin/activate
+pip install -r mcp_servers/retail_mcp_server/requirements.txt
+uvicorn --app-dir mcp_servers/retail_mcp_server main:app --host 0.0.0.0 --port 8200
+```
+
+### Startup with Docker Compose
+
+```
+cd projeto_multi_agent_isolado
+docker compose up --build
+```
+In Docker Compose, the backend uses `mcp_servers.docker.yaml` because, inside the compose network, localhost would point to the backend container itself. Therefore the endpoints use service names: `telecom-mcp` and `retail-mcp`.
+```
+services:
+  telecom-mcp:
+    ports:
+      - "8100:8100"
+
+  retail-mcp:
+    ports:
+      - "8200:8200"
+
+  backend:
+    environment:
+      MCP_SERVERS_CONFIG_PATH: /app/config/mcp_servers.docker.yaml
+    depends_on:
+      - telecom-mcp
+      - retail-mcp
+```
+
+### How to test MCP tools
+
+
+### Direct health checks on the servers
+
+```
+curl http://localhost:8100/health
+curl http://localhost:8200/health
+```
+
+### List tools directly from Telecom MCP
+
+```
+curl http://localhost:8100/mcp/tools/list
+```
+
+### Call a tool directly on Telecom MCP
+
+```
+curl -X POST http://localhost:8100/mcp/tools/call   -H 'Content-Type: application/json'   -d '{
+    "tool_name": "consultar_fatura",
+    "arguments": {
+      "msisdn": "11999999999",
+      "invoice_id": "INV-001"
+    }
+  }'
+```
+
+### Call a tool directly on Retail MCP
+
+```
+curl -X POST http://localhost:8200/mcp/tools/call   -H 'Content-Type: application/json'   -d '{
+    "tool_name": "consultar_pedido",
+    "arguments": {
+      "order_id": "PED-1001",
+      "customer_id": "C-001"
+    }
+  }'
+```
+
+### Test through the agent backend
+
+After starting the MCP servers and backend, the backend provides debug endpoints to list and call tools through `MCPToolRouter`.
+```
+cd agent_template_backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ../agent_framework
+pip install -r requirements.txt
+uvicorn app.main:app --reload --reload-dir app --reload-dir config --port 8000
+curl http://localhost:8000/debug/mcp/tools
+
+curl -X POST http://localhost:8000/debug/mcp/call/consultar_fatura   -H 'Content-Type: application/json'   -d '{"msisdn":"11999999999","invoice_id":"INV-001"}'
+```
+
+### How the agent calls MCP in the flow
+
+The agent does not need to know the server URL. It calls a logical tool through `MCPToolRouter`. The expected flow is:
+```
+Usuário
+  -> FastAPI /gateway/message
+  -> Guardrails de input
+  -> Router ou Supervisor escolhe o agente
+  -> LangGraph executa o agent graph
+  -> Agent decide usar uma tool
+  -> MCPToolRouter.call("consultar_fatura", {...})
+  -> MCPRegistry resolve servidor telecom
+  -> MCPHttpClient chama http://localhost:8100/mcp/tools/call
+  -> Resultado volta ao agent graph
+  -> Guardrails de output
+  -> Judges
+  -> Resposta final
+```
+
+### Conceptual Python example
+
+```
+result = await tool_router.call(
+    "consultar_fatura",
+    {
+        "msisdn": context.get("msisdn"),
+        "invoice_id": context.get("invoice_id"),
+    },
+)
+
+if result.ok:
+    dados_fatura = result.result
+else:
+    # fallback controlado, telemetria e resposta segura
+    erro = result.error
+```
+
+### Example through a gateway message
+
+```
+curl -X POST http://localhost:8000/gateway/message   -H 'Content-Type: application/json'   -d '{
+    "channel": "web",
+    "payload": {
+      "session_id": "sess-tel-1",
+      "message": "Minha fatura veio alta",
+      "context": {
+        "msisdn": "11999999999",
+        "invoice_id": "INV-001"
+      }
+    }
+  }'
+curl -X POST http://localhost:8000/gateway/message   -H 'Content-Type: application/json'   -d '{
+    "channel": "web",
+    "payload": {
+      "session_id": "sess-ret-1",
+      "message": "Meu pedido não chegou",
+      "context": {
+        "order_id": "PED-1001",
+        "customer_id": "C-001"
+      }
+    }
+  }'
+```
+
+### How to configure new servers and tools
+
+
+### Add a new MCP Server
+
+Edit `agent_template_backend/config/mcp_servers.yaml` for local execution:
+```
 servers:
   crm:
     transport: http
     endpoint: http://localhost:8300/mcp
     enabled: true
-    description: CRM MCP Server
+    description: MCP Server de CRM.
+```
+Edit `agent_template_backend/config/mcp_servers.docker.yaml` for Docker execution:
+```
+servers:
+  crm:
+    transport: http
+    endpoint: http://crm-mcp:8300/mcp
+    enabled: true
+    description: MCP Server de CRM via docker-compose.
 ```
 
-### Registering a tool
+### Register a new tool
 
-```yaml
+Edit `agent_template_backend/config/tools.yaml`:
+```
 tools:
   consultar_cliente:
-    description: Query summarized customer data.
+    description: Consulta dados cadastrais resumidos do cliente.
     mcp_server: crm
     enabled: true
     args_schema:
@@ -56,58 +325,490 @@ tools:
       document_id: string
 ```
 
-The tool description and parameter descriptions are part of runtime behavior. They should be precise enough for semantic selection/extraction and must not be hidden in Python hardcodes.
+### Implement the endpoint in the MCP server
 
-### Tool isolation per agent
+```
+TOOLS = {
+    "consultar_cliente": {
+        "description": "Consulta dados cadastrais resumidos do cliente.",
+        "input_schema": {
+            "customer_id": "string",
+            "document_id": "string"
+        },
+    },
+}
 
-Every agent should see only the tools it needs. Use an allowlist or agent-specific `tools.yaml`. This reduces prompt ambiguity and limits operational risk.
+@app.post("/mcp/tools/call")
+async def call_tool(call: ToolCall):
+    if call.tool_name == "consultar_cliente":
+        return {
+            "ok": True,
+            "result": {
+                "customer_id": call.arguments.get("customer_id"),
+                "status": "ATIVO",
+                "segmento": "PREMIUM"
+            },
+            "metadata": {"server": "crm", "tool": "consultar_cliente"}
+        }
+```
 
-### Read-only versus transactional policies
+### How to isolate MCP by agent
 
-Policy configuration is optional and lives with the deployable agent, not inside the shared library. A default may treat tools as read-only, while individual tools declare `operation_type: transactional`, `require_confirmation: true` and required parameters.
+In a multi-agent architecture, not every agent should see every tool. The orders agent may use `consultar_pedido` and `consultar_entrega`. The billing agent may use `consultar_fatura` and `consultar_pagamentos`. This isolation reduces operational risk, improves governance, and simplifies each agent's prompt.
+
+### Simple option: allowlist per agent
+
+```
+agents:
+  - agent_id: billing_agent
+    allowed_tools:
+      - consultar_fatura
+      - consultar_pagamentos
+      - consultar_plano
+      - listar_servicos
+
+  - agent_id: orders_agent
+    allowed_tools:
+      - consultar_pedido
+      - consultar_entrega
+      - solicitar_troca
+      - solicitar_devolucao
+```
+
+### Recommended option: tools by configuration file
+
+For large projects, each agent can have its own `tools.yaml`, `guardrails.yaml`, and `judges.yaml`. This maintains real isolation by agent and makes versioning easier.
+```
+config/agents/telecom_contas/
+  prompt_policy.yaml
+  guardrails.yaml
+  judges.yaml
+  tools.yaml
+
+config/agents/retail_orders/
+  prompt_policy.yaml
+  guardrails.yaml
+  judges.yaml
+  tools.yaml
+```
+
+### How to deploy with Docker and OCI
+
+
+### Local deployment with Docker Compose
+
+The current `docker-compose.yml` already has separate services for `telecom-mcp`, `retail-mcp`, backend, and frontend. This separation is correct because MCP Servers should be independently scalable and versionable from the agent backend.
+```
+docker compose up --build
+
+# URLs externas para teste local:
+http://localhost:8100/health
+http://localhost:8200/health
+http://localhost:8000/debug/mcp/tools
+http://localhost:5173
+```
+
+### Deployment on OCI/OKE
+
+In Kubernetes/OKE, each MCP Server should be deployed as a Deployment + Service. The agent backend points to the Service's internal DNS. Conceptual example:
+```
+apiVersion: v1
+kind: Service
+metadata:
+  name: telecom-mcp
+spec:
+  selector:
+    app: telecom-mcp
+  ports:
+    - port: 8100
+      targetPort: 8100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telecom-mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telecom-mcp
+  template:
+    metadata:
+      labels:
+        app: telecom-mcp
+    spec:
+      containers:
+        - name: telecom-mcp
+          image: <registry>/telecom-mcp:1.0.0
+          ports:
+            - containerPort: 8100
+```
+
+### Backend configuration in Kubernetes
+
+```
+servers:
+  telecom:
+    transport: http
+    endpoint: http://telecom-mcp.default.svc.cluster.local:8100/mcp
+    enabled: true
+
+  retail:
+    transport: http
+    endpoint: http://retail-mcp.default.svc.cluster.local:8200/mcp
+    enabled: true
+```
+
+### Security, guardrails, and observability
+
+MCP greatly increases agent capability, but also increases the attack and operational-risk surface. A tool can query sensitive data, open protocols/cases, cancel services, generate credits, or execute business actions. Therefore, the integration must be protected before, during, and after the call.
+
+### Minimum security checklist
+
+- Every tool must have a clear description and argument schema.
+- Every action tool must require explicit user confirmation before execution.
+- Each agent must have a tool allowlist.
+- Sensitive data returned by MCP must pass through masking/sanitization before the final response.
+- Every MCP call must generate a trace/span/event in Langfuse or OpenTelemetry.
+- Timeouts and retry limits must be configured per tool or per server.
+- Do not expose MCP Servers directly to the internet without authentication, TLS, and network controls.
+- Separate read-only tools from transactional tools.
+
+### Recommended telemetry
+
+```
+span: mcp.tool_call
+attributes:
+  tenant_id
+  agent_id
+  session_id
+  tool_name
+  mcp_server
+  latency_ms
+  ok
+  error
+  input_argument_keys
+  result_size
+
+event: mcp.tool_call.completed
+metadata:
+  tool_name
+  server
+  ok
+  error
+```
+
+### Evolution toward official MCP
+
+The current project uses a simplified HTTP contract. For enterprise production there are two options. The first is to keep this internal contract for simplicity, provided it is well documented, secure, and versioned. The second is to evolve to an official MCP client/server with JSON-RPC, stdio, or Streamable HTTP.
+
+### Complete developer step-by-step
+
+```
+# 1. Baixar e abrir o projeto
+cd projeto_multi_agent_isolado
+
+# 2. Subir servidores MCP de exemplo
+bash ./scripts/run_mcp_servers.sh
+
+# 3. Em outro terminal, subir backend
+cd agent_template_backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ../agent_framework
+pip install -r requirements.txt
+uvicorn app.main:app --reload --reload-dir app --reload-dir config --port 8000
+
+# 4. Validar tools carregadas pelo backend
+curl http://localhost:8000/debug/mcp/tools
+
+# 5. Chamar tool Telecom
+curl -X POST http://localhost:8000/debug/mcp/call/consultar_fatura   -H 'Content-Type: application/json'   -d '{"msisdn":"11999999999","invoice_id":"INV-001"}'
+
+# 6. Chamar tool Retail
+curl -X POST http://localhost:8000/debug/mcp/call/consultar_pedido   -H 'Content-Type: application/json'   -d '{"order_id":"PED-1001","customer_id":"C-001"}'
+
+# 7. Testar pelo gateway conversacional
+curl -X POST http://localhost:8000/gateway/message   -H 'Content-Type: application/json'   -d '{"channel":"web","payload":{"session_id":"sess-ret-1","message":"Meu pedido não chegou","context":{"order_id":"PED-1001","customer_id":"C-001"}}}'
+```
+
+### Troubleshooting
+
+
+### References
+
+- Model Context Protocol Specification: https://modelcontextprotocol.io/specification
+- MCP Transports: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- MCP Resources: https://modelcontextprotocol.io/specification/2025-06-18/server/resources
+- Reference MCP Servers: https://github.com/modelcontextprotocol/servers
+- LangChain MCP Adapters: https://docs.langchain.com/oss/python/langchain/mcp
+- Project files: `agent_framework/src/agent_framework/mcp/*`, `agent_template_backend/config/mcp_servers.yaml`, `agent_template_backend/config/tools.yaml`, `mcp_servers/*`
+
+### Read-only and transactional policies
+
+The framework applies a minimal conversational policy immediately before the MCP call. `read_only` classification identifies queries; `transactional` identifies operations that change state. Authorization, idempotency, validation, and atomicity remain the responsibility of the MCP Server.
+
+### Backend configuration
+
+The configuration is optional and lives in `config/tool_policies.yaml` in `agent_template_backend`. The path can be set through `TOOL_POLICIES_PATH`. Do not place domain policies inside the shared library.  
+Example:
+defaults:
+  operation_type: read_only
+  require_confirmation: false
+tool_policies:
+  alterar_plano:
+    operation_type: transactional
+    require_confirmation: true
+    requires: [new_plan_id]
+
+### Execution and compatibility
+
+- Confirmation must arrive as `confirmed: true` or `confirmation: true`; text with value `true` is not sufficient.
+- If `tool_policies.yaml` does not exist, `tool_type`, `requires`, `confirmation_required`, and `execution_policy` from `tools.yaml` remain valid.
+- Old tools without policy continue to work without behavior changes.
+- A blocked call does not reach MCP and returns metadata `blocked_by_policy`, `operation_type`, and `policy_source`.
+
+### Read-only and transactional policies
+
+> Content consolidated from `Documentacao/README_TOOL_POLICIES.md`.
+
+### Goal
+
+The framework distinguishes query operations (`read_only`) from operations that change state (`transactional`) immediately before the MCP call. This classification does not replace authorization, idempotency, or MCP-server business rules; it only adds minimal conversational protection, especially explicit confirmation.
+
+### Where to configure
+
+Configuration belongs to the application backend:
+
+```text
+templates/agent_template_backend/config/tool_policies.yaml
+```
+
+The shared library contains only the loader and validation. The path is optional:
+
+```dotenv
+TOOL_POLICIES_PATH=./config/tool_policies.yaml
+```
+
+### Example
 
 ```yaml
+version: 1
+
 defaults:
   operation_type: read_only
   require_confirmation: false
 
 tool_policies:
+  consultar_plano:
+    operation_type: read_only
+
   alterar_plano:
     operation_type: transactional
     require_confirmation: true
     requires: [new_plan_id]
 ```
 
-If policy configuration is absent, legacy metadata in `tools.yaml` remains valid. Old tools without a policy must keep their previous behavior.
+To execute `alterar_plano`, the arguments must contain `new_plan_id` and a literal boolean confirmation:
 
-### Confirmation contract
+```json
+{"new_plan_id": "CONTROLE_100", "confirmed": true}
+```
 
-A blocked transactional call must not reach MCP. The runtime returns policy metadata explaining why it was blocked. Confirmation must be represented by the transaction/runtime confirmation contract; a random textual field containing the word `true` is not sufficient evidence.
+`"confirmation": true` is also accepted. Strings such as `"true"` are not accepted as confirmation.
 
-### LLM-based parameter extraction
+### Compatibility
 
-Parameter extraction supports natural language and multi-turn collection. The user may provide `name=value`, a natural phrase, only the value when one parameter is unambiguously missing, or several parameters in one turn. Extraction uses the active tool/workflow schema and parameter descriptions; it must not rely on a domain-specific regex list in the framework.
+- If `tool_policies.yaml` does not exist, the framework continues to use `tool_type`, `requires`, `confirmation_required`, and `execution_policy` from `tools.yaml`.
+- Old tools without policy continue to execute as before.
+- An explicit policy in the new file takes precedence for that tool's `operation_type` and confirmation.
+- The `tools.yaml` catalog remains the source for endpoint, schema, enablement, and cache.
+- The new file must not be placed in `libs/agent_framework`, because decisions vary by application and domain.
 
-Extracted values are merged into the active transaction before generic rerouting decisions. If extraction cannot determine a required value reliably, the agent asks for the missing parameter rather than inventing it.
+### Execution flow
 
-### MCP Server implementation
+```text
+agente -> MCPToolRouter -> validação da política -> mapeamento de parâmetros -> MCP Gateway/Server
+```
 
-A server exposes a tool catalog/schema and a call endpoint/transport. The business implementation validates the arguments, invokes the backend and returns a structured success/error result. Transactional services should implement authorization/idempotency as appropriate to the backend contract.
+A blocked call returns `ok=false`, `metadata.blocked_by_policy=true`, the operation type, and the policy source. The MCP server remains the final authority for authentication, authorization, validation, idempotency, and business transaction.
 
-### Security and observability checklist
+### Recommended migration
 
-- Explicit schema and description for every tool.
-- Explicit confirmation for configured side effects.
-- Tool allowlist per agent.
-- Sensitive-result sanitization/masking before user presentation.
-- Trace/span/event for each MCP invocation.
-- Configured timeouts/retries.
-- Do not expose MCP Servers publicly without authentication, TLS and network controls.
-- Separate read-only and transactional operations.
+1. Update the library without creating the file: legacy behavior remains.
+2. Create `config/tool_policies.yaml` in the backend.
+3. Initially register only transactional operations that require confirmation.
+4. Test calls without confirmation, with boolean confirmation, and with missing required fields.
+5. Gradually remove duplicate confirmation settings from `tools.yaml` when all consuming templates already use the new configuration.
 
-Recommended telemetry includes tenant, agent, session, tool, MCP server, latency, success/error and argument-key metadata without leaking sensitive values.
 
-### Source material consolidated
+### Minimum transactional runtime (binding fix)
+
+The routing `mcp_tools` list is an **allowlist**, not an instruction to execute every tool. The runtime now:
+
+1. automatically executes only `read_only` tools;
+2. selects at most one transactional action compatible with the user's request;
+3. when `require_confirmation: true`, persists `pending_tool_call` and `transaction_status: AWAITING_CONFIRMATION`;
+4. on the confirmation turn, reuses the same call and executes it with `confirmed: true`;
+5. publishes `available_mcp_tools`, `selected_tool_call`, `tool_policy_result`, `confirmation_required`, and `confirmation_received` in state.
+
+For the example scenario, order `123` (or `PED-ENTREGUE`) returns `ENTREGUE` in Retail MCP. Use:
+
+```text
+Quero devolver o pedido 123 porque me arrependi da compra.
+Sim, confirmo a devolução.
+```
+
+The MCP contract was standardized to use `reason` in both the catalog and FastMCP server. `tool_policies.yaml` takes precedence over legacy fields in `tools.yaml`; these remain aligned in the templates for compatibility.
+
+### Tool-policy integration and compatibility
+
+> Content consolidated from `Documentacao/RELEASE_NOTES_TOOL_POLICIES.md`.
+
+### Changes
+
+- New optional `ToolPolicyRegistry` in the shared library.
+- Central validation in `MCPToolRouter`, including direct calls.
+- Minimum types `read_only` and `transactional`.
+- Strict confirmation through `confirmed: true` or `confirmation: true`.
+- Optional support for required fields per policy.
+- Automatic fallback to `tool_type`, `requires`, `confirmation_required`, and `execution_policy` from `tools.yaml`.
+- `config/tool_policies.yaml` and the `TOOL_POLICIES_PATH` variable in the main templates, Day Zero, and `Tuning-Performance/Normal` and `Tuning-Performance/Route_Stickness` variants.
+- Unit policy and compatibility tests added in `tests/unit/test_tool_policies.py`.
+
+### Checks performed
+
+- Compilation of `libs`, `templates`, `Tuning-Performance`, and `tests`: passed.
+- Structural validation of the six YAML files: passed.
+- Isolated loader cases (transactional policy, confirmation, missing file, and missing registration): passed.
+- Rendering of both updated Word manuals: passed, with no clipping or overlap on the added pages.
+
+### Validation-environment limitation
+
+The `pytest` suite was prepared but could not be fully executed in this environment because `pytest` and project runtime dependencies were not installed and access to the package index timed out. To reproduce in a project environment:
+
+```bash
+PYTHONPATH=libs/agent_framework/src:templates/agent_template_backend python -m pytest -q
+```
+
+### Backend/MCP integration correction
+- `mcp_tools` is now treated as an allowlist.
+- Actions are no longer automatically executed together with queries.
+- Transactional confirmation is persisted and resumed on the next turn.
+- `reason`/`motivo` incompatibility in Retail MCP was corrected.
+- A deterministic delivered order was added for tests (`123`).
+- The generic keyword `produto` was removed from the Telecom intent to avoid collisions with Retail returns.
+- `Normal` and `Route_Stickness` templates in `Tuning-Performance` were synchronized.
+
+### Contextual MCP parameter extraction
+
+> Content consolidated from `Documentacao/RELEASE_NOTES_MCP_PARAMETER_EXTRACTION_FIX.md`.
+
+### Problem fixed
+
+The `extract` block in `mcp_parameter_mapping.yaml` existed in configuration and documentation, but it was not executed by the runtime. In addition, Business Context values could overwrite explicit arguments, causing `contract_key` to replace the `order_id` provided by the user.
+
+### Fixes
+
+- implementation of generic `strategy: llm` extraction after tool selection;
+- preserved support for `strategy: month_name_pt`;
+- dedicated `mcp_parameter_extraction` profile;
+- `llm.mcp_parameter_extraction` telemetry;
+- `extract` is no longer interpreted as simple mapping;
+- explicit/extracted arguments take precedence over Business Context;
+- removal of `contract_key: order_id` from templates;
+- `order_id` configured as `string`;
+- update of `Tuning-Performance` variants.
+
+### Expected result
+
+For the message `consultar pedido 123`, the MCP call must receive `order_id=123`, even when Business Context contains a different `contract_key`.
+
+### Local use of MCP tools
+
+> Content consolidated from `Documentacao/README_MCP.md`.
+
+This version adds an MCP layer to the framework:
+
+- `agent_framework.mcp.MCPToolRouter`
+- `agent_template_backend/config/mcp_servers.yaml`
+- `agent_template_backend/config/tools.yaml`
+- `mcp_servers/telecom_mcp_server`
+- `mcp_servers/retail_mcp_server`
+
+### Start locally
+
+Terminal 1:
+
+```bash
+bash ./scripts/run_mcp_servers.sh
+```
+
+Terminal 2:
+
+```bash
+cd agent_template_backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ../agent_framework
+pip install -r requirements.txt
+uvicorn app.main:app --reload --reload-dir app --reload-dir config --port 8000
+```
+
+Terminal 3:
+
+```bash
+cd agent_frontend
+python -m http.server 5173
+```
+
+### Quick tests
+
+List MCP tools loaded by the backend:
+
+```bash
+curl http://localhost:8000/debug/mcp/tools
+```
+
+Call a tool directly through the backend:
+
+```bash
+curl -X POST http://localhost:8000/debug/mcp/call/consultar_fatura \
+  -H 'Content-Type: application/json' \
+  -d '{"msisdn":"11999999999","invoice_id":"INV-001"}'
+```
+
+Telecom routing + MCP:
+
+```bash
+curl -X POST http://localhost:8000/gateway/message \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"web","payload":{"session_id":"sess-tel-1","message":"Minha fatura veio alta","context":{"msisdn":"11999999999","invoice_id":"INV-001"}}}'
+```
+
+Retail routing + MCP:
+
+```bash
+curl -X POST http://localhost:8000/gateway/message \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"web","payload":{"session_id":"sess-ret-1","message":"Meu pedido não chegou","context":{"order_id":"PED-1001","customer_id":"C-001"}}}'
+```
+
+### Docker Compose
+
+```bash
+docker compose up --build
+```
+
+In compose, the backend uses `config/mcp_servers.docker.yaml` to point to `telecom-mcp` and `retail-mcp`.
+
+### Read-only and transactional operations
+
+Use `config/tool_policies.yaml` in the backend to classify only operations that need additional handling. Validation is applied in the central router before the MCP Gateway/Server. The file is optional and older templates continue using the policies already present in `tools.yaml`. Full configuration and the migration procedure are in [README_TOOL_POLICIES.md](README_TOOL_POLICIES.md).
+
+### Source files
+
+The files below were consolidated into this manual:
 
 - `Documentacao/Manual_Integracao_MCP_Servers_Agent_Framework.docx`
 - `Documentacao/README_TOOL_POLICIES.md`
@@ -115,717 +816,6 @@ Recommended telemetry includes tenant, agent, session, tool, MCP server, latency
 - `Documentacao/RELEASE_NOTES_MCP_PARAMETER_EXTRACTION_FIX.md`
 - `Documentacao/README_MCP.md`
 
-### Detailed normative and implementation reference
+### Maintenance rule
 
-The sections below preserve the detailed English project specifications and implementation guides relevant to this capability. They are included here so a developer does not need to reconstruct the behavior from separate documents.
-
-### MCP discovery and catalog details
-
-> Consolidated from `docs/MCP_GATEWAY_DISCOVERY.md`.
-
-### Goal
-
-This evolution allows the MCP Gateway to discover tools from registered MCP Servers by reading a manifest or catalog endpoint.
-
-The framework still points to a single MCP Gateway:
-
-```env
-MCP_GATEWAY_ENABLED=true
-MCP_GATEWAY_URL=http://localhost:8300
-MCP_GATEWAY_TIMEOUT_SECONDS=60
-```
-
-The MCP Gateway can point to many MCP Servers:
-
-```text
-Agent Framework
-  -> MCP Gateway
-     -> telecom_mcp_server
-     -> retail_mcp_server
-     -> nf_items_mcp_server
-     -> any other MCP Server
-```
-
-### What is automatic
-
-After a server is registered in `apps/mcp_gateway/config/mcp_gateway.yaml` with `discover: true`, the gateway can:
-
-- call its manifest/catalog endpoint;
-- normalize the returned tool list;
-- publish the tools in `GET /v1/tools`;
-- execute the discovered tool through `POST /v1/tools/{tool_name}/invoke`.
-
-### What is still explicit
-
-The gateway does not scan the network or GitHub by itself. You still register the MCP Server endpoint in YAML.
-
-Example:
-
-```yaml
-servers:
-  nf_items:
-    enabled: true
-    discover: true
-    protocol: legacy_http
-    transport: http
-    url: http://localhost:8400/mcp
-    catalog_endpoint: /tools
-    invoke_endpoint: /tools/call
-    timeout_seconds: 30
-```
-
-If `catalog_endpoint` is omitted, the gateway tries:
-
-```text
-/.well-known/mcp-server.json
-/manifest
-/mcp/tools
-/tools/list
-/tools
-/v1/tools
-```
-
-### Expected manifest/catalog formats
-
-The gateway accepts common shapes:
-
-```json
-{
-  "server_id": "nf_items",
-  "tools": [
-    {
-      "name": "buscar_notas_por_criterios",
-      "description": "Search invoice items by criteria.",
-      "input_schema": {
-        "cliente": "string",
-        "estado": "string",
-        "preco": "number",
-        "ean": "string",
-        "margem": "number"
-      }
-    }
-  ]
-}
-```
-
-It also accepts:
-
-```json
-{"tools": [...]}
-```
-
-```json
-{"data": {"tools": [...]}}
-```
-
-```json
-{"capabilities": {"tools": [...]}}
-```
-
-### New endpoints
-
-### List discovery servers
-
-```bash
-curl http://localhost:8300/v1/discovery/servers | jq
-```
-
-### Force catalog sync
-
-```bash
-curl -X POST http://localhost:8300/v1/discovery/sync | jq
-```
-
-### List merged static + discovered tools
-
-```bash
-curl http://localhost:8300/v1/tools | jq
-```
-
-### Precedence rule
-
-Static tools configured under `tools:` override discovered tools with the same name. This allows operations teams to override timeout, cache, allowed agents, required business keys, and endpoint behavior safely.
-
-### Plugging a new MCP Server
-
-1. Start the MCP Server.
-2. Confirm that it exposes a catalog or manifest endpoint.
-3. Add it under `servers:` in `mcp_gateway.yaml` with `discover: true`.
-4. Restart the MCP Gateway or call `POST /v1/discovery/sync`.
-5. Confirm the tool appears in `GET /v1/tools`.
-6. Invoke the tool through the gateway.
-
-### Example invocation
-
-```bash
-curl -s -X POST http://localhost:8300/v1/tools/buscar_notas_por_criterios/invoke \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tenant_id": "default",
-    "agent_id": "telecom_contas",
-    "channel": "web",
-    "tool_name": "buscar_notas_por_criterios",
-    "arguments": {
-      "cliente": "CLIENTE-001",
-      "estado": "SP",
-      "preco": 100.0,
-      "ean": "7890000000000",
-      "margem": 0.05
-    },
-    "business_context": {
-      "session_key": "session-001"
-    }
-  }' | jq
-```
-
-### MCP Gateway specification
-
-> Consolidated from `specs/SPEC-004-MCP-Gateway.md`.
-
-### Escopo
-
-O MCP Gateway centraliza catálogo, autorização, roteamento, execução, cache, timeout, retry, observabilidade e resposta padronizada de tools MCP.
-
-### Endpoints
-
-| Método | Endpoint | Descrição |
-|---|---|---|
-| `GET` | `/health` | Health check. |
-| `GET` | `/ready` | Readiness check. |
-| `GET` | `/v1/tools` | Catálogo de tools. |
-| `GET` | `/v1/tools/{tool_name}` | Detalhe da tool. |
-| `POST` | `/v1/tools/{tool_name}/invoke` | Execução de tool. |
-| `GET` | `/v1/servers` | Lista MCP servers. |
-
-### ToolInvocation
-
-```json
-{
-  "tenant_id": "default",
-  "agent_id": "telecom_contas",
-  "tool_name": "consultar_fatura",
-  "arguments": {
-    "msisdn": "11999999999",
-    "invoice_id": "3000131180",
-    "session_id": "default:telecom_contas:session-001"
-  },
-  "business_context": {
-    "customer_key": "11999999999",
-    "contract_key": "3000131180",
-    "session_key": "session-001"
-  },
-  "metadata": {
-    "request_id": "req-001",
-    "trace_id": "trace-001"
-  }
-}
-```
-
-### ToolResult
-
-```json
-{
-  "tool_name": "consultar_fatura",
-  "ok": true,
-  "data": {
-    "invoice_id": "3000131180",
-    "valor_total": 249.90,
-    "vencimento": "2026-06-10",
-    "status": "ABERTA"
-  },
-  "cache": {
-    "hit": false,
-    "ttl_seconds": 300
-  },
-  "latency_ms": 140,
-  "metadata": {
-    "server": "telecom"
-  }
-}
-```
-
-### mcp_servers.yaml
-
-```yaml
-servers:
-  telecom:
-    transport: http
-    url: http://telecom-mcp:8001/mcp
-    enabled: true
-    timeout_seconds: 30
-
-  retail:
-    transport: http
-    url: http://retail-mcp:8002/mcp
-    enabled: true
-    timeout_seconds: 30
-```
-
-### tools.yaml
-
-```yaml
-tools:
-  consultar_fatura:
-    server: telecom
-    enabled: true
-    idempotent: true
-    cache_ttl_seconds: 300
-    allowed_agents:
-      - telecom_contas
-    required_business_keys:
-      - customer_key
-      - contract_key
-
-  solicitar_devolucao:
-    server: retail
-    enabled: true
-    idempotent: false
-    requires_confirmation: true
-    allowed_agents:
-      - retail_orders
-```
-
-### mcp_parameter_mapping.yaml
-
-```yaml
-tools:
-  consultar_fatura:
-    map:
-      customer_key: msisdn
-      contract_key: invoice_id
-      interaction_key: ura_call_id
-      session_key: session_id
-```
-
-### Autorização
-
-```yaml
-authorization:
-  default_policy: deny
-  agents:
-    telecom_contas:
-      allowed_tools:
-        - consultar_fatura
-        - consultar_pagamentos
-        - consultar_plano
-```
-
-### Cache
-
-| Regra | Valor |
-|---|---|
-| Chave | `tenant_id:agent_id:tool_name:hash(arguments)` |
-| Aplicação | Apenas tools idempotentes |
-| Bypass | `metadata.cache_bypass=true` |
-| TTL | `cache_ttl_seconds` |
-| Escrita | Não cachear operações mutáveis |
-
-### Retry e Timeout
-
-```yaml
-execution:
-  default_timeout_seconds: 30
-  retry:
-    enabled: true
-    max_attempts: 2
-    backoff_ms: 250
-  circuit_breaker:
-    enabled: true
-    failure_threshold: 5
-    recovery_seconds: 60
-```
-
-### Eventos
-
-| Evento | Descrição |
-|---|---|
-| `mcp.tool.requested` | Tool requisitada. |
-| `mcp.tool.authorized` | Autorização aprovada. |
-| `mcp.tool.denied` | Autorização negada. |
-| `mcp.tool.started` | Execução iniciada. |
-| `mcp.tool.completed` | Execução concluída. |
-| `mcp.tool.failed` | Execução falhou. |
-| `mcp.cache.hit` | Cache hit. |
-| `mcp.cache.miss` | Cache miss. |
-
-### Métricas
-
-| Métrica | Dimensões |
-|---|---|
-| `mcp_tool_calls_total` | tool, server, tenant, agent, status |
-| `mcp_tool_latency_ms` | tool, server |
-| `mcp_tool_errors_total` | tool, server, error_type |
-| `mcp_cache_hits_total` | tool |
-| `mcp_cache_misses_total` | tool |
-
-### Segurança
-
-- Tools são negadas por padrão.
-- Argumentos sensíveis são mascarados.
-- Tools mutáveis exigem confirmação quando configurado.
-- MCP servers não recebem payload bruto de canal.
-- Credenciais de backend são mantidas nos MCP servers ou secret store.
-
-
-### Requisitos Não Funcionais
-
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
-
-
-### Critérios de Aceite
-
-- [ ] Catálogo de tools retorna tools habilitadas.
-- [ ] ToolInvocation é validado antes da execução.
-- [ ] Autorização por agente é aplicada.
-- [ ] Parâmetros são derivados do BusinessContext.
-- [ ] Cache só é aplicado a tools idempotentes.
-- [ ] Timeout/retry/circuit breaker são configuráveis.
-- [ ] Eventos e métricas são emitidos.
-- [ ] Falhas retornam ToolResult padronizado.
-- [ ] MCP servers são substituíveis por configuração.
-- [ ] Tools críticas possuem testes de contrato.
-
-
-### Glossário
-
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
-
-### Política mínima de operação
-
-Antes de encaminhar uma tool, o runtime deve aplicar a política opcional do backend em `config/tool_policies.yaml`. Os tipos canônicos são `read_only` e `transactional`; esta última pode exigir confirmação booleana explícita e campos obrigatórios. A ausência do arquivo não é erro e preserva os campos legados de `tools.yaml`. A política conversacional não substitui autenticação, autorização, idempotência nem atomicidade no MCP Server.
-
-### Agent tool integration requirements
-
-> Consolidated from `specs/SPEC-010-Agent-Development.md`.
-
-### Escopo
-
-Esta SPEC define o padrão para criação de agentes usando templates, configuração YAML, BusinessContext, MCP, guardrails, judges, RAG, memória, observabilidade e evals.
-
-### Estrutura do Template
-
-```text
-templates/agent_template_backend/
-├── app/
-│   ├── main.py
-│   ├── state.py
-│   ├── workflows/
-│   │   └── agent_graph.py
-│   ├── agents/
-│   │   ├── runtime.py
-│   │   └── domain_agent.py
-│   └── examples/
-├── config/
-│   ├── agents.yaml
-│   ├── routing.yaml
-│   ├── tools.yaml
-│   ├── mcp_servers.yaml
-│   ├── mcp_parameter_mapping.yaml
-│   ├── identity.yaml
-│   ├── guardrails.yaml
-│   ├── judges.yaml
-│   ├── prompt_policy.yaml
-│   └── agents/<agent_id>/
-├── Dockerfile
-├── requirements.txt
-└── .env.example
-```
-
-### Responsabilidades do Framework
-
-- LangGraph;
-- memória;
-- checkpoint;
-- sessão;
-- router;
-- supervisor;
-- guardrails;
-- judges;
-- telemetry;
-- MCP integration;
-- RAG genérico;
-- cache;
-- providers LLM;
-- event bus.
-
-### Responsabilidades do Agente
-
-- prompts de domínio;
-- regras de negócio;
-- schemas específicos;
-- decisão de uso de evidências;
-- tratamento de campos obrigatórios;
-- mensagens de domínio;
-- ICs de jornada;
-- datasets de eval específicos.
-
-### Registro do Agente
-
-```yaml
-agents:
-  financeiro_agent:
-    enabled: true
-    description: "Agente financeiro"
-    profile: financeiro_agent
-    rag_namespace: financeiro
-    allowed_tools:
-      - consultar_fatura
-      - consultar_pagamentos
-```
-
-### Roteamento
-
-```yaml
-intents:
-  financeiro_consulta_fatura:
-    route: financeiro_agent
-    keywords:
-      - fatura
-      - boleto
-      - cobrança
-    mcp_tools:
-      - consultar_fatura
-```
-
-### Tool Mapping
-
-```yaml
-tools:
-  consultar_fatura:
-    map:
-      customer_key: msisdn
-      contract_key: invoice_id
-      interaction_key: ura_call_id
-      session_key: session_id
-```
-
-### Classe de Agente
-
-```python
-class FinanceiroAgent(AgentRuntimeMixin):
-    name = "financeiro_agent"
-
-    def __init__(
-        self,
-        llm,
-        telemetry=None,
-        tool_router=None,
-        rag_service=None,
-        cache=None,
-        settings=None,
-        observer=None,
-        memory=None,
-        summary_memory=None,
-    ):
-        self.llm = llm
-        self.telemetry = telemetry
-        self.tool_router = tool_router
-        self.rag_service = rag_service
-        self.cache = cache
-        self.settings = settings
-        self.observer = observer
-        self.memory = memory
-        self.summary_memory = summary_memory
-
-    async def run(self, state):
-        await self._emit_ic("IC.FINANCEIRO_AGENT_STARTED", state, {})
-        tool_context = await self._collect_mcp_context(state)
-        rag_context, rag_metadata = await self._retrieve_rag_context(state)
-        response = await self._invoke_llm_cached(
-            state,
-            "FinanceiroAgent",
-            [
-                {"role": "system", "content": "Você é um agente financeiro."},
-                {"role": "user", "content": state.get("sanitized_input") or state.get("user_text", "")},
-            ],
-        )
-        await self._emit_ic("IC.FINANCEIRO_AGENT_COMPLETED", state, {})
-        return {
-            "response_text": response,
-            "mcp_results": tool_context,
-            "rag_metadata": rag_metadata,
-        }
-```
-
-### Ordem de Confiança dos Dados
-
-1. `tool_arguments`
-2. `business_context`
-3. `context`
-4. `session.metadata`
-5. `state`
-6. extração complementar do texto
-
-### Prompt Policy
-
-```yaml
-prompt_policy:
-  system_prompt_path: prompts/system.md
-  response_style: concise
-  require_evidence: true
-  allow_tool_usage: true
-```
-
-### Guardrails por Agente
-
-```yaml
-input:
-  - code: FIN_INPUT_POLICY
-    enabled: true
-    mode: observe
-
-output:
-  - code: FIN_OUTPUT_COMPLIANCE
-    enabled: true
-    mode: enforce
-```
-
-### Judges por Agente
-
-```yaml
-judges:
-  - name: response_quality
-    enabled: true
-    threshold: 0.75
-  - name: groundedness
-    enabled: true
-    threshold: 0.70
-```
-
-### Dataset de Eval
-
-```yaml
-dataset:
-  name: financeiro_agent_regression
-  version: 1.0.0
-  items:
-    - id: fin-001
-      input: "Quero consultar minha fatura"
-      business_context:
-        customer_key: "11999999999"
-        contract_key: "3000131180"
-      expected:
-        route: financeiro_agent
-        tools:
-          - consultar_fatura
-        min_scores:
-          quality: 0.75
-          groundedness: 0.70
-```
-
-
-### Contrato obrigatório para agentes transacionais
-
-Ao criar um agente que usa tools transacionais do framework, o desenvolvedor não deve criar um motor paralelo de coleta/confirmação. Deve reutilizar `AgentRuntime` e garantir que o `AgentState` do host mantenha o latch durável:
-
-```python
-active_transaction: dict[str, Any]
-last_transaction: dict[str, Any]
-```
-
-Durante uma transação ativa, parâmetros já coletados são preservados e novos valores são mesclados incrementalmente. Em `COLLECTING_PARAMETERS`, uma resposta que satisfaz um parâmetro pendente tem precedência sobre keywords genéricas. Mudanças de intenção explícitas e inequívocas continuam permitidas.
-
-Antes de publicar um novo template/host, execute os cenários multi-turno descritos no [`Transaction State Developer Guide`](../docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md).
-
-
-### Testes
-
-| Teste | Escopo |
-|---|---|
-| Unitário | Classe do agente. |
-| Routing | Intent e rota. |
-| MCP Mapping | BusinessContext para argumentos. |
-| Guardrails | Entrada e saída. |
-| Judges | Scores mínimos. |
-| Runtime | Execução completa. |
-| Memory | Continuidade de conversa. |
-| Checkpoint | Resume/replay. |
-| Observability | Trace e eventos. |
-| Certification | Evidências finais. |
-
-### Definition of Done
-
-- agente registrado;
-- rota configurada;
-- tools declaradas;
-- mapping definido;
-- prompts versionados;
-- guardrails configurados;
-- judges configurados;
-- dataset criado;
-- testes executados;
-- traces gerados;
-- certification suite aprovada;
-- documentação do agente atualizada.
-
-### Anti-patterns
-
-- agente criando sessão;
-- agente abrindo SSE;
-- agente compilando LangGraph;
-- agente chamando sistema externo diretamente;
-- prompt hardcoded sem política;
-- lógica genérica duplicada no agente;
-- payload bruto de canal dentro do agente;
-- ausência de dataset de eval.
-
-
-### Requisitos Não Funcionais
-
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
-
-
-### Critérios de Aceite
-
-- [ ] Novo agente é criado sem alterar core do framework.
-- [ ] Se houver transações multi-turno, `AgentState` declara `active_transaction` e `last_transaction`.
-- [ ] Configuração ocorre por YAML e `.env`.
-- [ ] Agente usa BusinessContext.
-- [ ] Agente acessa MCP por router/gateway.
-- [ ] Agente não conhece payload bruto de canal.
-- [ ] Guardrails e judges são configurados.
-- [ ] Dataset de eval existe.
-- [ ] Testes mínimos executam.
-- [ ] Trace completo é gerado.
-- [ ] Definition of Done é atendida.
-
-
-### Glossário
-
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
+New fixes or evolutions for this subject should update this consolidated document. Release notes may continue to exist as history, but they should not be required to understand or implement the feature.

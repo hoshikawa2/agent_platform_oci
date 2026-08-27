@@ -1,108 +1,1934 @@
 
-### Agent Gateway, MCP Gateway and Authentication
+### Agent Gateway, MCP Gateway, and Authentication
 
 ### How to use this manual
 
 This is a **specialized reference manual**. It does not replace the main tutorial.
 
-- To build an agent end to end, use [`README_en.md`](../../../README_en.md).
-- Use this document when implementing, deep-diving or troubleshooting **ingress governance, gateways, MCP catalog and component authentication**.
-- Historical examples consolidated here must be interpreted against the current framework API.
-- If documentation differs, the current code and root README take precedence.
+- To create an agent from start to finish, use [`README_en.md`](../../../README_en.md).
+- Use this document when you need to implement, deepen, or diagnose **ingress governance, gateways, MCP catalog, and authentication between components**.
+- Historical examples consolidated here should be read in light of the framework's current API.
+- In case of divergence, the code for the version and the current `README_en.md` take precedence.
 
 ### Relationship with the main tutorial
 
-`README_en.md` introduces this capability as part of the normal development flow. This manual consolidates details previously spread across `docs/`, `Documentacao/`, release notes, validation records and specialized guides.
+The `README_en.md` presents this capability in the normal development flow. This manual brings together details that were distributed across `docs/`, `Documentacao/`, release notes, validations, and specialized guides.
 
-Its purpose is to answer **“how does this feature work in depth and how do I troubleshoot it?”** without becoming a second copy of the main tutorial.
+The goal here is to answer **“how does this feature work in depth and how do I solve problems with it?”**, without turning this file into a second copy of the main tutorial.
 
 ### Scope
 
-Ingress governance, gateways, mcp catalog and component authentication.
+Ingress governance, gateways, MCP catalog, and authentication between components.
 
 ### Consolidated technical content
 
-### Agent Gateway, MCP Gateway, Local Execution and Basic Auth
+### Agent Gateway, MCP Gateway, Local Execution, and Basic Auth
 
-This is the operational integration guide for the two gateways and the reference backend/frontend.
+Operational and integration manual for the gateways, including responsibilities, tool catalog, discovery, startup order, ports, variables, end-to-end Basic Auth, and troubleshooting.
 
-### Responsibility model
+### How to use this document
 
-The Agent Gateway is the governed ingress for agent requests. It may apply authentication, routing/governance metadata, model/profile policy, rate limits, audit and evaluation hooks before calling the agent backend.
+This is the consolidated development document for this subject. It brings together architecture, configuration, examples, runtime behavior, compatibility, tests, and troubleshooting that were previously distributed across several files. Source sections were preserved when they provided distinct technical details; release notes were incorporated as current behavior or correction history.
 
-The agent backend/runtime executes the LangGraph workflow and agent logic.
+### Official gateway architecture
 
-The MCP Gateway is the centralized tool catalog/execution boundary. It talks to one or more MCP Servers and applies tool-level governance such as server mapping, catalog synchronization, timeout/retry/cache behavior and authentication.
+> Content consolidated from `Documentacao/MANUAL_AGENT_PLATFORM_GATEWAYS.md`.
 
-### Expected local chain
+### Goal
 
-Client/Frontend → Agent Gateway → Agent Template Backend → MCP Gateway → MCP Server(s).
+This document consolidates:
+- Official architecture
+- Component inventory
+- Complete local-execution procedure
+- MCP Gateway
+- Agent Gateway
+- Backend Runtime
+- Frontend
+- E2E tests
+- Troubleshooting
+- Architectural decisions
 
-Each component should be started and tested independently before validating the full chain. Do not configure the backend to bypass the MCP Gateway when centralized governance is expected.
+---
 
-### MCP discovery
+### Official Architecture
 
-Discovery is automatic only for servers explicitly registered with discovery enabled. The gateway fetches their manifest/catalog, normalizes discovered tools and merges them with static configuration. Discovery does not scan the network or repository for arbitrary MCP Servers.
+Frontend (5173)
+↓
+Agent Gateway (9000)
+↓
+Agent Template Backend / Runtime (8000)
+↓
+MCP Gateway (8300)
+↓
+Telecom MCP Server (8100)
+Retail MCP Server (8200)
 
-Static tool definitions have precedence over discovered metadata with the same tool name, allowing explicit operational overrides.
+---
 
-The gateway exposes endpoints to inspect discovery servers, force synchronization and list the merged tool catalog. Use these endpoints before debugging an agent prompt when a tool appears to be missing.
+### Official Ports
 
-### Basic Auth trust boundaries
+| Component | Port |
+|------------|--------|
+| Frontend | 5173 |
+| Agent Gateway | 9000 |
+| Backend Runtime | 8000 |
+| MCP Gateway | 8300 |
+| Telecom MCP Server | 8100 |
+| Retail MCP Server | 8200 |
 
-Use separate credential pairs for each hop:
+---
 
-1. external client/TIA → Agent Gateway;
-2. Agent Gateway → agent backend;
-3. agent backend → MCP Gateway.
+### Official Variables
 
-Each receiving component validates its own pair; each sending component is configured with the downstream credentials. This separation allows credentials to be rotated independently and makes failures diagnosable by hop.
+### Agent Template Backend
 
-Do not confuse inbound credentials with outbound credentials. A working login to the Agent Gateway says nothing about the gateway's credentials for the backend.
+ENABLE_MCP_TOOLS=true
 
-### Startup validation sequence
+MCP_GATEWAY_ENABLED=true
+MCP_GATEWAY_URL=http://localhost:8300
+MCP_GATEWAY_TIMEOUT_SECONDS=60
+MCP_GATEWAY_AGENT_ID=telecom_contas
+MCP_GATEWAY_TENANT_ID=default
 
-1. Start MCP Servers and call each `/health` endpoint.
-2. Start MCP Gateway and inspect health + merged tool list.
-3. Start agent backend and verify it points to the MCP Gateway.
-4. Start Agent Gateway and verify backend connectivity.
-5. Start frontend/channel integration and verify it targets the Agent Gateway.
-6. Run an end-to-end read-only tool call.
-7. Run a transactional policy/confirmation test if applicable.
+### Agent Gateway
 
-### Troubleshooting by symptom
+DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
 
-**MCP tool absent from catalog:** verify server registration, `enabled`, discovery flag, manifest endpoint and sync result; then check static/discovered name collisions.
+### MCP Gateway
 
-**Backend calls MCP Server directly:** correct the MCP base URL so the runtime targets MCP Gateway, not a domain server.
+MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
 
-**Agent Gateway cannot reach backend:** verify backend URL/port, container DNS, inbound backend credentials and gateway outbound credentials.
+---
 
-**401 on external request:** validate client→Agent Gateway pair.
+### Startup Order
 
-**401 between gateway and backend:** validate Agent Gateway outbound pair and backend inbound pair.
+1. Telecom MCP Server
+2. Retail MCP Server
+3. MCP Gateway
+4. Agent Template Backend
+5. Agent Gateway
+6. Frontend
 
-**401 from backend to MCP Gateway:** validate backend outbound pair and MCP Gateway inbound pair.
+---
 
-**Frontend uses wrong port:** treat frontend URL configuration as a channel concern and keep it pointed at Agent Gateway in the governed topology.
+### Terminal 1 — Telecom MCP Server
 
-### Source material consolidated
+cd mcp/servers/telecom_mcp_server
 
-- `Documentacao/MANUAL_AGENT_PLATFORM_GATEWAYS.md`
-- `Documentacao/MANUAL_EXECUCAO_AGENT_GATEWAY_MCP_GATEWAY_FRONTEND.md`
-- `Documentacao/Implementando_Basic_Auth.md`
-- `docs/MCP_GATEWAY_DISCOVERY.md`
-- `Documentacao/MCP_GATEWAY_RUNBOOK.md`
-- `Documentacao/README_AGENT_GATEWAY_AND_MCP_GATEWAY_EVOLUTION.md`
-- `Documentacao/INVENTARIO_AGENT_GATEWAY_MCP_GATEWAY.md`
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 
-### Detailed normative and implementation reference
+python -m uvicorn main:app --host 0.0.0.0 --port 8100 --reload
 
-The sections below preserve the detailed English project specifications and implementation guides relevant to this capability. They are included here so a developer does not need to reconstruct the behavior from separate documents.
+Validation:
 
-### MCP Gateway discovery and catalog sync
+curl http://localhost:8100/health
 
-> Consolidated from `docs/MCP_GATEWAY_DISCOVERY.md`.
+---
+
+### Terminal 2 — Retail MCP Server
+
+cd mcp/servers/retail_mcp_server
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python -m uvicorn main:app --host 0.0.0.0 --port 8200 --reload
+
+Validation:
+
+curl http://localhost:8200/health
+
+---
+
+### Terminal 3 — MCP Gateway
+
+cd apps/mcp_gateway
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+export MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8300 --reload
+
+Validations:
+
+curl http://localhost:8300/health
+curl http://localhost:8300/ready
+curl http://localhost:8300/v1/tools
+
+Test:
+
+curl -X POST http://localhost:8300/v1/tools/consultar_fatura/invoke
+
+---
+
+### Terminal 4 — Agent Template Backend
+
+cd templates/agent_template_backend
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+Validations:
+
+curl http://localhost:8000/health
+curl http://localhost:8000/agents
+
+---
+
+### Terminal 5 — Agent Gateway
+
+cd apps/agent_gateway
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+export DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+export AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+
+Validations:
+
+curl http://localhost:9000/health
+
+Test:
+
+curl -X POST http://localhost:9000/gateway/message
+
+---
+
+### Terminal 6 — Frontend
+
+cd agent_frontend
+
+npm install
+
+npm run dev -- --host 0.0.0.0 --port 5173
+
+Open:
+
+http://localhost:5173
+
+Backend URL:
+
+http://localhost:9000
+
+---
+
+### Tool Flow
+
+Agent
+↓
+MCPToolRouter
+↓
+MCPGatewayClient
+↓
+MCP Gateway
+↓
+MCP Server
+
+---
+
+### Integrated E2E Test
+
+Frontend
+↓
+Agent Gateway
+↓
+Backend Runtime
+↓
+MCP Gateway
+↓
+Telecom MCP Server
+
+Expected result:
+
+- Agent Gateway receives the request
+- Runtime executes LangGraph
+- MCP Gateway resolves the tool
+- MCP Server responds
+- User receives the response
+
+---
+
+### Troubleshooting
+
+### Backend calling MCP Server directly
+
+Confirm:
+
+MCP_GATEWAY_ENABLED=true
+
+MCP_GATEWAY_URL=http://localhost:8300
+
+### Incorrect port
+
+The official MCP Gateway port is:
+
+8300
+
+### Agent Gateway cannot find Backend
+
+Validate:
+
+curl http://localhost:8000/health
+
+### MCP Gateway cannot find MCP Server
+
+Validate:
+
+curl http://localhost:8100/health
+curl http://localhost:8200/health
+
+---
+
+### Official Architectural Decisions
+
+- Agent Gateway centralizes governance
+- Runtime executes LangGraph
+- Runtime executes LLM
+- MCP Gateway centralizes tools
+- MCP Servers execute tools
+- Backend uses MCP Gateway
+- `gateway_runtime.env.example` was removed
+- `MCP_GATEWAY_*` stays in the backend `.env`
+- Official MCP Gateway port = 8300
+
+### Integrated local execution
+
+> Content consolidated from `Documentacao/MANUAL_EXECUCAO_AGENT_GATEWAY_MCP_GATEWAY_FRONTEND.md`.
+
+### Agent Gateway + MCP Gateway + Agent Template Backend + Frontend
+
+### 1. Execution architecture
+
+The local architecture is:
+
+```text
+Frontend
+  porta 5173
+    │
+    ▼
+Agent Gateway
+  porta 9000
+    │
+    ▼
+Agent Template Backend / Agent Runtime
+  porta 8000
+    │
+    ▼
+MCP Gateway
+  porta 8300
+    │
+    ▼
+MCP Server / Mock Telecom MCP
+  porta 8001
+```
+
+Model governance, rate limiting, audit, and policies live in the **Agent Gateway**.
+
+The **Agent Runtime / Agent Template Backend** remains responsible for:
+
+- LangGraph;
+- state;
+- memory;
+- checkpoints;
+- supervisor/router;
+- guardrails;
+- judges;
+- LLM calls through existing providers;
+- tool calls through MCP Gateway.
+
+---
+
+### 2. Ports
+
+| Component | Port | URL |
+|---|---:|---|
+| Frontend | 5173 | `http://localhost:5173` |
+| Agent Gateway | 9000 | `http://localhost:9000` |
+| Agent Template Backend | 8000 | `http://localhost:8000` |
+| MCP Gateway | 8300 | `http://localhost:8300` |
+| MCP Server / Mock Telecom MCP | 8001 | `http://localhost:8001` |
+
+---
+
+### 3. Recommended startup order
+
+Start in this order:
+
+1. MCP Server / Mock Telecom MCP
+2. MCP Gateway
+3. Agent Template Backend
+4. Agent Gateway
+5. Frontend
+
+---
+
+### 4. Terminal 1 — MCP Server / Mock Telecom MCP
+
+If you are using the mock included in the overlay:
+
+```bash
+cd agent_platform_oci/mcp/servers/mock_telecom_mcp
+
+python -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements.txt
+
+uvicorn app:app --host 0.0.0.0 --port 8001 --reload
+```
+
+Validate:
+
+```bash
+curl http://localhost:8001/health
+```
+
+Expected result:
+
+```json
+{
+  "status": "ok",
+  "service": "mock_telecom_mcp"
+}
+```
+
+---
+
+### 5. Terminal 2 — MCP Gateway
+
+```bash
+cd agent_platform_oci/apps/mcp_gateway
+
+python -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements.txt
+
+export MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+
+uvicorn app.main:app --host 0.0.0.0 --port 8300 --reload
+```
+
+Validate health:
+
+```bash
+curl http://localhost:8300/health
+```
+
+Validate readiness:
+
+```bash
+curl http://localhost:8300/ready
+```
+
+List tools:
+
+```bash
+curl -s http://localhost:8300/v1/tools | jq
+```
+
+Execute tool:
+
+```bash
+curl -s -X POST http://localhost:8300/v1/tools/consultar_fatura/invoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "channel": "web",
+    "tool_name": "consultar_fatura",
+    "business_context": {
+      "customer_key": "11999999999",
+      "contract_key": "INV-001",
+      "session_key": "session-001"
+    }
+  }' | jq
+```
+
+Expected result:
+
+```json
+{
+  "tool_name": "consultar_fatura",
+  "version": "1.0.0",
+  "ok": true,
+  "data": {
+    "invoice_id": "INV-001",
+    "msisdn": "11999999999",
+    "valor_total": 249.9,
+    "vencimento": "2026-06-10",
+    "status": "ABERTA"
+  }
+}
+```
+
+---
+
+### 6. Terminal 3 — Agent Template Backend / Agent Runtime
+
+```bash
+cd agent_platform_oci/templates/agent_template_backend
+```
+
+or, if your backend is in another folder:
+
+```bash
+cd agent_platform_oci/templates/agent_template_backend
+```
+
+Activate environment:
+
+```bash
+source .venv/bin/activate
+```
+
+If `.venv` does not exist yet:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Configure variables:
+
+```bash
+export MCP_GATEWAY_ENABLED=true
+export MCP_GATEWAY_URL=http://localhost:8300
+export MCP_GATEWAY_TIMEOUT_SECONDS=60
+
+export AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+```
+
+If you are using OCI/OpenAI-compatible, also keep the backend's existing variables:
+
+```bash
+export LLM_PROVIDER=oci_openai
+export OCI_GENAI_API_KEY=<sua-chave>
+```
+
+or, for mock:
+
+```bash
+export LLM_PROVIDER=mock
+```
+
+Start backend:
+
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Validate:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Validate agents:
+
+```bash
+curl http://localhost:8000/agents | jq
+```
+
+Test backend directly:
+
+```bash
+curl -s -X POST http://localhost:8000/gateway/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "web",
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "payload": {
+      "message": "Quero consultar minha fatura",
+      "session_id": "session-001",
+      "user_id": "user-001",
+      "message_id": "msg-001",
+      "business_context": {
+        "customer_key": "11999999999",
+        "contract_key": "INV-001",
+        "session_key": "session-001"
+      }
+    }
+  }' | jq
+```
+
+---
+
+### 7. Terminal 4 — Agent Gateway
+
+```bash
+cd agent_platform_oci/apps/agent_gateway
+```
+
+Activate environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Configure variables:
+
+```bash
+export DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+export AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+```
+
+Start Agent Gateway:
+
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+```
+
+Validate:
+
+```bash
+curl http://localhost:9000/health
+```
+
+If the example governed route is registered in `app.main`, test:
+
+```bash
+curl -s -X POST http://localhost:9000/gateway/message/governed \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "web",
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "payload": {
+      "message": "Quero consultar minha fatura",
+      "session_id": "session-001",
+      "user_id": "user-001",
+      "message_id": "msg-001",
+      "metadata": {
+        "operation": "agent.final_answer"
+      },
+      "business_context": {
+        "customer_key": "11999999999",
+        "contract_key": "INV-001",
+        "session_key": "session-001"
+      }
+    }
+  }' | jq
+```
+
+If the actual route is `/gateway/message`, test:
+
+```bash
+curl -s -X POST http://localhost:9000/gateway/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "web",
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "payload": {
+      "message": "Quero consultar minha fatura",
+      "session_id": "session-001",
+      "user_id": "user-001",
+      "message_id": "msg-001",
+      "metadata": {
+        "operation": "agent.final_answer"
+      },
+      "business_context": {
+        "customer_key": "11999999999",
+        "contract_key": "INV-001",
+        "session_key": "session-001"
+      }
+    }
+  }' | jq
+```
+
+---
+
+### 8. Terminal 5 — Frontend
+
+```bash
+cd agent_platform_oci/agent_frontend
+```
+
+or the folder where the frontend is located.
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Start:
+
+```bash
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+Open:
+
+```text
+http://localhost:5173
+```
+
+Configure in the frontend:
+
+```text
+Backend URL: http://localhost:9000
+Agent: telecom_contas
+Session ID: session-001
+Customer Key: 11999999999
+Contract Key: INV-001
+```
+
+The frontend must call the **Agent Gateway** on port 9000, not the MCP Gateway.
+
+---
+
+### 9. Expected final flow
+
+```text
+Frontend 5173
+  ↓
+Agent Gateway 9000
+  ↓
+Agent Template Backend 8000
+  ↓
+MCP Gateway 8300
+  ↓
+Mock Telecom MCP 8001
+```
+
+---
+
+### 10. Docker Compose for MCP Gateway + Mock MCP
+
+It is also possible to start MCP Gateway + Mock MCP with Docker Compose:
+
+```bash
+cd agent_platform_oci
+
+docker compose -f deploy/docker/docker-compose.mcp-gateway.yml up --build
+```
+
+This starts:
+
+```text
+MCP Gateway      http://localhost:8300
+Mock Telecom MCP http://localhost:8001
+```
+
+Then start manually:
+
+- Agent Template Backend on port 8000;
+- Agent Gateway on port 9000;
+- Frontend on port 5173.
+
+---
+
+### 11. Validation checklist
+
+### MCP Server
+
+```bash
+curl http://localhost:8001/health
+```
+
+### MCP Gateway
+
+```bash
+curl http://localhost:8300/health
+curl http://localhost:8300/v1/tools
+```
+
+### Backend Runtime
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/agents
+```
+
+### Agent Gateway
+
+```bash
+curl http://localhost:9000/health
+```
+
+### Frontend
+
+```text
+http://localhost:5173
+```
+
+---
+
+### 12. Common errors
+
+### 12.1. Frontend calling the wrong port
+
+Wrong:
+
+```text
+Frontend → http://localhost:8000
+```
+
+Correct:
+
+```text
+Frontend → http://localhost:9000
+```
+
+If you want to test without Agent Gateway, you can temporarily point to port 8000. But in the final model, the frontend must use the Agent Gateway.
+
+---
+
+### 12.2. MCP Gateway without an MCP Server
+
+Symptom:
+
+```text
+MCP server unavailable
+```
+
+Fix:
+
+```bash
+curl http://localhost:8001/health
+```
+
+If it fails, start the mock MCP server.
+
+---
+
+### 12.3. Tool without BusinessContext
+
+Symptom:
+
+```json
+{
+  "missing_business_keys": ["customer_key", "contract_key"]
+}
+```
+
+Fix:
+
+send:
+
+```json
+"business_context": {
+  "customer_key": "11999999999",
+  "contract_key": "INV-001",
+  "session_key": "session-001"
+}
+```
+
+---
+
+### 12.4. Agent Gateway cannot find backend
+
+Symptom:
+
+```text
+Connection refused http://localhost:8000
+```
+
+Fix:
+
+validate:
+
+```bash
+curl http://localhost:8000/health
+```
+
+and configure:
+
+```bash
+export DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+```
+
+---
+
+### 12.5. Governed route not registered
+
+If `/gateway/message/governed` returns 404, the example file has not yet been included in `app.main`.
+
+In that case, use the actual `/gateway/message` route or register it in `main.py`:
+
+```python
+from app.routes.governed_proxy_example import router as governed_router
+
+app.include_router(governed_router)
+```
+
+---
+
+### 13. Consolidated variables
+
+### Agent Gateway
+
+```env
+DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+```
+
+### Agent Template Backend
+
+```env
+MCP_GATEWAY_ENABLED=true
+MCP_GATEWAY_URL=http://localhost:8300
+MCP_GATEWAY_TIMEOUT_SECONDS=60
+LLM_PROVIDER=mock
+```
+
+### MCP Gateway
+
+```env
+MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+```
+
+---
+
+### 14. Quick summary
+
+In five terminals:
+
+```bash
+# Terminal 1
+cd mcp/servers/mock_telecom_mcp
+source .venv/bin/activate
+uvicorn app:app --host 0.0.0.0 --port 8001 --reload
+
+# Terminal 2
+cd apps/mcp_gateway
+source .venv/bin/activate
+export MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+uvicorn app.main:app --host 0.0.0.0 --port 8300 --reload
+
+# Terminal 3
+cd templates/agent_template_backend
+source .venv/bin/activate
+export MCP_GATEWAY_ENABLED=true
+export MCP_GATEWAY_URL=http://localhost:8300
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 4
+cd apps/agent_gateway
+source .venv/bin/activate
+export DEFAULT_AGENT_BACKEND_URL=http://localhost:8000
+export AGENT_GATEWAY_GOVERNANCE_CONFIG=config/gateway_governance.yaml
+uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+
+# Terminal 5
+cd agent_frontend
+npm install
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+### End-to-end Basic Auth
+
+> Content consolidated from `Documentacao/Implementando_Basic_Auth.md`.
+
+To validate **the entire circuit with Basic Auth**, you need to configure three distinct trust relationships:
+
+```text
+Cliente de teste
+   └─ Basic Auth A ─► Agent Gateway :8010
+                         └─ Basic Auth B ─► Agent Backend :8000
+                                                └─ Basic Auth C ─► MCP Gateway :8300
+```
+
+There is one important detail: in the current package, Basic authentication already works for **incoming** calls, but internal clients still do not send Basic Auth:
+
+* `Agent Gateway → Agent Backend` does not send credentials;
+* `Agent Backend → MCP Gateway` sends only a Bearer Token.
+
+Therefore, to test the entire circuit with Basic Auth, make the two small code changes described below.
+
+---
+
+### 1. Prepare the environment
+
+Assume the ZIP was extracted to:
+
+```bash
+cd agent_framework_oci_authentication_v2_1
+```
+
+Create a single virtual environment to make testing easier:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Install the framework and dependencies for the three components:
+
+```bash
+pip install -U pip
+
+pip install -e ./libs/agent_framework
+
+pip install \
+  -r ./Tuning-Performance/Authentication/agent_template_backend_authentication/requirements.txt \
+  -r ./apps/agent_gateway/requirements.txt \
+  -r ./apps/mcp_gateway/requirements.txt
+```
+
+Confirm the import:
+
+```bash
+python -c "from agent_framework.security import install_authentication; print('framework ok')"
+```
+
+---
+
+### 2. Create three Client ID and Secret pairs
+
+Use different credentials for each hop. For local testing:
+
+| Flow | Client ID | Test Secret |
+| ----------------------- | -------------------- | --------------------------- |
+| Cliente → Agent Gateway | `tia-test`           | `TiaGateway-Test-2026!`     |
+| Agent Gateway → Backend | `agent-gateway-test` | `GatewayBackend-Test-2026!` |
+| Backend → MCP Gateway   | `agent-backend-test` | `BackendMcp-Test-2026!`     |
+
+These values are for local environments only. Do not reuse them in production.
+
+### Generate the hashes
+
+The script is located at:
+
+```text
+Tuning-Performance/Authentication/
+  agent_template_backend_authentication/
+    scripts/generate_secret_hash.py
+```
+
+Run:
+
+```bash
+python Tuning-Performance/Authentication/agent_template_backend_authentication/scripts/generate_secret_hash.py \
+  --secret 'TiaGateway-Test-2026!'
+```
+
+Then:
+
+```bash
+python Tuning-Performance/Authentication/agent_template_backend_authentication/scripts/generate_secret_hash.py \
+  --secret 'GatewayBackend-Test-2026!'
+```
+
+And:
+
+```bash
+python Tuning-Performance/Authentication/agent_template_backend_authentication/scripts/generate_secret_hash.py \
+  --secret 'BackendMcp-Test-2026!'
+```
+
+You will receive three values similar to:
+
+```text
+pbkdf2_sha256:310000:<salt>:<digest>
+```
+
+Store them temporarily:
+
+```bash
+HASH_CLIENT_GATEWAY='pbkdf2_sha256:310000:...'
+HASH_GATEWAY_BACKEND='pbkdf2_sha256:310000:...'
+HASH_BACKEND_MCP='pbkdf2_sha256:310000:...'
+```
+
+The hash changes on every run because the salt is random. This is expected.
+
+---
+
+### 3. Configure the Agent Gateway
+
+Enter the directory:
+
+```bash
+cd apps/agent_gateway
+```
+
+Copy the example:
+
+```bash
+cp .env.example .env
+```
+
+Add to the end of `.env`:
+
+```env
+# Entrada: cliente/TIA -> Agent Gateway
+AGENT_GATEWAY_AUTH_ENABLED=true
+AGENT_GATEWAY_AUTH_MODE=basic
+AGENT_GATEWAY_AUTH_BASIC_CLIENT_ID=tia-test
+AGENT_GATEWAY_AUTH_BASIC_SECRET_HASH=COLE_AQUI_HASH_CLIENT_GATEWAY
+AGENT_GATEWAY_AUTH_BASIC_REALM=agent-gateway
+
+AGENT_GATEWAY_AUTH_PUBLIC_PATHS=/health,/docs,/openapi.json,/redoc
+AGENT_GATEWAY_AUTH_PUBLIC_PREFIXES=
+
+# Saída: Agent Gateway -> Agent Backend
+BACKEND_AUTH_MODE=basic
+BACKEND_AUTH_CLIENT_ID=agent-gateway-test
+BACKEND_AUTH_SECRET=GatewayBackend-Test-2026!
+```
+
+Do not put quotes in `.env`:
+
+```env
+BACKEND_AUTH_SECRET=GatewayBackend-Test-2026!
+```
+
+The backend configuration file already points the `contas` backend to:
+
+```yaml
+contas:
+  url: http://localhost:8000
+```
+
+File:
+
+```text
+apps/agent_gateway/config/backends.yaml
+```
+
+For this test, keep only the `contas` backend or force the backend in the payload. Otherwise, requests about offers and support may be routed to ports where no backend is running.
+
+---
+
+### 4. Make Agent Gateway send Basic Auth to the backend
+
+Open:
+
+```text
+libs/agent_framework/src/agent_framework/global_supervisor/client.py
+```
+
+Replace the `BackendClient` class with a version that supports Basic authentication.
+
+At the beginning of the file, add:
+
+```python
+import os
+```
+
+Change the constructor:
+
+```python
+class BackendClient:
+    def __init__(
+        self,
+        timeout_seconds: float = 120.0,
+        basic_client_id: str | None = None,
+        basic_secret: str | None = None,
+    ):
+        self.timeout_seconds = timeout_seconds
+        self.basic_client_id = basic_client_id
+        self.basic_secret = basic_secret
+
+    def _auth(self) -> httpx.BasicAuth | None:
+        if self.basic_client_id and self.basic_secret:
+            return httpx.BasicAuth(
+                username=self.basic_client_id,
+                password=self.basic_secret,
+            )
+        return None
+```
+
+In the `call_message` method, replace:
+
+```python
+resp = await client.post(url, json=payload)
+```
+
+with:
+
+```python
+resp = await client.post(
+    url,
+    json=payload,
+    auth=self._auth(),
+)
+```
+
+In the `health` method, you can keep `/health` public. If you also want to send authentication, use:
+
+```python
+resp = await client.get(url, auth=self._auth())
+```
+
+Now open:
+
+```text
+apps/agent_gateway/app/main.py
+```
+
+Add:
+
+```python
+import os
+```
+
+Replace:
+
+```python
+backend_client = BackendClient(
+    timeout_seconds=settings.BACKEND_TIMEOUT_SECONDS
+)
+```
+
+with:
+
+```python
+backend_client = BackendClient(
+    timeout_seconds=settings.BACKEND_TIMEOUT_SECONDS,
+    basic_client_id=os.getenv("BACKEND_AUTH_CLIENT_ID"),
+    basic_secret=os.getenv("BACKEND_AUTH_SECRET"),
+)
+```
+
+This implements:
+
+```text
+Agent Gateway → Agent Backend
+Authorization: Basic base64(agent-gateway-test:GatewayBackend-Test-2026!)
+```
+
+---
+
+### 5. Configure the authenticated Agent Backend
+
+Enter the directory:
+
+```bash
+cd Tuning-Performance/Authentication/agent_template_backend_authentication
+```
+
+Copy the example:
+
+```bash
+cp .env.example .env
+```
+
+Adjust the authentication section:
+
+```env
+# Entrada: Agent Gateway -> Agent Backend
+AGENT_AUTH_ENABLED=true
+AGENT_AUTH_MODE=basic
+AGENT_AUTH_BASIC_CLIENT_ID=agent-gateway-test
+AGENT_AUTH_BASIC_SECRET_HASH=COLE_AQUI_HASH_GATEWAY_BACKEND
+AGENT_AUTH_BASIC_REALM=agent-contas
+
+AGENT_AUTH_PUBLIC_PATHS=/health,/docs,/openapi.json,/redoc
+AGENT_AUTH_PUBLIC_PREFIXES=
+```
+
+To use MCP Gateway:
+
+```env
+MCP_GATEWAY_ENABLED=true
+MCP_GATEWAY_URL=http://localhost:8300
+MCP_GATEWAY_TIMEOUT_SECONDS=60
+
+# Saída: Agent Backend -> MCP Gateway
+MCP_GATEWAY_AUTH_MODE=basic
+MCP_GATEWAY_BASIC_CLIENT_ID=agent-backend-test
+MCP_GATEWAY_BASIC_SECRET=BackendMcp-Test-2026!
+```
+
+To avoid external dependencies during the first test, also configure:
+
+```env
+LLM_PROVIDER=mock
+ENABLE_LANGFUSE=false
+ENABLE_ANALYTICS=false
+
+SESSION_REPOSITORY_PROVIDER=memory
+MEMORY_REPOSITORY_PROVIDER=memory
+CHECKPOINT_REPOSITORY_PROVIDER=memory
+CACHE_PROVIDER=memory
+USAGE_REPOSITORY_PROVIDER=memory
+```
+
+The exact names of some providers may depend on the framework's current configuration file. If `.env.example` already contains local or mock values, preserve them.
+
+---
+
+### 6. Make the Backend send Basic Auth to MCP Gateway
+
+Open:
+
+```text
+libs/agent_framework/src/agent_framework/gateways/mcp_gateway_client.py
+```
+
+Replace the implementation with:
+
+```python
+from __future__ import annotations
+
+import base64
+from typing import Any
+
+import httpx
+
+
+class MCPGatewayClient:
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        timeout_seconds: int = 60,
+        auth_mode: str | None = None,
+        basic_client_id: str | None = None,
+        basic_secret: str | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.timeout_seconds = timeout_seconds
+        self.auth_mode = (auth_mode or "").strip().lower()
+        self.basic_client_id = basic_client_id
+        self.basic_secret = basic_secret
+
+    def _headers(self) -> dict[str, str]:
+        if (
+            self.auth_mode == "basic"
+            and self.basic_client_id
+            and self.basic_secret
+        ):
+            raw = f"{self.basic_client_id}:{self.basic_secret}".encode("utf-8")
+            encoded = base64.b64encode(raw).decode("ascii")
+            return {"Authorization": f"Basic {encoded}"}
+
+        if self.token:
+            return {"Authorization": f"Bearer {self.token}"}
+
+        return {}
+
+    async def list_tools(self) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            timeout=self.timeout_seconds
+        ) as client:
+            response = await client.get(
+                f"{self.base_url}/v1/tools",
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def invoke_tool(
+        self,
+        *,
+        tenant_id: str,
+        agent_id: str,
+        channel: str | None,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        business_context: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "tenant_id": tenant_id,
+            "agent_id": agent_id,
+            "channel": channel,
+            "tool_name": tool_name,
+            "arguments": arguments or {},
+            "business_context": business_context or {},
+            "metadata": metadata or {},
+        }
+
+        async with httpx.AsyncClient(
+            timeout=self.timeout_seconds
+        ) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/tools/{tool_name}/invoke",
+                json=payload,
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+            return response.json()
+```
+
+Now open:
+
+```text
+libs/agent_framework/src/agent_framework/mcp/tool_router.py
+```
+
+Locate:
+
+```python
+MCPGatewayClient(
+    base_url=getattr(
+        settings,
+        "MCP_GATEWAY_URL",
+        "http://localhost:8300",
+    ),
+    token=getattr(settings, "MCP_GATEWAY_TOKEN", None),
+    timeout_seconds=getattr(
+        settings,
+        "MCP_GATEWAY_TIMEOUT_SECONDS",
+        settings.MCP_TOOL_TIMEOUT_SECONDS,
+    ),
+)
+```
+
+Change to:
+
+```python
+MCPGatewayClient(
+    base_url=getattr(
+        settings,
+        "MCP_GATEWAY_URL",
+        "http://localhost:8300",
+    ),
+    token=getattr(settings, "MCP_GATEWAY_TOKEN", None),
+    timeout_seconds=getattr(
+        settings,
+        "MCP_GATEWAY_TIMEOUT_SECONDS",
+        settings.MCP_TOOL_TIMEOUT_SECONDS,
+    ),
+    auth_mode=getattr(
+        settings,
+        "MCP_GATEWAY_AUTH_MODE",
+        None,
+    ),
+    basic_client_id=getattr(
+        settings,
+        "MCP_GATEWAY_BASIC_CLIENT_ID",
+        None,
+    ),
+    basic_secret=getattr(
+        settings,
+        "MCP_GATEWAY_BASIC_SECRET",
+        None,
+    ),
+)
+```
+
+Add these fields in:
+
+```text
+libs/agent_framework/src/agent_framework/config/settings.py
+```
+
+Near the existing MCP Gateway settings:
+
+```python
+MCP_GATEWAY_AUTH_MODE: str | None = None
+MCP_GATEWAY_BASIC_CLIENT_ID: str | None = None
+MCP_GATEWAY_BASIC_SECRET: str | None = None
+```
+
+There is also a local factory in:
+
+```text
+Tuning-Performance/Authentication/
+  agent_template_backend_authentication/
+    app/mcp_gateway_client_factory.py
+```
+
+Adjust it to:
+
+```python
+from __future__ import annotations
+
+import os
+
+from agent_framework.gateways import MCPGatewayClient
+
+
+def build_mcp_gateway_client() -> MCPGatewayClient | None:
+    if os.getenv("MCP_GATEWAY_ENABLED", "true").lower() != "true":
+        return None
+
+    return MCPGatewayClient(
+        base_url=os.getenv(
+            "MCP_GATEWAY_URL",
+            "http://localhost:8300",
+        ),
+        token=os.getenv("MCP_GATEWAY_TOKEN") or None,
+        timeout_seconds=int(
+            os.getenv("MCP_GATEWAY_TIMEOUT_SECONDS", "60")
+        ),
+        auth_mode=os.getenv("MCP_GATEWAY_AUTH_MODE"),
+        basic_client_id=os.getenv(
+            "MCP_GATEWAY_BASIC_CLIENT_ID"
+        ),
+        basic_secret=os.getenv(
+            "MCP_GATEWAY_BASIC_SECRET"
+        ),
+    )
+```
+
+---
+
+### 7. Configure the MCP Gateway
+
+Enter the directory:
+
+```bash
+cd apps/mcp_gateway
+```
+
+Create `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Add:
+
+```env
+# Entrada: Agent Backend -> MCP Gateway
+MCP_GATEWAY_AUTH_ENABLED=true
+MCP_GATEWAY_AUTH_MODE=basic
+MCP_GATEWAY_AUTH_BASIC_CLIENT_ID=agent-backend-test
+MCP_GATEWAY_AUTH_BASIC_SECRET_HASH=COLE_AQUI_HASH_BACKEND_MCP
+MCP_GATEWAY_AUTH_BASIC_REALM=mcp-gateway
+
+MCP_GATEWAY_AUTH_PUBLIC_PATHS=/health,/ready,/docs,/openapi.json,/redoc
+MCP_GATEWAY_AUTH_PUBLIC_PREFIXES=
+
+MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+```
+
+### Disable the legacy Bearer mechanism
+
+The MCP Gateway still has a second legacy mechanism, configured in:
+
+```text
+apps/mcp_gateway/config/mcp_gateway.yaml
+```
+
+Locate the section:
+
+```yaml
+auth:
+  enabled: true
+```
+
+Change to:
+
+```yaml
+auth:
+  enabled: false
+```
+
+This is necessary because the new middleware already performs Basic authentication. If the legacy `auth_check()` remains enabled, the request will pass Basic authentication and then be rejected because it does not have a Bearer Token.
+
+---
+
+### 8. Start the components
+
+Use four terminals.
+
+### Terminal 1 — MCP Servers
+
+The MCP Gateway needs at least one available MCP server to demonstrate a real call.
+
+From the project root:
+
+```bash
+source .venv/bin/activate
+```
+
+Start the telecom server:
+
+```bash
+uvicorn mcp.servers.telecom_mcp_server.main:app \
+  --host 0.0.0.0 \
+  --port 8100 \
+  --reload
+```
+
+In another terminal, if you also want retail:
+
+```bash
+uvicorn mcp.servers.retail_mcp_server.main:app \
+  --host 0.0.0.0 \
+  --port 8200 \
+  --reload
+```
+
+Check the URLs configured in:
+
+```text
+apps/mcp_gateway/config/mcp_gateway.yaml
+```
+
+For local execution, they should point to:
+
+```yaml
+url: http://localhost:8100
+```
+
+and:
+
+```yaml
+url: http://localhost:8200
+```
+
+---
+
+### Terminal 2 — MCP Gateway
+
+```bash
+cd apps/mcp_gateway
+source ../../.venv/bin/activate
+```
+
+Start it using `--env-file`. This is important because the middleware reads variables with `os.getenv()`:
+
+```bash
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8300 \
+  --reload \
+  --env-file .env
+```
+
+Test public health:
+
+```bash
+curl http://localhost:8300/health
+```
+
+Test a protected endpoint without credentials:
+
+```bash
+curl -i http://localhost:8300/v1/tools
+```
+
+Expected:
+
+```text
+HTTP/1.1 401 Unauthorized
+```
+
+Test with Basic Auth:
+
+```bash
+curl -i \
+  -u 'agent-backend-test:BackendMcp-Test-2026!' \
+  http://localhost:8300/v1/tools
+```
+
+Expected:
+
+```text
+HTTP/1.1 200 OK
+```
+
+---
+
+### Terminal 3 — Agent Backend
+
+```bash
+cd Tuning-Performance/Authentication/agent_template_backend_authentication
+source ../../../.venv/bin/activate
+```
+
+Start:
+
+```bash
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --reload \
+  --env-file .env
+```
+
+Test health:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Test a protected endpoint without credentials:
+
+```bash
+curl -i http://localhost:8000/agents
+```
+
+Expected:
+
+```text
+HTTP/1.1 401 Unauthorized
+```
+
+Test with the credential used by Agent Gateway:
+
+```bash
+curl -i \
+  -u 'agent-gateway-test:GatewayBackend-Test-2026!' \
+  http://localhost:8000/agents
+```
+
+Expected:
+
+```text
+HTTP/1.1 200 OK
+```
+
+Test a message directly:
+
+```bash
+curl -X POST http://localhost:8000/gateway/message \
+  -u 'agent-gateway-test:GatewayBackend-Test-2026!' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel": "web",
+    "agent_id": "telecom_contas",
+    "tenant_id": "default",
+    "payload": {
+      "text": "Quero consultar minha fatura",
+      "session_id": "teste-backend-001",
+      "user_id": "user-001",
+      "customer_id": "12345",
+      "message_id": "msg-001"
+    }
+  }'
+```
+
+---
+
+### Terminal 4 — Agent Gateway
+
+```bash
+cd apps/agent_gateway
+source ../../.venv/bin/activate
+```
+
+Start:
+
+```bash
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8010 \
+  --reload \
+  --env-file .env
+```
+
+Test health:
+
+```bash
+curl http://localhost:8010/health
+```
+
+Test a protected endpoint without credentials:
+
+```bash
+curl -i http://localhost:8010/backends
+```
+
+Expected:
+
+```text
+HTTP/1.1 401 Unauthorized
+```
+
+Test with the external credential:
+
+```bash
+curl -i \
+  -u 'tia-test:TiaGateway-Test-2026!' \
+  http://localhost:8010/backends
+```
+
+Expected:
+
+```text
+HTTP/1.1 200 OK
+```
+
+---
+
+### 9. Validate the complete circuit
+
+Force the `contas` backend to prevent the router from selecting a backend that has not been started:
+
+```bash
+curl -X POST http://localhost:8010/gateway/message \
+  -u 'tia-test:TiaGateway-Test-2026!' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel": "web",
+    "backend_id": "contas",
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "session_id": "circuito-basic-001",
+    "payload": {
+      "text": "Quero consultar minha fatura",
+      "session_id": "circuito-basic-001",
+      "user_id": "user-001",
+      "customer_id": "12345",
+      "message_id": "msg-circuito-001"
+    }
+  }'
+```
+
+The expected circuit is:
+
+```text
+curl
+  │ Basic tia-test
+  ▼
+Agent Gateway :8010
+  │ Basic agent-gateway-test
+  ▼
+Agent Backend :8000
+  │ Basic agent-backend-test
+  ▼
+MCP Gateway :8300
+  ▼
+MCP Server :8100 ou :8200
+```
+
+---
+
+### 10. How to prove each authentication hop
+
+Run negative tests on each hop.
+
+### Incorrect external secret
+
+```bash
+curl -i \
+  -u 'tia-test:senha-errada' \
+  http://localhost:8010/backends
+```
+
+Expected result:
+
+```text
+401 Unauthorized
+```
+
+### Incorrect gateway-to-backend secret
+
+Temporarily change this in `apps/agent_gateway/.env`:
+
+```env
+BACKEND_AUTH_SECRET=senha-errada
+```
+
+Restart the Agent Gateway and send a message.
+
+The gateway should return a backend error, normally:
+
+```text
+502 Bad Gateway
+```
+
+The internal error will originate from a:
+
+```text
+401 Unauthorized
+```
+
+from the Agent Backend.
+
+### Incorrect backend-to-MCP secret
+
+Temporarily change:
+
+```env
+MCP_GATEWAY_BASIC_SECRET=senha-errada
+```
+
+Restart the backend and execute a phrase that triggers an MCP tool.
+
+The backend should record a failure in the MCP Gateway call with:
+
+```text
+401 Unauthorized
+```
+
+---
+
+### 11. Quick port verification
+
+On Linux or WSL:
+
+```bash
+ss -lntp | grep -E ':8000|:8010|:8100|:8200|:8300'
+```
+
+On Windows PowerShell:
+
+```powershell
+Get-NetTCPConnection -State Listen |
+  Where-Object LocalPort -in 8000,8010,8100,8200,8300 |
+  Sort-Object LocalPort
+```
+
+You should see:
+
+```text
+8000  Agent Backend
+8010  Agent Gateway
+8100  Telecom MCP Server
+8200  Retail MCP Server
+8300  MCP Gateway
+```
+
+### Important note
+
+The original secret must exist in the client component:
+
+```text
+TIA ou curl:
+  TiaGateway-Test-2026!
+
+Agent Gateway:
+  GatewayBackend-Test-2026!
+
+Agent Backend:
+  BackendMcp-Test-2026!
+```
+
+Server components store only the hashes:
+
+```text
+Agent Gateway:
+  hash de TiaGateway-Test-2026!
+
+Agent Backend:
+  hash de GatewayBackend-Test-2026!
+
+MCP Gateway:
+  hash de BackendMcp-Test-2026!
+```
+
+In production, original secrets and hashes should come from Vault or Kubernetes Secret, not `.env` files.
+
+### MCP catalog discovery and synchronization
+
+> Content consolidated from `docs/MCP_GATEWAY_DISCOVERY.md`.
 
 ### Goal
 
@@ -259,903 +2085,382 @@ curl -s -X POST http://localhost:8300/v1/tools/buscar_notas_por_criterios/invoke
   }' | jq
 ```
 
-### Agent Gateway specification
+### MCP Gateway operational runbook
 
-> Consolidated from `specs/SPEC-003-Agent-Gateway.md`.
+> Content consolidated from `Documentacao/MCP_GATEWAY_RUNBOOK.md`.
 
-### Escopo
+### Corrected architecture
 
-O Agent Gateway é o ponto único de entrada da plataforma para canais e consumidores externos.
-
-Sua responsabilidade é receber mensagens, gerenciar sessões globais, resolver o backend/agente responsável, executar roteamento, realizar handoff entre agentes/backends e encaminhar eventos SSE.
-
-O Agent Gateway não executa inferência LLM nem embeddings. Essas capacidades pertencem ao Runtime e ao Agent Framework.
-
----
-
-### Responsabilidades
-
-### Entrada Única da Plataforma
+The backend/agent must not call the final MCP servers directly. The correct flow is:
 
 ```text
-Web
-WhatsApp
-Voice
-Teams
-Slack
-      |
-      v
-Agent Gateway
-      |
-      +--> Agent Backend A
-      |
-      +--> Agent Backend B
-      |
-      +--> Agent Backend C
+agent_template_backend / agent_framework
+  -> MCP Gateway Client
+  -> apps/mcp_gateway
+  -> mcp/servers/telecom_mcp_server ou mcp/servers/retail_mcp_server
 ```
 
-### Gerenciamento de Sessões
+### Start locally
 
-Responsável por:
+From the project root:
 
-- Criação de sessões
-- Recuperação de sessões
-- Atualização de contexto global
-- Persistência de metadados de sessão
-- Correlação de requisições
-
-Exemplo:
-
-```json
-{
-  "session_id": "default:telecom_contas:123",
-  "tenant_id": "default",
-  "active_backend": "telecom_contas",
-  "active_agent": "telecom_contas",
-  "turn_count": 12,
-  "metadata": {}
-}
-```
-
----
-
-### Backend Routing
-
-Resolve qual backend deve processar a mensagem.
-
-Exemplo:
-
-```yaml
-backends:
-  telecom_contas:
-    url: http://backend-contas:8000
-
-  telecom_ofertas:
-    url: http://backend-ofertas:8000
-```
-
-Critérios possíveis:
-
-- Backend padrão
-- Regras YAML
-- Intenção detectada
-- Contexto da sessão
-- Router LLM (opcional)
-
----
-
-### Handoff
-
-Permite transferência entre agentes ou backends.
-
-Exemplo:
-
-```text
-Contas
-   |
-   +--> Ofertas
-   |
-   +--> Retenção
-```
-
-O handoff deve preservar:
-
-- session_id
-- conversation_key
-- business context
-- histórico da conversa
-- metadados de correlação
-
----
-
-### SSE Proxy
-
-Responsável por encaminhar eventos de streaming para clientes.
-
-### Endpoints
-
-| Método | Endpoint |
-|----------|----------|
-| POST | /gateway/message |
-| POST | /gateway/message/sse |
-| GET | /gateway/events/{session_id} |
-
-Eventos SSE suportados:
-
-- connected
-- workflow.started
-- message.responded
-- workflow.completed
-- flow.end
-- error
-
----
-
-### Backend Discovery
-
-Pode operar com catálogo estático ou descoberta dinâmica.
-
-### Catálogo Estático
-
-```yaml
-backends:
-  telecom_contas:
-    url: http://contas:8000
-
-  telecom_ofertas:
-    url: http://ofertas:8000
-```
-
-### Descoberta Dinâmica
-
-```yaml
-service_discovery:
-  enabled: true
-```
-
-Capacidades:
-
-- Registro automático
-- Health check periódico
-- Atualização de catálogo
-- Sincronização de metadados
-
----
-
-### Health e Operação
-
-### Endpoints
-
-| Método | Endpoint |
-|----------|----------|
-| GET | /health |
-| GET | /ready |
-| GET | /backends |
-| GET | /debug/sessions |
-
----
-
-### Contrato GatewayRequest
-
-```json
-{
-  "tenant_id": "default",
-  "agent_id": "telecom_contas",
-  "session_id": "default:telecom_contas:123",
-  "message": "Quero consultar minha fatura",
-  "business_context": {
-    "customer_key": "11999999999"
-  },
-  "metadata": {
-    "request_id": "req-001",
-    "trace_id": "trace-001"
-  }
-}
-```
-
----
-
-### Contrato GatewayResponse
-
-```json
-{
-  "session_id": "default:telecom_contas:123",
-  "backend": "telecom_contas",
-  "agent": "telecom_contas",
-  "message": "Sua fatura está disponível.",
-  "metadata": {
-    "request_id": "req-001"
-  }
-}
-```
-
----
-
-### Eventos
-
-| Evento | Descrição |
-|----------|----------|
-| agent.gateway.request.received | Requisição recebida |
-| agent.gateway.session.created | Sessão criada |
-| agent.gateway.backend.selected | Backend selecionado |
-| agent.gateway.handoff.started | Handoff iniciado |
-| agent.gateway.handoff.completed | Handoff concluído |
-| agent.gateway.sse.connected | Cliente SSE conectado |
-| agent.gateway.request.failed | Falha de processamento |
-
----
-
-### Métricas
-
-| Métrica | Dimensões |
-|----------|----------|
-| gateway_requests_total | tenant, backend, agent, status |
-| gateway_sessions_active | tenant |
-| gateway_backend_selection_total | backend |
-| gateway_handoff_total | origem, destino |
-| gateway_latency_ms | backend |
-| gateway_sse_connections | backend |
-
----
-
-### Segurança
-
-- Autenticação obrigatória quando configurada.
-- Propagação de identidade entre gateways.
-- Máscara de dados sensíveis em logs.
-- Correlação por request_id, trace_id e session_id.
-- Controle de acesso por tenant.
-
----
-
-### Requisitos Não Funcionais
-
-| Categoria | Requisito |
-|----------|----------|
-| Disponibilidade | Expor /health e /ready |
-| Escalabilidade | Stateless com escala horizontal |
-| Observabilidade | Logs, métricas e traces |
-| Auditabilidade | Todas as decisões de roteamento rastreáveis |
-| Segurança | Segredos externos e mascaramento |
-| Portabilidade | Local, Docker e Kubernetes |
-| Configuração | YAML e variáveis de ambiente |
-
----
-
-### Critérios de Aceite
-
-- [ ] Recebe mensagens de múltiplos canais.
-- [ ] Seleciona backend corretamente.
-- [ ] Mantém sessão global.
-- [ ] Encaminha SSE.
-- [ ] Executa handoff.
-- [ ] Preserva Business Context.
-- [ ] Suporta múltiplos backends.
-- [ ] Permite descoberta dinâmica.
-- [ ] Expõe health e readiness.
-- [ ] Gera métricas e telemetria.
-
-### MCP Gateway specification
-
-> Consolidated from `specs/SPEC-004-MCP-Gateway.md`.
-
-### Escopo
-
-O MCP Gateway centraliza catálogo, autorização, roteamento, execução, cache, timeout, retry, observabilidade e resposta padronizada de tools MCP.
-
-### Endpoints
-
-| Método | Endpoint | Descrição |
-|---|---|---|
-| `GET` | `/health` | Health check. |
-| `GET` | `/ready` | Readiness check. |
-| `GET` | `/v1/tools` | Catálogo de tools. |
-| `GET` | `/v1/tools/{tool_name}` | Detalhe da tool. |
-| `POST` | `/v1/tools/{tool_name}/invoke` | Execução de tool. |
-| `GET` | `/v1/servers` | Lista MCP servers. |
-
-### ToolInvocation
-
-```json
-{
-  "tenant_id": "default",
-  "agent_id": "telecom_contas",
-  "tool_name": "consultar_fatura",
-  "arguments": {
-    "msisdn": "11999999999",
-    "invoice_id": "3000131180",
-    "session_id": "default:telecom_contas:session-001"
-  },
-  "business_context": {
-    "customer_key": "11999999999",
-    "contract_key": "3000131180",
-    "session_key": "session-001"
-  },
-  "metadata": {
-    "request_id": "req-001",
-    "trace_id": "trace-001"
-  }
-}
-```
-
-### ToolResult
-
-```json
-{
-  "tool_name": "consultar_fatura",
-  "ok": true,
-  "data": {
-    "invoice_id": "3000131180",
-    "valor_total": 249.90,
-    "vencimento": "2026-06-10",
-    "status": "ABERTA"
-  },
-  "cache": {
-    "hit": false,
-    "ttl_seconds": 300
-  },
-  "latency_ms": 140,
-  "metadata": {
-    "server": "telecom"
-  }
-}
-```
-
-### mcp_servers.yaml
-
-```yaml
-servers:
-  telecom:
-    transport: http
-    url: http://telecom-mcp:8001/mcp
-    enabled: true
-    timeout_seconds: 30
-
-  retail:
-    transport: http
-    url: http://retail-mcp:8002/mcp
-    enabled: true
-    timeout_seconds: 30
-```
-
-### tools.yaml
-
-```yaml
-tools:
-  consultar_fatura:
-    server: telecom
-    enabled: true
-    idempotent: true
-    cache_ttl_seconds: 300
-    allowed_agents:
-      - telecom_contas
-    required_business_keys:
-      - customer_key
-      - contract_key
-
-  solicitar_devolucao:
-    server: retail
-    enabled: true
-    idempotent: false
-    requires_confirmation: true
-    allowed_agents:
-      - retail_orders
-```
-
-### mcp_parameter_mapping.yaml
-
-```yaml
-tools:
-  consultar_fatura:
-    map:
-      customer_key: msisdn
-      contract_key: invoice_id
-      interaction_key: ura_call_id
-      session_key: session_id
-```
-
-### Autorização
-
-```yaml
-authorization:
-  default_policy: deny
-  agents:
-    telecom_contas:
-      allowed_tools:
-        - consultar_fatura
-        - consultar_pagamentos
-        - consultar_plano
-```
-
-### Cache
-
-| Regra | Valor |
-|---|---|
-| Chave | `tenant_id:agent_id:tool_name:hash(arguments)` |
-| Aplicação | Apenas tools idempotentes |
-| Bypass | `metadata.cache_bypass=true` |
-| TTL | `cache_ttl_seconds` |
-| Escrita | Não cachear operações mutáveis |
-
-### Retry e Timeout
-
-```yaml
-execution:
-  default_timeout_seconds: 30
-  retry:
-    enabled: true
-    max_attempts: 2
-    backoff_ms: 250
-  circuit_breaker:
-    enabled: true
-    failure_threshold: 5
-    recovery_seconds: 60
-```
-
-### Eventos
-
-| Evento | Descrição |
-|---|---|
-| `mcp.tool.requested` | Tool requisitada. |
-| `mcp.tool.authorized` | Autorização aprovada. |
-| `mcp.tool.denied` | Autorização negada. |
-| `mcp.tool.started` | Execução iniciada. |
-| `mcp.tool.completed` | Execução concluída. |
-| `mcp.tool.failed` | Execução falhou. |
-| `mcp.cache.hit` | Cache hit. |
-| `mcp.cache.miss` | Cache miss. |
-
-### Métricas
-
-| Métrica | Dimensões |
-|---|---|
-| `mcp_tool_calls_total` | tool, server, tenant, agent, status |
-| `mcp_tool_latency_ms` | tool, server |
-| `mcp_tool_errors_total` | tool, server, error_type |
-| `mcp_cache_hits_total` | tool |
-| `mcp_cache_misses_total` | tool |
-
-### Segurança
-
-- Tools são negadas por padrão.
-- Argumentos sensíveis são mascarados.
-- Tools mutáveis exigem confirmação quando configurado.
-- MCP servers não recebem payload bruto de canal.
-- Credenciais de backend são mantidas nos MCP servers ou secret store.
-
-
-### Requisitos Não Funcionais
-
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
-
-
-### Critérios de Aceite
-
-- [ ] Catálogo de tools retorna tools habilitadas.
-- [ ] ToolInvocation é validado antes da execução.
-- [ ] Autorização por agente é aplicada.
-- [ ] Parâmetros são derivados do BusinessContext.
-- [ ] Cache só é aplicado a tools idempotentes.
-- [ ] Timeout/retry/circuit breaker são configuráveis.
-- [ ] Eventos e métricas são emitidos.
-- [ ] Falhas retornam ToolResult padronizado.
-- [ ] MCP servers são substituíveis por configuração.
-- [ ] Tools críticas possuem testes de contrato.
-
-
-### Glossário
-
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
-
-### Política mínima de operação
-
-Antes de encaminhar uma tool, o runtime deve aplicar a política opcional do backend em `config/tool_policies.yaml`. Os tipos canônicos são `read_only` e `transactional`; esta última pode exigir confirmação booleana explícita e campos obrigatórios. A ausência do arquivo não é erro e preserva os campos legados de `tools.yaml`. A política conversacional não substitui autenticação, autorização, idempotência nem atomicidade no MCP Server.
-
-### Security and identity model
-
-> Consolidated from `specs/SPEC-018-Security-and-Identity-Model.md`.
-
-### Agent Platform OCI
-
-Version: 1.0.0
-
-
----
-
-### Padrão de leitura
-
-Cada SPEC está organizada para servir tanto como contrato arquitetural quanto como guia prático de adoção.
-
-A estrutura usada é:
-
-1. Conceito.
-2. Problema que resolve.
-3. Quando usar.
-4. Quando não usar.
-5. Arquitetura.
-6. Implementação.
-7. Exemplos.
-8. Erros comuns.
-9. Critérios de aceite.
-
----
-
-
-### 1. Conceito
-
-Security and Identity Model define como workloads autenticam, como componentes autorizam ações, como segredos são protegidos e como dados sensíveis são tratados.
-
-### 2. Modelos de autenticação
-
-| Modo | Uso |
-| --- | --- |
-| config_file | Desenvolvimento local com ~/.oci/config. |
-| instance_principal | Execução em OCI Compute. |
-| workload_identity | Execução em OKE/Kubernetes. |
-| resource_principal | Recursos OCI gerenciados. |
-| api_key | Endpoints compatíveis com OpenAI quando aplicável. |
-
-
-### 3. Workload Identity
-
-Fluxo:
-
-```mermaid
-flowchart LR
-    Pod[Pod Kubernetes] --> SA[ServiceAccount]
-    SA --> WI[Workload Identity]
-    WI --> IAM[OCI IAM Policy]
-    IAM --> Resource[OCI Resource]
-```
-
-### 4. Autorização
-
-Escopos:
-
-- agente pode chamar tool?
-- tenant pode usar provider?
-- canal pode chamar agent_id?
-- usuário pode executar ação?
-- tool mutável exige confirmação?
-
-### 5. Secrets
-
-Secrets não ficam no código.
-
-Fontes:
-
-- OCI Vault;
-- Kubernetes Secrets;
-- secret manager corporativo.
-
-Exemplos:
-
-```text
-LANGFUSE_SECRET_KEY
-OCI_GENAI_API_KEY
-ADB_PASSWORD
-MCP_BACKEND_TOKEN
-```
-
-### 6. Proteção de dados
-
-Aplicar:
-
-- máscara de PII;
-- minimização de metadata;
-- sanitização de payload;
-- não logar secrets;
-- retenção controlada;
-- classificação de dados.
-
-### 7. Segurança em MCP
-
-MCP tools devem ter:
-
-- autorização por agente;
-- allowlist;
-- timeout;
-- retry;
-- idempotência declarada;
-- confirmação para operações mutáveis.
-
-### 8. Segurança em canais
-
-Channel Gateway deve:
-
-- validar assinatura;
-- validar origem;
-- deduplicar;
-- rate limit;
-- remover tokens;
-- normalizar payload;
-- rejeitar anexos inválidos.
-
-### 9. Auditoria
-
-Registrar:
-
-- usuário/canal;
-- agent_id;
-- tenant_id;
-- tool chamada;
-- modelo usado;
-- decisão de guardrail;
-- judge score;
-- erro;
-- trace_id.
-
-### 10. Erros comuns
-
-| Erro | Impacto | Correção |
-| --- | --- | --- |
-| Secret em .env versionado | Vazamento. | Usar Vault/Secrets. |
-| Tool sem autorização | Acesso indevido. | Allowed agents por tool. |
-| Payload bruto em logs | Exposição de dados. | Mascarar/minimizar. |
-| Instance principal local | Timeout/autenticação inválida. | Usar config_file local. |
-
-
-### 11. Critérios de aceite
-
-- [ ] Modo de autenticação definido por ambiente.
-- [ ] Secrets externos ao código.
-- [ ] MCP tools autorizadas por agente.
-- [ ] Channel Gateway valida origem.
-- [ ] PII mascarada em logs.
-- [ ] Eventos auditáveis emitidos.
-- [ ] Workload Identity definido para OKE.
-- [ ] Security review executado antes de produção.
-
-### Deployment requirements
-
-> Consolidated from `specs/SPEC-008-Deployment.md`.
-
-### Escopo
-
-Deployment cobre empacotamento, CI/CD, Kubernetes/OKE, Docker, secrets, autenticação OCI, health checks, rollback e operação dos componentes.
-
-### Componentes Deployáveis
-
-| Componente | Artefato |
-|---|---|
-| Agent Gateway | Docker image + Kubernetes Deployment |
-| Channel Gateway | Docker image + Kubernetes Deployment |
-| AI Gateway | Docker image + Kubernetes Deployment |
-| MCP Gateway | Docker image + Kubernetes Deployment |
-| Agent Backend | Docker image + Kubernetes Deployment |
-| MCP Server | Docker image + Kubernetes Deployment |
-| Evaluator API | Docker image + Kubernetes Deployment |
-| Evaluator Batch | Kubernetes CronJob |
-| Frontend Demo | Docker image opcional |
-
-### Pipeline
-
-```mermaid
-flowchart LR
-    A[Commit] --> B[Lint]
-    B --> C[Type Check]
-    C --> D[Unit Tests]
-    D --> E[Contract Tests]
-    E --> F[Security Scan]
-    F --> G[Build Wheel]
-    G --> H[Build Images]
-    H --> I[Publish]
-    I --> J[Deploy Dev]
-    J --> K[Smoke Tests]
-    K --> L[Certification]
-    L --> M[Deploy HML/Prod]
-```
-
-### Stages
-
-```yaml
-stages:
-  - validate
-  - lint
-  - type_check
-  - unit_test
-  - contract_test
-  - security_scan
-  - build_package
-  - build_image
-  - publish
-  - deploy_dev
-  - smoke_test
-  - certification
-  - deploy_hml
-  - deploy_prod
-```
-
-### Kubernetes Deployment
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: agent-runtime
-  labels:
-    app: agent-runtime
-    component: runtime
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: agent-runtime
-  template:
-    metadata:
-      labels:
-        app: agent-runtime
-    spec:
-      serviceAccountName: agent-runtime-sa
-      containers:
-        - name: agent-runtime
-          image: registry/agent-runtime:1.0.0
-          ports:
-            - containerPort: 8000
-          envFrom:
-            - configMapRef:
-                name: agent-runtime-config
-            - secretRef:
-                name: agent-runtime-secrets
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: 8000
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-```
-
-### Service
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: agent-runtime
-spec:
-  selector:
-    app: agent-runtime
-  ports:
-    - port: 8000
-      targetPort: 8000
-```
-
-### OCI Authentication
-
-| Ambiente | Modo |
-|---|---|
-| Local | `config_file` |
-| Local com endpoint OpenAI-Compatible | API key |
-| OCI Compute | `instance_principal` |
-| OKE | `workload_identity` ou `resource_principal` |
-| Testes | `mock` |
-
-### Variáveis
-
-```env
-LLM_PROVIDER=oci_sdk
-OCI_AUTH_MODE=workload_identity
-ENABLE_LANGFUSE=true
-ENABLE_OTEL=true
-SESSION_REPOSITORY_PROVIDER=autonomous
-MEMORY_REPOSITORY_PROVIDER=autonomous
-CHECKPOINT_REPOSITORY_PROVIDER=autonomous
-```
-
-### Secrets
-
-| Secret | Uso |
-|---|---|
-| `LANGFUSE_PUBLIC_KEY` | Langfuse |
-| `LANGFUSE_SECRET_KEY` | Langfuse |
-| `OCI_GENAI_API_KEY` | OCI OpenAI-Compatible |
-| `ADB_PASSWORD` | Autonomous Database |
-| `MCP_BACKEND_TOKEN` | Integrações MCP |
-| `OTEL_AUTH_TOKEN` | Exportador OTEL, se aplicável |
-
-### Health Checks
-
-| Endpoint | Uso |
-|---|---|
-| `/health` | Processo vivo. |
-| `/ready` | Pronto para tráfego. |
-| `/version` | Versão de build. |
-| `/debug/env` | Ambiente sem segredos, quando habilitado. |
-
-### Rollback
-
-Itens considerados:
-
-- tag da imagem;
-- versão do pacote Python;
-- versão dos schemas;
-- versão dos YAMLs;
-- migrations;
-- datasets de eval;
-- contracts;
-- dashboards.
-
-### Smoke Tests
+### Terminal 1 - Telecom MCP Server
 
 ```bash
-curl -f http://agent-runtime:8000/health
-curl -f http://agent-gateway:9000/health
-curl -f http://mcp-gateway:8300/health
-curl -f http://ai-gateway:9100/health
+cd mcp/servers/telecom_mcp_server
+python -m uvicorn main:app --host 0.0.0.0 --port 8100 --reload
 ```
 
-### Certification Stage
+### Terminal 2 - Retail MCP Server
 
-A pipeline executa:
+```bash
+cd mcp/servers/retail_mcp_server
+python -m uvicorn main:app --host 0.0.0.0 --port 8200 --reload
+```
 
-- health checks;
-- contrato GatewayRequest;
-- roteamento;
-- MCP invoke;
-- LLM mock/real conforme ambiente;
-- guardrails;
-- judges;
-- memória/checkpoint;
-- relatório JSON/HTML.
+### Terminal 3 - MCP Gateway
 
+```bash
+cd apps/mcp_gateway
+export MCP_GATEWAY_CONFIG_PATH=config/mcp_gateway.yaml
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8300 --reload
+```
 
-### Requisitos Não Funcionais
+### Terminal 4 - Backend/agent
 
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
+In the `.env` of the backend/agent or runtime that uses `agent_framework`, enable:
 
+```env
+ENABLE_MCP_TOOLS=true
+MCP_GATEWAY_ENABLED=true
+MCP_GATEWAY_URL=http://localhost:8300
+MCP_GATEWAY_AGENT_ID=telecom_contas
+MCP_GATEWAY_TENANT_ID=default
+```
 
-### Critérios de Aceite
+### Quick tests
 
-- [ ] Cada app possui Dockerfile.
-- [ ] Cada app possui manifest Kubernetes.
-- [ ] CI executa lint, type check e testes.
-- [ ] Contract tests validam contratos principais.
-- [ ] Security scan executa antes do publish.
-- [ ] Secrets não são versionados.
-- [ ] Workload Identity está configurado em OKE.
-- [ ] Health/readiness/liveness estão ativos.
-- [ ] Smoke tests rodam após deploy.
-- [ ] Rollback está documentado.
+### Gateway health
 
+```bash
+curl http://localhost:8300/health
+```
 
-### Glossário
+### List of tools exposed by the gateway
 
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
+```bash
+curl http://localhost:8300/v1/tools
+```
+
+### Tool call through the gateway
+
+```bash
+curl -X POST http://localhost:8300/v1/tools/consultar_fatura/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "channel": "web",
+    "tool_name": "consultar_fatura",
+    "arguments": {
+      "msisdn": "11999999999",
+      "invoice_id": "INV-123"
+    },
+    "business_context": {},
+    "metadata": {"session_id": "local-test"}
+  }'
+```
+
+Expected response: `ok: true`, `data.invoice_id`, `data.msisdn`, `metadata.server: telecom`.
+
+### What was fixed
+
+- `apps/mcp_gateway/config/mcp_gateway.yaml` now points to the real MCP servers on ports `8100` and `8200`.
+- MCP Gateway now supports the legacy MCP-server contract: `POST /mcp/tools/call` with `{tool_name, arguments}`.
+- `agent_framework` gained the flags `MCP_GATEWAY_ENABLED`, `MCP_GATEWAY_URL`, `MCP_GATEWAY_TOKEN`, `MCP_GATEWAY_AGENT_ID`, and `MCP_GATEWAY_TENANT_ID`.
+- `MCPToolRouter` now calls the MCP Gateway when `MCP_GATEWAY_ENABLED=true`.
+- `libs/agent_framework/config/mcp_servers.yaml` was retained as a logical registry/fallback, not as the primary path when the gateway is active.
+
+### Architectural evolution of the gateways
+
+> Content consolidated from `Documentacao/README_AGENT_GATEWAY_AND_MCP_GATEWAY_EVOLUTION.md`.
+
+This overlay removes the concept of a separate `AI Gateway`.
+
+### Architecture
+
+```text
+Frontend
+  ↓
+Agent Gateway
+  ├── governance
+  ├── model policies
+  ├── rate limit
+  ├── audit
+  └── evaluation hooks
+  ↓
+Agent Backend / Runtime
+  ├── LangGraph
+  ├── state
+  ├── memory
+  ├── checkpoints
+  └── LLM providers via profiles existentes
+       ↓
+     MCP Gateway
+       ↓
+     MCP Servers
+```
+
+### What belongs in the Agent Gateway
+
+```text
+apps/agent_gateway/app/governance/
+apps/agent_gateway/app/governance_middleware.py
+apps/agent_gateway/app/routes/governed_proxy_example.py
+apps/agent_gateway/config/gateway_governance.yaml
+```
+
+### What belongs in the MCP Gateway
+
+```text
+apps/mcp_gateway/
+libs/agent_framework/src/agent_framework/gateways/mcp_gateway_client.py
+libs/agent_framework/src/agent_framework/runtime_mcp_gateway_adapter.py
+```
+
+### Apply overlay
+
+```bash
+unzip agent_platform_agent_gateway_mcp_gateway_overlay.zip -d /tmp/overlay
+rsync -av /tmp/overlay/ ./
+```
+
+### Start MCP Gateway locally
+
+```bash
+docker compose -f deploy/docker/docker-compose.mcp-gateway.yml up --build
+```
+
+Services:
+
+```text
+MCP Gateway      http://localhost:8300
+Mock Telecom MCP http://localhost:8001
+```
+
+### Test MCP Gateway
+
+```bash
+curl http://localhost:8300/health
+curl http://localhost:8300/v1/tools
+```
+
+Execute tool:
+
+```bash
+curl -s -X POST http://localhost:8300/v1/tools/consultar_fatura/invoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "default",
+    "agent_id": "telecom_contas",
+    "channel": "web",
+    "tool_name": "consultar_fatura",
+    "business_context": {
+      "customer_key": "11999999999",
+      "contract_key": "INV-001",
+      "session_key": "session-001"
+    }
+  }' | jq
+```
+
+### How to plug it into Agent Gateway
+
+In the actual `POST /gateway/message` handler, before forwarding to backend/runtime:
+
+```python
+governed_body, headers = governance.prepare_backend_request(body)
+```
+
+After receiving the backend response:
+
+```python
+return governance.process_backend_response(data)
+```
+
+The file below shows a complete example:
+
+```text
+apps/agent_gateway/app/routes/governed_proxy_example.py
+```
+
+### Runtime Variables
+
+```env
+MCP_GATEWAY_ENABLED=true
+MCP_GATEWAY_URL=http://localhost:8300
+MCP_GATEWAY_TIMEOUT_SECONDS=60
+```
+
+### Important
+
+There is no `apps/ai_gateway`.
+
+Model governance lives in Agent Gateway as policy/metadata.
+
+Runtime continues using the existing LLM providers and may read the policy sent by the Gateway from:
+
+```python
+state["metadata"]["model_policy"]
+```
+
+### File and responsibility inventory
+
+> Content consolidated from `Documentacao/INVENTARIO_AGENT_GATEWAY_MCP_GATEWAY.md`.
+
+This inventory lists the files included in the `agent_platform_agent_gateway_mcp_gateway_overlay.zip` overlay, indicating the area, type of change, and purpose of each file.
+
+### Summary
+
+| Area | Quantity |
+|---|---:|
+| Documentation | 1 |
+| Agent Gateway | 10 |
+| MCP Gateway | 5 |
+| Agent Framework | 4 |
+| Template Backend | 2 |
+| MCP Server Mock | 2 |
+| Deploy | 2 |
+
+### Files by area
+
+### Documentation
+
+| File | Type | Purpose |
+|---|---|---|
+| `README_AGENT_GATEWAY_AND_MCP_GATEWAY_EVOLUTION.md` | New / overlay | Main overlay document. Explains the new architecture without a separate AI Gateway, with Agent Gateway governing policies/models and a separate MCP Gateway for tools. |
+
+### Agent Gateway
+
+| File | Type | Purpose |
+|---|---|---|
+| `apps/agent_gateway/app/config/governance_loader.py` | New / overlay | Loads the Agent Gateway governance YAML file from `AGENT_GATEWAY_GOVERNANCE_CONFIG`. |
+| `apps/agent_gateway/app/governance/__init__.py` | New / overlay | Initializes the Agent Gateway governance Python package. |
+| `apps/agent_gateway/app/governance/audit.py` | New / overlay | Centralizes logging/auditing of Agent Gateway governance decisions, with simple protection to avoid logging the full message. |
+| `apps/agent_gateway/app/governance/evaluation_hooks.py` | New / overlay | Hooks before and after the backend/runtime call. Used for sampling, evaluator, scoring, or future Langfuse integration. |
+| `apps/agent_gateway/app/governance/model_policies.py` | New / overlay | Resolves model/profile policies in Agent Gateway. Defines which provider/model/profile should be used by operation, tenant, and agent. |
+| `apps/agent_gateway/app/governance/rate_limit.py` | New / overlay | Implements in-memory rate limiting by tenant, agent, and channel before forwarding the request to backend/runtime. |
+| `apps/agent_gateway/app/governance/usage.py` | New / overlay | Hook to record gateway usage, applied policies, and backend responses. Ready to plug into metrics, database, Langfuse, or OTEL. |
+| `apps/agent_gateway/app/governance_middleware.py` | New / overlay | Main Agent Gateway governance component. Applies rate limiting, resolves `model_policy`, generates headers/metadata, and executes hooks before/after the backend. |
+| `apps/agent_gateway/app/routes/governed_proxy_example.py` | New / overlay | Example governed route demonstrating how to apply governance before forwarding to the Agent Backend/Runtime. |
+| `apps/agent_gateway/config/gateway_governance.yaml` | New / overlay | Agent Gateway governance configuration: profiles, operation profiles, allowed providers, rate limits, propagated headers, and evaluation hooks. |
+
+### MCP Gateway
+
+| File | Type | Purpose |
+|---|---|---|
+| `apps/mcp_gateway/Dockerfile` | New / overlay | MCP Gateway Docker image. |
+| `apps/mcp_gateway/app/__init__.py` | New / overlay | Initializes the MCP Gateway application Python package. |
+| `apps/mcp_gateway/app/main.py` | New / overlay | MCP Gateway FastAPI application. Exposes health, ready, tool catalog, and invoke endpoint with auth, authorization, mapping, cache, timeout, and retry. |
+| `apps/mcp_gateway/config/mcp_gateway.yaml` | New / overlay | Central MCP Gateway configuration: MCP servers, tools, versions, cache, timeout, retry, authorization by agent/channel, and BusinessContext → parameter mapping. |
+| `apps/mcp_gateway/requirements.txt` | New / overlay | MCP Gateway Python dependencies. |
+
+### Agent Framework
+
+| File | Type | Purpose |
+|---|---|---|
+| `libs/agent_framework/src/agent_framework/gateway_policy_context.py` | New / overlay | Framework helper for Runtime to read the model policy sent by Agent Gateway in `state['metadata']['model_policy']`. |
+| `libs/agent_framework/src/agent_framework/gateways/__init__.py` | New / overlay | Initializes the framework gateway-client package, exporting `MCPGatewayClient`. |
+| `libs/agent_framework/src/agent_framework/gateways/mcp_gateway_client.py` | New / overlay | Async framework client for MCP Gateway: list tools and execute tools. |
+| `libs/agent_framework/src/agent_framework/runtime_mcp_gateway_adapter.py` | New / overlay | Optional mixin for agents/runtime to call tools through MCP Gateway and append results to `state['mcp_results']`. |
+
+### Template Backend
+
+| File | Type | Purpose |
+|---|---|---|
+| `templates/agent_template_backend/app/mcp_gateway_client_factory.py` | New / overlay | Factory in the template backend to build `MCPGatewayClient` from environment variables. |
+
+### MCP Server Mock
+
+| File | Type | Purpose |
+|---|---|---|
+| `mcp/servers/mock_telecom_mcp/app.py` | New / overlay | Mock MCP Server with `consultar_fatura` and `consultar_pagamentos` tools for local MCP Gateway validation. |
+| `mcp/servers/mock_telecom_mcp/requirements.txt` | New / overlay | Dependencies for the telecom mock MCP Server used in local tests. |
+
+### Deploy
+
+| File | Type | Purpose |
+|---|---|---|
+| `deploy/docker/docker-compose.mcp-gateway.yml` | New / overlay | Docker Compose file to start MCP Gateway and `mock_telecom_mcp` locally. |
+| `deploy/k8s/mcp-gateway.yaml` | New / overlay | Kubernetes Deployment and Service manifest for MCP Gateway. |
+
+### Integration notes
+
+### Agent Gateway
+
+The files under `apps/agent_gateway` do not create a new service. They evolve the existing Agent Gateway to act as the platform's dedicated gateway, centralizing:
+
+- model/profile policies;
+- rate limiting;
+- auditing;
+- evaluation hooks;
+- propagation of governance metadata to Runtime.
+
+The `governed_proxy_example.py` route is an integration example. The actual `POST /gateway/message` handler should apply:
+
+```python
+governed_body, headers = governance.prepare_backend_request(body)
+```
+
+before calling backend/runtime, and:
+
+```python
+return governance.process_backend_response(data)
+```
+
+after receiving the response.
+
+### MCP Gateway
+
+MCP Gateway is a separate service. It centralizes:
+
+- tool catalog;
+- authorization by agent/channel;
+- tool versioning;
+- BusinessContext-to-parameter mapping;
+- cache;
+- timeout;
+- retry;
+- simple audit.
+
+### Runtime / Backend
+
+Runtime remains responsible for:
+
+- LangGraph;
+- state;
+- memory;
+- checkpoints;
+- flow;
+- existing LLM providers.
+
+Runtime now calls tools through MCP Gateway using `MCPGatewayClient` and/or `MCPGatewayRuntimeMixin`.
+
+### AI Gateway
+
+This overlay does not create `apps/ai_gateway`. Model governance stays in Agent Gateway, and LLM execution remains in Runtime/backend using the existing providers.
+
+### Source files
+
+The files below were consolidated into this manual:
+
+- `Documentacao/MANUAL_AGENT_PLATFORM_GATEWAYS.md`
+- `Documentacao/MANUAL_EXECUCAO_AGENT_GATEWAY_MCP_GATEWAY_FRONTEND.md`
+- `Documentacao/Implementando_Basic_Auth.md`
+- `docs/MCP_GATEWAY_DISCOVERY.md`
+- `Documentacao/MCP_GATEWAY_RUNBOOK.md`
+- `Documentacao/README_AGENT_GATEWAY_AND_MCP_GATEWAY_EVOLUTION.md`
+- `Documentacao/INVENTARIO_AGENT_GATEWAY_MCP_GATEWAY.md`
+
+### Maintenance rule
+
+New fixes or evolutions for this subject should update this consolidated document. Release notes may continue to exist as history, but they should not be required to understand or implement the feature.

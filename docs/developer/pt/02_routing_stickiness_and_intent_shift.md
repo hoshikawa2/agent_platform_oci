@@ -728,6 +728,7 @@ GET /debug/env
 
 ### Arquitetura — Global Supervisor
 
+```text
 Usuário / Frontend
         │
         ▼
@@ -745,6 +746,8 @@ Usuário / Frontend
       ▼         ▼         ▼            ▼
 Backend      Backend   Backend     Backend
 Contas       Ofertas   Suporte     Cobrança
+```
+
 Cada backend continua sendo um projeto independente, com seus próprios agentes, prompts, MCPs e deploy, mas todos usam a mesma biblioteca agent_framework.
 
 ### Estado global
@@ -780,18 +783,21 @@ A capacidade usa um perfil LLM leve para decidir o tratamento global do turno se
 
 ### Fluxo
 
+```text
 Mensagem -> Classificador LLM leve
   CONTINUE + agente ativo -> agente atual
   ROUTE / baixa confiança / erro -> Enterprise Router
   HUMAN_HANDOFF -> nó human_handoff
   END_SESSION -> nó end_session
 As ações globais podem ser reconhecidas no primeiro turno. Isso permite que “quero falar com uma pessoa” ou “pode encerrar” não dependam de um agente de domínio já selecionado.
+```
 
 ### Configuração
 
 
 ### .env
 
+```text
 ENABLE_ROUTE_STICKINESS=true
 ROUTE_STICKINESS_LLM_PROFILE=route_continuity
 ROUTE_STICKINESS_CONFIDENCE_THRESHOLD=0.90
@@ -799,6 +805,7 @@ ROUTE_STICKINESS_HISTORY_TURNS=2
 ROUTE_STICKINESS_MAX_TOKENS=80
 HUMAN_HANDOFF_MESSAGE=Vou encaminhar seu atendimento para uma pessoa.
 END_SESSION_MESSAGE=Atendimento encerrado. Obrigado pelo contato.
+```
 
 ### llm_profiles.yaml
 

@@ -1,51 +1,797 @@
-
 ### Routing, Route Stickiness and Intent Shift
 
 ### How to use this manual
 
 This is a **specialized reference manual**. It does not replace the main tutorial.
 
-- To build an agent end to end, use [`README_en.md`](../../../README_en.md).
-- Use this document when implementing, deep-diving or troubleshooting **routing, stickiness, intent shifts, deterministic/LLM routing and multi-agent isolation**.
-- Historical examples consolidated here must be interpreted against the current framework API.
-- If documentation differs, the current code and root README take precedence.
+- To create an agent from start to finish, use [`README_en.md`](../../../README_en.md).
+- Use this document when you need to implement, deepen, or diagnose **routing, stickiness, intent changes, deterministic/LLM routing, and multi-agent isolation**.
+- The historical examples consolidated here should be read in light of the framework's current API.
+- In case of divergence, the code for the version and the current `README_en.md` take precedence.
 
 ### Relationship with the main tutorial
 
-`README_en.md` introduces this capability as part of the normal development flow. This manual consolidates details previously spread across `docs/`, `Documentacao/`, release notes, validation records and specialized guides.
+The `README_en.md` presents this capability in the normal development flow. This manual brings together details that were distributed across `docs/`, `Documentacao/`, release notes, validations, and specialized guides.
 
-Its purpose is to answer **“how does this feature work in depth and how do I troubleshoot it?”** without becoming a second copy of the main tutorial.
+The goal here is to answer **“how does this feature work in depth and how do I solve problems with it?”**, without turning this file into a second copy of the main tutorial.
 
 ### Scope
 
-Routing, stickiness, intent shifts, deterministic/llm routing and multi-agent isolation.
+Routing, stickiness, intent changes, deterministic/LLM routing, and multi-agent isolation.
 
 ### Consolidated technical content
 
-### Multi-Agent Routing, Route Stickiness and Intent Shift
+### Multi-Agent Routing, Route Stickiness, and Intent Shift
 
-This guide defines how the platform selects an agent, preserves continuity and handles an explicit change of intent without trapping the user in the previous route.
+Complete manual for route decision, Enterprise Router, Supervisor, semantic continuity, global session actions, explicit intent changes, and precedence during transactions.
 
-### Routing modes
+### How to use this document
 
-The template supports two architectural modes. **Enterprise Router** performs a routing decision and invokes the selected agent. **Supervisor** uses a supervisor node to coordinate the next agent. The mode is configuration-driven; domain agents should not reimplement routing infrastructure.
+This is the consolidated development document for this subject. It brings together architecture, configuration, examples, runtime behavior, compatibility, tests, and troubleshooting that were previously distributed across several files. Source sections were preserved when they provided distinct technical details; release notes were incorporated as current behavior or correction history.
 
-### Enterprise routing decision order
+### Multi-agent routing manual
 
-Routing should use the cheapest reliable signal first. Deterministic mappings/signals may resolve known intents. If deterministic discovery does not produce a valid route and LLM routing is enabled, the router can ask the configured routing model. This keeps LLM routing as a semantic capability without forcing every turn through an LLM.
+> Content consolidated from `Documentacao/Manual de Roteamento Multi-Agent.docx`.
 
-### Semantic route stickiness
+Multi-Agent Routing Manual  
+Agent Gateway (Global Supervisor), Enterprise Router, and Supervisor in the `agent_framework_oci` project
 
-Route stickiness is a lightweight session-control classification executed before normal routing. It can return:
+### Table of contents
 
-- `CONTINUE`: keep the active agent.
-- `ROUTE`: execute normal Enterprise Router logic.
-- `HUMAN_HANDOFF`: enter the global human-handoff node.
-- `END_SESSION`: enter the global session-ending node.
+- 1. Purpose of the manual
+- 2. What routing means in a multi-agent backend
+- 3. Why routing should be structured for scale, simplicity, and performance
+- 4. Actual project folder structure
+- 5. Architecture overview
+- 6. Main routing components
+- 7. Routing types available in the project
+- 8. Path 1 - Implement agents with Enterprise Router
+- 9. Path 2 - Implement agents with Supervisor
+- 10. How to configure agents, intents, MCP tools, and conversational state
+- 11. How LangGraph executes routing
+- 12. End-to-end functional examples
+- 13. How to test with curl
+- 14. Observability, memory, and checkpointing
+- 15. Troubleshooting
+- 16. Implementation checklist
+- 17. Separate Agent Servers (Global Supervisor or Agent Gateway)
 
-The classifier does not answer the user and does not call tools. Low confidence, timeout, invalid JSON or classifier failure falls back to normal routing. `CONTINUE` is valid only when there is an active agent; otherwise it is treated as `ROUTE`.
+### Purpose of the manual
+
+This manual explains how multi-agent routing is implemented in the `agent_framework_oci` project and how to evolve the backend with new agents without losing governance, performance, and traceability.  
+The components are distributed between the reusable `agent_framework` package and the FastAPI `agent_template_backend` template.
+
+### What routing means in a multi-agent backend
+
+Routing is the step that transforms a user message into an operational decision: which agent should answer, with which intent, which MCP tools may be used, which domain is involved, and which context must be preserved.  
+In a multi-agent system, routing is equivalent to traffic control. Without it, all agents become mixed into the same prompt, memory can be contaminated by different subjects, latency increases, and observability becomes confusing.
+
+### Why routing should be structured for scale, simplicity, and performance
+
+Routing is not only a functional decision. It is an architectural decision. The way the backend selects agents affects cost, latency, testing, governance, telemetry, and product evolution.
+
+### Actual project folder structure
+
+The current structure has three main blocks: reusable framework, backend template, and example MCP servers.
+```
+agent_framework_oci/
+  agent_framework/
+    src/agent_framework/
+      routing/
+        config_loader.py
+        enterprise_router.py
+        models.py
+      supervisor/
+        supervisor.py
+      mcp/
+        tool_router.py
+        registry.py
+        client.py
+        models.py
+      config/
+        settings.py
+        agent_registry.py
+      guardrails/
+      judges/
+      memory/
+      checkpoints/
+      observability/
+      events/
+
+  agent_template_backend/
+    app/
+      main.py
+      state.py
+      workflows/
+        agent_graph.py
+      agents/
+        billing_agent.py
+        product_agent.py
+        orders_agent.py
+        support_agent.py
+        runtime.py
+        prompting.py
+    config/
+      agents.yaml
+      routing.yaml
+      mcp_servers.yaml
+      mcp_servers.docker.yaml
+      tools.yaml
+      guardrails.yaml
+      judges.yaml
+      prompt_policy.yaml
+      agents/
+        telecom_contas/
+        retail_orders/
+
+  mcp_servers/
+    telecom_mcp_server/main.py
+    retail_mcp_server/main.py
+
+  agent_frontend/
+    index.html
+    app.js
+    styles.css
+
+  docker-compose.yml
+  scripts/
+    run_backend.sh
+    run_frontend.sh
+    run_mcp_servers.sh
+    smoke_usage_test.sh
+```
+
+### Architecture overview
+
+The backend uses FastAPI as the entry layer, ChannelGateway for message normalization, LangGraph for orchestration, EnterpriseRouter or Supervisor for routing decisions, specialist agents for execution, MCPToolRouter for external tools, and guardrail, judge, memory, checkpoint, and observability layers.
+```
+User / Frontend / Canal
+        |
+        v
+FastAPI - agent_template_backend/app/main.py
+        |
+        v
+ChannelGateway normaliza payload
+        |
+        v
+SessionRepository + MemoryRepository
+        |
+        v
+AgentWorkflow - app/workflows/agent_graph.py
+        |
+        +--> input_guardrails
+        |
+        +--> routing_decision
+        |       |-- ROUTING_MODE=router     -> EnterpriseRouter
+        |       |-- ROUTING_MODE=supervisor -> Supervisor.route_plan
+        |
+        +--> agente especialista ou supervisor_agent
+        |       |-- billing_agent
+        |       |-- product_agent
+        |       |-- orders_agent
+        |       |-- support_agent
+        |       +-- MCPToolRouter -> MCP Servers telecom/retail
+        |
+        +--> output_guardrails
+        +--> judge
+        +--> supervisor_review
+        +--> persist
+        |
+        v
+Resposta + metadata + trace + checkpoint + eventos
+```
+
+### Main routing components
+
+
+### Settings
+
+The file `agent_framework/src/agent_framework/config/settings.py` centralizes the variables that enable routing, MCP, observability, repositories, LLM, and cache.
+```
+ROUTING_MODE: Literal['router','supervisor'] = 'router'
+ROUTING_CONFIG_PATH: str = './config/routing.yaml'
+ENABLE_LLM_ROUTER: bool = False
+ENABLE_MCP_TOOLS: bool = True
+MCP_SERVERS_CONFIG_PATH: str = './config/mcp_servers.yaml'
+TOOLS_CONFIG_PATH: str = './config/tools.yaml'
+SESSION_REPOSITORY_PROVIDER: Literal['memory','sqlite','autonomous','oracle','mongodb'] = 'memory'
+MEMORY_REPOSITORY_PROVIDER: Literal['memory','sqlite','autonomous','oracle','mongodb'] = 'memory'
+CHECKPOINT_REPOSITORY_PROVIDER: Literal['memory','sqlite','autonomous','oracle','mongodb'] = 'memory'
+ENABLE_LANGFUSE: bool = False
+```
+
+### RouteDecision
+
+`RouteDecision` is the EnterpriseRouter output contract. It carries the functional decision as well as information useful for audit and tool execution.
+```
+class RouteDecision(BaseModel):
+    route: str
+    agent: str
+    intent: str
+    confidence: float = 0.0
+    reason: str = ''
+    method: Literal['state','keyword','llm','fallback'] = 'fallback'
+    next_state: str | None = None
+    handoff: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    domain: str | None = None
+    mcp_tools: list[str] = Field(default_factory=list)
+```
+
+### IntentDefinition
+
+`IntentDefinition` is loaded from `config/routing.yaml` and describes a routable intent.
+
+### SupervisorPlan
+
+`SupervisorPlan` is the Supervisor output contract. Instead of returning a single agent, it returns a list of agents to execute in the `supervisor_agent` node.
+```
+@dataclass
+class SupervisorPlan:
+    agents: list[str]
+    intent: str
+    confidence: float = 0.0
+    reason: str = ''
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
+
+### Routing types available in the project
+
+
+### Enterprise Router
+
+The EnterpriseRouter executes a clear decision order: conversational state, keyword/intents, optional LLM, and fallback. This order is important because it prevents short messages such as "yes" from being classified outside the active flow.
+```
+Fluxo do EnterpriseRouter:
+1. current_state = state.next_state ou session.metadata.workflow_state
+2. Se state_policies contém o estado, retorna o agente associado
+3. Caso contrário, procura keywords nas intents habilitadas
+4. Se ENABLE_LLM_ROUTER=true, pede classificação ao LLM
+5. Se nada funcionar, usa router.fallback_agent
+```
+
+### Supervisor
+
+The implemented Supervisor is deterministic. It looks for billing, product, orders, and support keywords. If it detects more than one domain, it returns `intent=multi_intent` and multiple agents. The workflow then executes `supervisor_agent`, which calls the specified agents and consolidates the response.
+```
+Mensagem: "Meu pedido atrasou e minha fatura veio duplicada"
+SupervisorPlan:
+  agents: ["billing_agent", "orders_agent"]
+  intent: "multi_intent"
+  reason: "Supervisor detectou múltiplas intenções e acionará mais de um agente."
+```
+
+### Path 1 - Implement agents with Enterprise Router
+
+This is the recommended path for initial production. Each turn selects one primary agent. The design is simple, performant, and easy to observe.
+```
+Usuário
+  -> input_guardrails
+  -> routing_decision
+       -> EnterpriseRouter.route(state)
+            -> state_policies
+            -> keyword/intents
+            -> LLM opcional
+            -> fallback
+  -> billing_agent | product_agent | orders_agent | support_agent
+  -> output_guardrails
+  -> judge
+  -> supervisor_review
+  -> persist
+```
+
+### Step 1 - Define the mode in `.env`
+
+```
+ROUTING_MODE=router
+ROUTING_CONFIG_PATH=./config/routing.yaml
+ENABLE_LLM_ROUTER=false
+ENABLE_MCP_TOOLS=true
+```
+
+### Step 2 - Register or adjust the intent in `config/routing.yaml`
+
+Each intent must point to the specialist agent and list the MCP tools authorized for that intent.
+```
+intents:
+  - name: billing_invoice_explanation
+    domain: telecom
+    agent: billing_agent
+    description: Dúvidas sobre fatura, cobrança, vencimento, segunda via, contestação e valores.
+    priority: 10
+    mcp_tools:
+      - consultar_fatura
+      - consultar_pagamentos
+    keywords:
+      - fatura
+      - conta
+      - cobrança
+      - boleto
+      - vencimento
+      - segunda via
+      - contestar
+      - valor alto
+```
+
+### Step 3 - Ensure that the agent exists in the workflow
+
+In the current project, agents are instantiated directly in `AgentWorkflow.__init__` and have also been added as LangGraph nodes.
+```
+# agent_template_backend/app/workflows/agent_graph.py
+self.billing = BillingAgent(llm, **agent_kwargs)
+self.product = ProductAgent(llm, **agent_kwargs)
+self.orders = OrdersAgent(llm, **agent_kwargs)
+self.support = SupportAgent(llm, **agent_kwargs)
+
+builder.add_node("billing_agent", self._node("billing_agent", self.billing_agent))
+builder.add_node("product_agent", self._node("product_agent", self.product_agent))
+builder.add_node("orders_agent", self._node("orders_agent", self.orders_agent))
+builder.add_node("support_agent", self._node("support_agent", self.support_agent))
+```
+
+### Step 4 - Ensure that the graph conditional accepts the route
+
+```
+builder.add_conditional_edges(
+    "routing_decision",
+    lambda s: s.get("route", "billing_agent"),
+    {
+        "billing_agent": "billing_agent",
+        "product_agent": "product_agent",
+        "orders_agent": "orders_agent",
+        "support_agent": "support_agent",
+        "handoff": "handoff",
+        "supervisor_agent": "supervisor_agent",
+    },
+)
+```
+
+### Step 5 - Configure the intent's MCP tools
+
+The intent carries `mcp_tools` in the `RouteDecision`. The agent reads `state.get("mcp_tools")` and calls `self.tool_router.call(tool, args)`.
+```
+# Exemplo em BillingAgent._collect_tool_context
+tools = state.get("mcp_tools") or []
+for tool in tools:
+    args = {
+        "msisdn": ctx.get("msisdn"),
+        "invoice_id": ctx.get("invoice_id"),
+        "asset_id": ctx.get("asset_id"),
+        "session_id": state.get("conversation_key") or state.get("session_id"),
+    }
+    res = await self.tool_router.call(tool, args)
+```
+
+### Path 2 - Implement agents with Supervisor
+
+This path is appropriate when the user may mix subjects in a single message. The Supervisor does not choose only one route; it creates an execution plan.
+```
+Usuário
+  -> input_guardrails
+  -> routing_decision
+       -> Supervisor.route_plan(state)
+       -> route = supervisor_agent
+  -> supervisor_agent
+       -> executa billing_agent opcional
+       -> executa product_agent opcional
+       -> executa orders_agent opcional
+       -> executa support_agent opcional
+       -> consolida resposta
+  -> output_guardrails
+  -> judge
+  -> supervisor_review
+  -> persist
+```
+
+### Step 1 - Enable it in `.env`
+
+```
+ROUTING_MODE=supervisor
+ENABLE_SUPERVISOR=true
+ENABLE_MCP_TOOLS=true
+```
+
+### Step 2 - Adjust Supervisor rules
+
+In the current project, the Supervisor uses the `ROUTING_RULES` list in `agent_framework/src/agent_framework/supervisor/supervisor.py`. To include a new agent in supervisor mode, add a rule with intent, agent, and keywords.
+```
+ROUTING_RULES = [
+    ("billing", "billing_agent", ["fatura", "conta", "cobrança", "boleto"]),
+    ("product", "product_agent", ["produto", "plano", "serviço", "internet"]),
+    ("orders", "orders_agent", ["pedido", "entrega", "rastreio", "atraso"]),
+    ("support", "support_agent", ["troca", "devolução", "garantia", "defeito"]),
+]
+```
+
+### Step 3 - Ensure that `supervisor_agent` knows how to execute the agent
+
+```
+handlers = {
+    "billing_agent": self.billing.run,
+    "product_agent": self.product.run,
+    "orders_agent": self.orders.run,
+    "support_agent": self.support.run,
+}
+
+for agent_name in agents:
+    handler = handlers.get(agent_name)
+    child_state = {**state, "route": agent_name, "active_agent": agent_name}
+    result = await handler(child_state)
+```
+
+### Step 4 - Understand consolidation
+
+When the Supervisor activates only one agent, the final response is that agent's response. When it activates several, the current project concatenates partial responses with a consolidation prefix. In production, this step can evolve into an LLM synthesis with its own prompt and specific guardrails.
+```
+if len(partials) == 1:
+    answer = partials[0]["answer"]
+else:
+    joined = "
+
+".join(f"{p['agent']}: {p['answer']}" for p in partials)
+    answer = "[Supervisor] Consolidação de múltiplos agentes acionados.
+" + joined
+```
+
+### How to configure agents, intents, MCP tools, and conversational state
+
+
+### `config/agents.yaml`
+
+This file does not directly register each specialist node. It registers agent profiles/templates, such as `telecom_contas` and `retail_orders`. The input `agent_id` defines the isolation context, policies, prompts, guardrails, judges, and tools.
+```
+default_agent_id: telecom_contas
+agents:
+  - agent_id: telecom_contas
+    name: Agente Telecom Contas
+    prompt_policy_path: ./config/agents/telecom_contas/prompt_policy.yaml
+    routing_config_path: ./config/routing.yaml
+    guardrails_config_path: ./config/agents/telecom_contas/guardrails.yaml
+    judges_config_path: ./config/agents/telecom_contas/judges.yaml
+    mcp_servers_config_path: ./config/mcp_servers.yaml
+    tools_config_path: ./config/tools.yaml
+    metadata:
+      domain: telecom
+
+  - agent_id: retail_orders
+    name: Agente Retail Pedidos
+    prompt_policy_path: ./config/agents/retail_orders/prompt_policy.yaml
+    routing_config_path: ./config/routing.yaml
+    guardrails_config_path: ./config/agents/retail_orders/guardrails.yaml
+    judges_config_path: ./config/agents/retail_orders/judges.yaml
+    mcp_servers_config_path: ./config/mcp_servers.yaml
+    tools_config_path: ./config/tools.yaml
+    metadata:
+      domain: retail
+```
+
+### `config/routing.yaml`
+
+This file configures the EnterpriseRouter and documents the default mode. The `.env` variable `ROUTING_MODE` is the recommended way to enable router or supervisor at runtime.
+
+### `config/tools.yaml`
+
+Defines each logical tool and the responsible MCP server.
+```
+tools:
+  consultar_fatura:
+    description: Consulta dados resumidos de fatura por msisdn/invoice_id.
+    mcp_server: telecom
+    enabled: true
+    args_schema:
+      msisdn: string
+      invoice_id: string
+
+  consultar_pedido:
+    description: Consulta pedido de varejo por order_id/customer_id.
+    mcp_server: retail
+    enabled: true
+    args_schema:
+      order_id: string
+      customer_id: string
+```
+
+### `config/mcp_servers.yaml`
+
+```
+servers:
+  telecom:
+    transport: http
+    endpoint: http://localhost:8100/mcp
+    enabled: true
+    description: MCP Server de exemplo para domínio Telecom.
+
+  retail:
+    transport: http
+    endpoint: http://localhost:8200/mcp
+    enabled: true
+    description: MCP Server de exemplo para domínio Retail.
+```
+
+### How LangGraph executes routing
+
+The graph is created in `agent_template_backend/app/workflows/agent_graph.py`. The key point is that there is a single decision node: `routing_decision`. This avoids having two different backends for the two routing models.
+```
+START
+  -> input_guardrails
+  -> routing_decision
+      -> billing_agent
+      -> product_agent
+      -> orders_agent
+      -> support_agent
+      -> handoff
+      -> supervisor_agent
+  -> output_guardrails
+  -> judge
+  -> supervisor_review
+  -> persist
+  -> END
+```
+
+### End-to-end functional examples
+
+
+### Router example - invoice
+
+```
+Entrada:
+"Minha fatura veio alta"
+
+EnterpriseRouter:
+- Lê sanitized_input
+- Encontra keyword "fatura"
+- Seleciona intent billing_invoice_explanation
+- Retorna route=billing_agent
+- Retorna mcp_tools=[consultar_fatura, consultar_pagamentos]
+
+Workflow:
+- Vai para billing_agent
+- BillingAgent chama MCPToolRouter para consultar_fatura/consultar_pagamentos se houver argumentos no contexto
+- Resposta passa por output_guardrails, judges, supervisor_review e persist
+```
+
+### Router example - order
+
+```
+Entrada:
+"Onde está meu pedido?"
+
+EnterpriseRouter:
+- Keyword "pedido"
+- Intent retail_order_tracking
+- Route orders_agent
+- Tools consultar_pedido e consultar_entrega
+
+Workflow:
+- Executa OrdersAgent
+- OrdersAgent monta argumentos order_id/customer_id a partir do context
+- Chama tools MCP de retail quando disponíveis
+```
+
+### Supervisor example - billing + order
+
+```
+Entrada:
+"Meu pedido atrasou e minha fatura veio duplicada"
+
+Supervisor:
+- Detecta pedido/atraso -> orders_agent
+- Detecta fatura/duplicada -> billing_agent
+- Retorna agents=[billing_agent, orders_agent] ou ordem conforme regras
+- intent=multi_intent
+
+Workflow:
+- routing_decision retorna route=supervisor_agent
+- supervisor_agent executa cada agente listado
+- Consolida resposta final
+- Output guardrails e judges avaliam a resposta consolidada
+```
+
+### How to test with curl
+
+
+### Check backend and active mode
+
+```
+curl http://localhost:8000/health | jq
+Campos importantes esperados:
+{
+  "status": "ok",
+  "routing_mode": "router" ou "supervisor",
+  "agents": ["telecom_contas", "retail_orders"],
+  "session_repository": "memory|sqlite|autonomous|oracle|mongodb",
+  "checkpoint_repository": "memory|sqlite|autonomous|oracle|mongodb"
+}
+```
+
+### Check loaded agents/profiles
+
+```
+curl http://localhost:8000/agents | jq
+```
+
+### Test routing without executing the full conversation
+
+```
+curl -X POST http://localhost:8000/debug/route   -H 'Content-Type: application/json'   -d '{
+    "channel":"web",
+    "payload":{
+      "text":"Minha fatura veio alta",
+      "session_id":"s-router-1",
+      "context":{"msisdn":"5511999999999","invoice_id":"INV001"}
+    },
+    "agent_id":"telecom_contas",
+    "tenant_id":"tenant_a"
+  }' | jq
+Resposta esperada em ROUTING_MODE=router:
+{
+  "route": "billing_agent",
+  "agent": "billing_agent",
+  "intent": "billing_invoice_explanation",
+  "method": "keyword",
+  "mode": "router",
+  "mcp_tools": ["consultar_fatura", "consultar_pagamentos"]
+}
+curl -X POST http://localhost:8000/debug/route   -H 'Content-Type: application/json'   -d '{
+    "channel":"web",
+    "payload":{
+      "text":"Meu pedido atrasou e minha fatura veio duplicada",
+      "session_id":"s-supervisor-1",
+      "context":{"order_id":"P100","msisdn":"5511999999999"}
+    },
+    "agent_id":"telecom_contas",
+    "tenant_id":"tenant_a"
+  }' | jq
+Resposta esperada em ROUTING_MODE=supervisor:
+{
+  "mode": "supervisor",
+  "route": "supervisor_agent",
+  "agents": ["billing_agent", "orders_agent"],
+  "intent": "multi_intent"
+}
+```
+
+### Test MCP tools
+
+```
+curl http://localhost:8000/debug/mcp/tools | jq
+
+curl -X POST http://localhost:8000/debug/mcp/call/consultar_fatura   -H 'Content-Type: application/json'   -d '{"msisdn":"5511999999999","invoice_id":"INV001"}' | jq
+
+curl -X POST http://localhost:8000/debug/mcp/call/consultar_pedido   -H 'Content-Type: application/json'   -d '{"order_id":"P100","customer_id":"C001"}' | jq
+```
+
+### Test the full conversation
+
+```
+curl -X POST http://localhost:8000/gateway/message   -H 'Content-Type: application/json'   -d '{
+    "channel":"web",
+    "agent_id":"telecom_contas",
+    "tenant_id":"tenant_a",
+    "payload":{
+      "text":"Minha fatura veio alta. Pode consultar?",
+      "session_id":"web-001",
+      "user_id":"u1",
+      "channel_id":"browser-1",
+      "context":{
+        "msisdn":"5511999999999",
+        "invoice_id":"INV001"
+      }
+    }
+  }' | jq
+Campos úteis na resposta:
+metadata.route
+metadata.intent
+metadata.route_decision
+metadata.mcp_tools
+metadata.mcp_results
+metadata.guardrails
+metadata.judges
+```
+
+### Observability, memory, and checkpointing
+
+The input flow creates an identity with `tenant_id`, `agent_id`, and `session_id`. The `AgentIdentity.conversation_key()` method is used as the operational conversation key. This key is used for session, memory, checkpoint, SSE, and telemetry.
+```
+tenant_id + agent_id + session_id -> conversation_key
+Exemplo:
+tenant_a:telecom_contas:web-001
+Endpoints úteis:
+GET /sessions/{session_id}/messages
+GET /sessions/{session_id}/checkpoint
+GET /debug/usage
+GET /debug/env
+```
+
+### Troubleshooting
+
+
+### Implementation checklist
+
+- Decide whether the use case requires `ROUTING_MODE=router` or `ROUTING_MODE=supervisor`.
+- Register or adjust intents in `agent_template_backend/config/routing.yaml`.
+- Ensure each intent points to the correct specialist agent.
+- Configure `mcp_tools` on the intent only when the tool should be allowed in that context.
+- Register tools in `config/tools.yaml` and servers in `config/mcp_servers.yaml`.
+- Ensure the specialist agent exists in `agent_template_backend/app/agents/`.
+- Instantiate the agent in `AgentWorkflow.__init__`.
+- Add the agent node to LangGraph.
+- Add the route to `routing_decision`'s `add_conditional_edges`.
+- In supervisor mode, add a rule to `Supervisor.ROUTING_RULES` and a handler to `supervisor_agent`.
+- Test `/health`, `/agents`, and `/debug/env`.
+- Test `/debug/route` for each intent.
+- Test `/debug/mcp/tools` and `/debug/mcp/call/{tool_name}`.
+- Test `/gateway/message` with real context.
+- Check `metadata.route`, `metadata.intent`, `metadata.route_decision`, `metadata.mcp_results`, guardrails, and judges.
+- Validate memory, checkpoint, and traces by `conversation_key`.
+
+### Architecture — Global Supervisor
+
+```text
+User / Frontend
+        │
+        ▼
+┌───────────────────────────────┐
+│ Agent Gateway                 │
+│ Global Supervisor             │
+│                               │
+│ - Rule-based router           │
+│ - LLM-based supervisor        │
+│ - Stateful hybrid             │
+│ - Handoff between backends    │
+└───────────────┬───────────────┘
+                │
+      ┌─────────┼─────────┬────────────┐
+      ▼         ▼         ▼            ▼
+Backend      Backend   Backend     Backend
+Billing      Offers    Support     Collections
+```
+Each backend remains an independent project, with its own agents, prompts, MCPs, and deployment, but all of them use the same `agent_framework` library.
+
+### Global state
+
+The Gateway maintains an `active_backend` for each `session_id`. In `hybrid` mode, short messages such as `"and this amount?"` remain on the active backend without calling the LLM.
+
+### Shared memory
+
+For production, configure the backends to use the same Session/Memory/Checkpoint Repository, preferably Autonomous DB, Oracle, MongoDB, or Redis + DB.
+
+### Semantic Route Stickiness and global session control
+
+> Content consolidated from `Documentacao/Route_Stickiness_Semantica_Agent_Framework_OCI.docx`.
+
+Agent Framework OCI  
+Lightweight LLM classification, without regex, with Human Handoff and Session End
+
+### Goal
+
+The capability uses a lightweight LLM profile to decide global turn handling without regex, phrase lists, or domain-specific linguistic rules. It prevents each agent from implementing its own continuity, human transfer, or termination logic.
+- CONTINUE: keeps the active agent.
+- ROUTE: executes the normal Enterprise Router.
+- HUMAN_HANDOFF: requests human assistance.
+- END_SESSION: ends automated service.
+
+### Architectural principles
+
+- No natural-language rule is coded in the core.
+- The classifier does not answer the user and does not execute tools.
+- Handoff and session ending are handled by global graph nodes.
+- Low confidence, timeout, error, or invalid JSON fall back to the Enterprise Router.
+- CONTINUE requires an active agent; without an active agent, the decision becomes ROUTE.
+
+### Flow
+
+Message -> Lightweight LLM classifier  
+  CONTINUE + active agent -> current agent  
+  ROUTE / low confidence / error -> Enterprise Router  
+  HUMAN_HANDOFF -> `human_handoff` node  
+  END_SESSION -> `end_session` node  
+Global actions can be recognized on the first turn. This allows “I want to talk to a person” or “you can end the session” not to depend on a domain agent having already been selected.
 
 ### Configuration
+
+
+### `.env`
 
 ```env
 ENABLE_ROUTE_STICKINESS=true
@@ -53,11 +799,11 @@ ROUTE_STICKINESS_LLM_PROFILE=route_continuity
 ROUTE_STICKINESS_CONFIDENCE_THRESHOLD=0.90
 ROUTE_STICKINESS_HISTORY_TURNS=2
 ROUTE_STICKINESS_MAX_TOKENS=80
-HUMAN_HANDOFF_MESSAGE=I will transfer your interaction to a person.
-END_SESSION_MESSAGE=Interaction ended. Thank you.
+HUMAN_HANDOFF_MESSAGE=I will transfer your service to a person.
+END_SESSION_MESSAGE=Service ended. Thank you for contacting us.
 ```
 
-Example lightweight profile:
+### `llm_profiles.yaml`
 
 ```yaml
 profiles:
@@ -68,761 +814,633 @@ profiles:
     max_tokens: 80
     timeout_seconds: 5
 ```
+The model is only an example. Use the smallest approved model available in the OCI environment.
 
-Use the smallest approved model that reliably classifies continuity in the target environment.
+### Output contracts
 
-### Why deterministic intent shift still exists
 
-Semantic stickiness cannot be allowed to suppress an explicit user request that clearly targets a different operation. Recent fixes introduced deterministic preemption for unequivocal intent changes before invoking the continuity LLM. This is a performance and correctness optimization, not a replacement for semantic routing.
+### Continuity
 
-Typical examples include moving from an informational query to a transactional action or from one tool-backed operation to another within the same agent.
+{"decision":"CONTINUE","confidence":0.97,"reason":"Continuação do assunto anterior."}
+With sufficient confidence and an active agent, the router returns `method=continuity` and `route_bypassed=true`.
 
-### Routing precedence during an open transaction
+### Human handoff
 
-An open transaction changes precedence. If the transaction is waiting for a required parameter and the user's message supplies that parameter, parameter extraction/merge wins over intent-shift detection. If the transaction is waiting for confirmation and the user provides an accepted confirmation/rejection, the transaction state machine wins. Only a genuinely explicit unrelated request should interrupt/reroute according to policy.
+{"route":"human_handoff","intent":"human_handoff","handoff":true,
+ "metadata":{"session_control":"HUMAN_HANDOFF","route_bypassed":true}}
+- `session_control=HUMAN_HANDOFF`
+- `human_handoff_requested=true`
+- `session_ended=false`
+- `next_state=HUMAN_HANDOFF_REQUESTED`
+- event `session.human_handoff.requested`
+The client integration remains responsible for selecting the queue, human-assistance platform, and transfer protocol.
 
-This prevents values such as a price, invoice identifier or product name from being mistaken for a new intent.
+### Session end
 
-### Global session-control contracts
+{"route":"end_session","intent":"end_session",
+ "metadata":{"session_control":"END_SESSION","route_bypassed":true}}
+- `session_control=END_SESSION`
+- `session_ended=true`
+- `human_handoff_requested=false`
+- `next_state=SESSION_ENDED`
+- event `session.end.requested`
+Physical connection closing, TTL, or session expiration remains the responsibility of the channel or backend.
 
-Human handoff should set a route/intent representing handoff, mark the request in metadata/state and emit the corresponding observability event. Selecting the actual human queue or platform remains an external channel/integration responsibility.
+### Examples
 
-End-session should mark the session as ended and emit the global event. Physically closing an SSE/HTTP/voice/WhatsApp connection and applying TTL/expiration policy remains the responsibility of the channel/backend.
 
-### Failure behavior
+### Files changed
 
-- No active agent + `CONTINUE` → route normally.
-- Low classifier confidence → route normally.
-- Classifier timeout/error/invalid output → route normally.
-- Explicit deterministic intent shift → do not let stickiness override it.
-- Valid transaction parameter/confirmation → continue transaction before rerouting.
-
-### Testing
-
-Regression coverage should include continuity, domain change, first-turn handoff, first-turn end-session, low confidence, invalid model output, no active agent, explicit intent shift within the same agent, informational→transactional shift and active-transaction parameter precedence.
-
-### Troubleshooting
-
-If the route never changes, inspect the active agent, route-stickiness decision/confidence, deterministic intent-shift signal and current transaction state. If every turn reroutes, verify that the active-agent/session state is being persisted and that the continuity classifier receives the configured history. If routing makes unnecessary LLM calls, verify deterministic discovery/intent-shift is enabled before semantic fallback.
-
-### Source material consolidated
-
-- `Documentacao/Manual de Roteamento Multi-Agent.docx`
-- `Documentacao/Route_Stickiness_Semantica_Agent_Framework_OCI.docx`
-- `Documentacao/README_ROUTING_MODES.md`
-- `Documentacao/README_ENTERPRISE_ROUTING.md`
-- intent-shift release notes and route-stickiness test results under `Documentacao/`
-
-### Detailed normative and implementation reference
-
-The sections below preserve the detailed English project specifications and implementation guides relevant to this capability. They are included here so a developer does not need to reconstruct the behavior from separate documents.
-
-### Semantic route stickiness reference
-
-> Consolidated from `Documentacao/README_SEMANTIC_ROUTE_STICKINESS.md`.
-
-### Purpose
-
-This optional capability uses a lightweight LLM profile and no regex, phrase lists, or domain-specific language rules. It classifies each turn as:
-
-- `CONTINUE`: keep the active agent;
-- `ROUTE`: run the regular Enterprise Router;
-- `HUMAN_HANDOFF`: request human assistance;
-- `END_SESSION`: finish the automated session.
-
-The classifier does not answer the user, execute tools, or implement domain rules. Human handoff and session ending are handled by global graph nodes.
-
-### Flow
-
-```text
-Incoming turn
-  -> lightweight semantic classifier
-       CONTINUE + active agent -> active agent
-       ROUTE / low confidence / error -> Enterprise Router
-       HUMAN_HANDOFF -> human_handoff node
-       END_SESSION -> end_session node
-```
-
-`CONTINUE` is converted to `ROUTE` when there is no active agent. Global session actions can be detected on the first turn.
-
-### Configuration
-
-```dotenv
-ENABLE_ROUTE_STICKINESS=true
-ROUTE_STICKINESS_LLM_PROFILE=route_continuity
-ROUTE_STICKINESS_CONFIDENCE_THRESHOLD=0.90
-ROUTE_STICKINESS_HISTORY_TURNS=2
-ROUTE_STICKINESS_MAX_TOKENS=80
-HUMAN_HANDOFF_MESSAGE=I will transfer your request to a person.
-END_SESSION_MESSAGE=The session has ended. Thank you for contacting us.
-```
-
-```yaml
-profiles:
-  route_continuity:
-    provider: oci_openai
-    model: openai.gpt-4.1-mini
-    temperature: 0
-    max_tokens: 80
-    timeout_seconds: 5
-```
-
-Use the smallest approved model available in the target OCI environment.
-
-### Human handoff contract
-
-The router returns route `human_handoff`, intent `human_handoff`, `handoff=true`, and metadata `session_control=HUMAN_HANDOFF`. The graph node sets:
-
-- `human_handoff_requested=true`;
-- `session_ended=false`;
-- `next_state=HUMAN_HANDOFF_REQUESTED`.
-
-It emits `session.human_handoff.requested`. The customer integration remains responsible for choosing the human queue and protocol.
-
-### End-session contract
-
-The router returns route `end_session`, intent `end_session`, and metadata `session_control=END_SESSION`. The graph node sets:
-
-- `session_ended=true`;
-- `human_handoff_requested=false`;
-- `next_state=SESSION_ENDED`.
-
-It emits `session.end.requested`. Channel-specific session expiration or connection closing remains an integration responsibility.
-
-### Safety behavior
-
-- Only decisions above the configured confidence threshold are accepted.
-- Invalid JSON, timeout, low confidence, or errors fall back to the Enterprise Router.
-- Human handoff and session ending do not execute domain agents or MCP tools.
-- The classifier never selects a human queue and never physically closes a channel connection.
+- libs/agent_framework/src/agent_framework/routing/continuity.py
+- libs/agent_framework/src/agent_framework/config/settings.py
+- templates/agent_template_backend/app/workflows/agent_graph.py
+- templates/agent_template_backend/app/state.py
+- templates/agent_template_backend/.env and .env.example
+- tests/unit/test_semantic_route_stickiness.py
 
 ### Tests
 
-Run:
+PYTHONPATH=libs/agent_framework/src pytest -q tests/unit/test_semantic_route_stickiness.py  
+The suite covers CONTINUE, ROUTE, low confidence, invalid output, HUMAN_HANDOFF, END_SESSION, global actions on the first turn, and CONTINUE without an active agent.
+
+### Limitations and integration
+
+- The classifier does not select the human queue.
+- The classifier does not close the SSE, HTTP, voice, or WhatsApp connection.
+- The global event must be consumed by the Channel Gateway or client integration.
+- The session-end node persists the result, but the concrete expiration policy is external.
+- Quality depends on the lightweight model and configured threshold.
+
+### Enterprise Router versus Supervisor
+
+> Content consolidated from `Documentacao/README_ROUTING_MODES.md`.
+
+This project supports two architectural designs for routing among agents without requiring two different frameworks.
+
+### Available modes
+
+Configure through an environment variable:
+
+```bash
+ROUTING_MODE=router
+```
+
+or:
+
+```bash
+ROUTING_MODE=supervisor
+```
+
+There is also the documentation key in `agent_template_backend/config/routing.yaml`:
+
+```yaml
+router:
+  mode: router
+```
+
+The `ROUTING_MODE` environment variable is the recommended way to activate a mode at runtime, especially in Docker, Kubernetes, or OCI.
+
+---
+
+### Option 1: Enterprise Router
+
+Flow:
+
+```text
+Usuário
+  -> Input Guardrails
+  -> EnterpriseRouter
+  -> AgentRegistry
+  -> 1 agente especialista
+  -> Output Guardrails
+  -> Judges
+  -> Supervisor Review
+  -> Persistência/eventos
+```
+
+Recommended when each message should be handled by a single specialist agent.
+
+Examples:
+
+- `Minha fatura veio alta` -> `billing_agent`
+- `Onde está meu pedido?` -> `orders_agent`
+- `Quero trocar um produto com defeito` -> `support_agent`
+
+Advantages:
+
+- Lower latency.
+- Lower token cost.
+- Simpler debugging.
+- Easier to operate in production.
+
+Limitation:
+
+- A message with multiple subjects must be routed to a primary agent or handled by handoff.
+
+---
+
+### Option 2: Supervisor
+
+Flow:
+
+```text
+Usuário
+  -> Input Guardrails
+  -> Supervisor.route_plan
+  -> supervisor_agent
+       -> billing_agent opcional
+       -> orders_agent opcional
+       -> product_agent opcional
+       -> support_agent opcional
+  -> Consolidação
+  -> Output Guardrails
+  -> Judges
+  -> Supervisor Review
+  -> Persistência/eventos
+```
+
+Recommended when a single message may involve several agents.
+
+Example:
+
+```text
+Meu pedido não chegou e também fui cobrado duas vezes.
+```
+
+In this case, the supervisor may activate:
+
+- `orders_agent`
+- `billing_agent`
+
+Advantages:
+
+- Supports multiple intents in the same message.
+- Allows response consolidation.
+- Facilitates enterprise scenarios with multiple domains.
+
+Costs:
+
+- Higher latency.
+- Higher token consumption.
+- Greater operational complexity.
+
+---
+
+### What changed in the code
+
+### 1. Configuration
+
+File:
+
+```text
+agent_framework/src/agent_framework/config/settings.py
+```
+
+The following configuration was added:
+
+```python
+ROUTING_MODE: Literal['router','supervisor'] = 'router'
+```
+
+### 2. LangGraph workflow
+
+File:
+
+```text
+agent_template_backend/app/workflows/agent_graph.py
+```
+
+The `enterprise_route` node was replaced by a generic node:
+
+```text
+routing_decision
+```
+
+This node decides the path based on `ROUTING_MODE`:
+
+- `router` uses `EnterpriseRouter`.
+- `supervisor` uses `Supervisor.route_plan`.
+
+The following node was also added:
+
+```text
+supervisor_agent
+```
+
+It executes one or more agents and consolidates the result.
+
+### 3. Supervisor
+
+File:
+
+```text
+agent_framework/src/agent_framework/supervisor/supervisor.py
+```
+
+The following structure was added:
+
+```python
+SupervisorPlan
+```
+
+And the method:
+
+```python
+route_plan(state)
+```
+
+This method returns a list of agents to execute.
+
+### 4. Debug
+
+Endpoint:
+
+```text
+POST /debug/route
+```
+
+It now respects `ROUTING_MODE` and allows you to quickly check how a message will be routed.
+
+---
+
+### How to test locally
+
+### Installation
+
+```bash
+cd agent_template_backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip setuptools wheel
+pip install -e ../agent_framework
+pip install -r requirements.txt
+```
+
+### Router mode
+
+```bash
+export ROUTING_MODE=router
+uvicorn app.main:app --reload --port 8000
+```
+
+Test:
+
+```bash
+curl -X POST http://localhost:8000/debug/route \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"web","payload":{"text":"Onde está meu pedido?","session_id":"s1"}}'
+```
+
+Expected result:
+
+```json
+{
+  "mode": "router",
+  "route": "orders_agent"
+}
+```
+
+### Supervisor mode
+
+```bash
+export ROUTING_MODE=supervisor
+uvicorn app.main:app --reload --port 8000
+```
+
+Test:
+
+```bash
+curl -X POST http://localhost:8000/debug/route \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"web","payload":{"text":"Meu pedido atrasou e minha fatura veio duplicada","session_id":"s2"}}'
+```
+
+Expected result:
+
+```json
+{
+  "mode": "supervisor",
+  "route": "supervisor_agent",
+  "agents": ["billing_agent", "orders_agent"]
+}
+```
+
+---
+
+### Isolation
+
+The logical isolation key remains:
+
+```text
+tenant_id:agent_id:session_id
+```
+
+Use this key for memory, session, checkpoint, and telemetry. In production, standardize `agent_id` per specialist agent or per template, depending on the desired level of isolation.
+
+---
+
+### Recommendation
+
+Start production with:
+
+```bash
+ROUTING_MODE=router
+```
+
+Enable:
+
+```bash
+ROUTING_MODE=supervisor
+```
+
+when there is a real need for multiple agents in the same message.
+
+### Enterprise Routing and LLM fallback
+
+> Content consolidated from `Documentacao/README_ENTERPRISE_ROUTING.md`.
+
+This version includes the complete project with:
+
+- `agent_framework`: reusable framework.
+- `agent_template_backend`: FastAPI backend with LangGraph, OCI Generative AI, Langfuse, guardrails, judges, supervisor, and enterprise routing.
+- `agent_frontend`: independent web frontend.
+- `templates/template_telecom_billing_product`: example telecom template with Billing and Product agents.
+- `templates/template_retail_orders_support`: example e-commerce template with Orders and Support agents.
+
+### Enterprise routing
+
+Routing is located in:
+
+```text
+agent_framework/src/agent_framework/routing/
+```
+
+Main components:
+
+- `models.py`: `IntentDefinition`, `RouterStatePolicy`, and `RouteDecision` models.
+- `config_loader.py`: loads intents and policies from YAML.
+- `enterprise_router.py`: decides the destination agent by state, keyword, LLM, or fallback.
+
+The template uses:
+
+```text
+agent_template_backend/config/routing.yaml
+```
+
+### Decision order
+
+1. Conversational state (`state_policies`).
+2. Configurable keywords/intents.
+3. Optional LLM Router (`ENABLE_LLM_ROUTER=true`).
+4. Fallback (`router.fallback_agent`).
+
+### How to test routing without calling the final agent
+
+```bash
+curl -X POST http://localhost:8000/debug/route \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel": "web",
+    "payload": {
+      "text": "Minha fatura veio alta",
+      "user_id": "u1",
+      "channel_id": "browser-1",
+      "context": {"msisdn": "5511999999999"}
+    }
+  }'
+```
+
+Expected response:
+
+```json
+{
+  "route": "billing_agent",
+  "agent": "billing_agent",
+  "intent": "billing_invoice_explanation",
+  "method": "keyword"
+}
+```
+
+### How to enable LLM routing
+
+In the backend `.env`:
+
+```env
+LLM_PROVIDER=oci_openai
+OCI_GENAI_API_KEY=...
+OCI_GENAI_BASE_URL=https://inference.generativeai.sa-saopaulo-1.oci.oraclecloud.com/openai/v1
+OCI_GENAI_MODEL=openai.gpt-4.1
+ENABLE_LLM_ROUTER=true
+ROUTING_CONFIG_PATH=./config/routing.yaml
+```
+
+### How to add a new agent
+
+1. Create the agent class under `agent_template_backend/app/agents/`.
+2. Instantiate the agent in `AgentWorkflow.__init__`.
+3. Add the node in LangGraph.
+4. Add the route in `add_conditional_edges`.
+5. Create an intent in `config/routing.yaml` pointing to `agent: agent_name`.
+
+### Included templates
+
+### Template 1 — Telecom
+
+Directory:
+
+```text
+templates/template_telecom_billing_product
+```
+
+Agents:
+
+- BillingAgent
+- ProductAgent
+
+### Template 2 — Retail/E-commerce
+
+Directory:
+
+```text
+templates/template_retail_orders_support
+```
+
+Agents:
+
+- OrdersAgent
+- SupportAgent
+
+This second template shows how to reuse the same architecture for another business domain.
+
+### Generic deterministic intent shift — current behavior
+
+> Content consolidated from `Documentacao/RELEASE_NOTES_GENERIC_DETERMINISTIC_INTENT_SHIFT_V15.md`.
+
+### Problem fixed
+
+Route Stickiness could preserve the previous intent when the new message matched an intent configured in `routing.yaml`, but the user's phrasing omitted short connector words present in the configured keyword.
+
+Real configuration example:
+
+- keyword: `qual é o meu plano`
+- message: `qual o meu plano`
+
+The deterministic classification did not recognize the new intent, and continuity ended up preserving the previous intent.
+
+### Fix
+
+The `EnterpriseRouter` continues to use, in this order:
+
+1. exact match;
+2. complete token sequence with inserted words (`ordered_tokens`);
+3. informative-token sequence that tolerates omission of short connectors present in the keyword (`ordered_content_tokens`).
+
+The third strategy ignores, only on the keyword side, tokens of up to two characters and requires at least two informative tokens. There are no hardcoded intent names, agent names, domains, or business verbs.
+
+Thus, the solution is driven entirely by the intents loaded from the application's `routing.yaml`.
+
+### Precedence over Route Stickiness
+
+When the deterministic candidate found differs from the active intent, it preempts stickiness and returns:
+
+- `route_stickiness_preempted: true`
+- `previous_agent`
+- `previous_intent`
+- `keyword_match_strategy`
+
+The continuity LLM is not called on this path.
+
+### Covered cases
+
+### Same agent, new intent
+
+`retail_order_tracking` -> `quero cancelar meu pedido` -> `retail_order_cancel`
+
+### Same agent, different tools
+
+`contas_invoice_query` -> `qual o meu plano` -> `contas_plan_information`
+
+Even if both intents use `faturas_agent`, the tools change from `consultar_faturas` to `consultar_plano`.
+
+### Intent-shift precedence over stickiness
+
+> Content consolidated from `Documentacao/RELEASE_NOTES_ROUTE_STICKINESS_DETERMINISTIC_INTENT_SHIFT_V14.md`.
+
+### Problem fixed
+
+A multi-token keyword such as `cancelar pedido` was not recognized in phrases such as `quero cancelar meu pedido`. The legacy match used literal substring matching; therefore, the generic keyword `pedido` could preserve `retail_order_tracking`, and continuity reused the previous intent.
+
+### Fix
+
+The `EnterpriseRouter` now has a second deterministic stage for multi-token keywords: ordered-token matching with up to three intermediate tokens. No additional LLM call is made.
+
+Examples recognized by the configured keyword `cancelar pedido`:
+
+- `quero cancelar meu pedido`
+- `quero cancelar o meu pedido`
+- `pode cancelar esse pedido`
+- `gostaria de cancelar meu pedido`
+
+When this match identifies an intent different from the active one, it preempts route stickiness before the continuity LLM.
+
+Expected audit metadata:
+
+```json
+{
+  "method": "keyword",
+  "intent": "retail_order_cancel",
+  "metadata": {
+    "matched_keyword": "cancelar pedido",
+    "keyword_match_strategy": "ordered_tokens",
+    "route_stickiness_preempted": true,
+    "previous_intent": "retail_order_tracking"
+  }
+}
+```
+
+### LLM cost
+
+For an explicit change recognized deterministically, the continuity LLM classifier is not called. For messages with no explicit signal, Route Stickiness continues with the configured behavior.
+
+### Regression
+
+Tests cover the `retail_order_tracking -> retail_order_cancel` change within the same `orders_agent`, including intermediate words. The related suite passed 18 tests.
+
+### Shift from query to transactional action
+
+> Content consolidated from `Documentacao/RELEASE_NOTES_ROUTE_STICKINESS_TRANSACTION_SHIFT.md`.
+
+### Problem
+
+After `consultar pedido 123`, the message `Quero devolver o pedido 123` could remain on `orders_agent` because of route stickiness. Because the previous intent exposed only query tools, the runtime executed `consultar_pedido` again and the direct response repeated the order status.
+
+### Fixes
+
+- Explicit keywords configured in `routing.yaml` can preempt route stickiness when they point to another intent/agent.
+- `retail_support_exchange_return` now has a higher priority than `retail_order_tracking` for exchange/return messages.
+- Transactional tools declare `selection_keywords` in `tools.yaml`.
+- Direct read-only responses are blocked when the message contains a registered transactional action, even if the previous intent is still active.
+- Action-tool selection uses configuration, not domain-specific aliases hardcoded in the runtime.
+
+### Expected flow
+
+1. `consultar pedido 123` → `orders_agent` → `consultar_pedido` → direct response.
+2. `Quero devolver o pedido 123` → stickiness preemption → `support_agent` / `retail_support_exchange_return`.
+3. `consultar_pedido` validates the order.
+4. `solicitar_devolucao` is selected and, with mandatory confirmation, generates `AWAITING_CONFIRMATION`.
+5. `Sim, confirmo` executes the action tool exactly once.
+
+### Route-stickiness test coverage
+
+> Content consolidated from `Documentacao/TEST_RESULTS_ROUTE_STICKINESS.md`.
+
+Date: 2026-07-31
+
+### Command
 
 ```bash
 PYTHONPATH=libs/agent_framework/src pytest -q tests/unit/test_semantic_route_stickiness.py
 ```
 
-The suite covers CONTINUE, ROUTE, low confidence, invalid output, HUMAN_HANDOFF, END_SESSION, first-turn global actions, and CONTINUE without an active agent.
+### Result
 
-### Runtime routing responsibilities
-
-> Consolidated from `specs/SPEC-002-Agent-Runtime.md`.
-
-### Escopo
-
-O Agent Runtime executa o ciclo de vida conversacional do agente. A execução inclui normalização de contexto, estado LangGraph, memória, checkpoint, roteamento, supervisor, guardrails, MCP, RAG, LLM, judges, persistência e resposta final.
-
-### Componentes
-
-| Componente | Responsabilidade |
-|---|---|
-| Workflow Builder | Compila o grafo LangGraph. |
-| State Manager | Mantém o estado de execução. |
-| Session Manager | Resolve sessão e conversation_key. |
-| Memory Manager | Carrega e persiste histórico. |
-| Checkpoint Manager | Persiste estado LangGraph. |
-| Input Guardrail Node | Executa guardrails de entrada. |
-| Router Node | Decide rota/intent. |
-| Supervisor Node | Decide handoff ou próximo agente quando habilitado. |
-| Agent Node | Executa agente de domínio. |
-| MCP Client/Router | Executa tools por contrato. |
-| RAG Service | Recupera contexto documental. |
-| Output Supervisor | Revisa resposta antes de saída. |
-| Output Guardrail Node | Executa guardrails de saída. |
-| Judge Node | Avalia resposta. |
-| Persistence Node | Persiste mensagens, memória e checkpoint. |
-
-### State Model
-
-```python
-class AgentState(TypedDict, total=False):
-    user_text: str
-    sanitized_input: str
-    response_text: str
-    tenant_id: str
-    agent_id: str
-    channel: str
-    session_id: str
-    conversation_key: str
-    message_id: str
-    route: str
-    intent: str
-    context: dict
-    business_context: dict
-    tool_arguments: dict
-    mcp_tools: list[str]
-    mcp_results: list[dict]
-    rag_context: str
-    rag_metadata: dict
-    guardrails: list[dict]
-    judges: list[dict]
-    metadata: dict
-    errors: list[dict]
+```text
+9 passed
 ```
 
-### Workflow
+### Covered scenarios
 
-```mermaid
-flowchart TD
-    A[start] --> B[input_guardrails]
-    B --> C[routing_decision]
-    C --> D[agent_execution]
-    D --> E[output_supervisor]
-    E --> F[output_guardrails]
-    F --> G[judge]
-    G --> H[persist]
-    H --> I[end]
-    C --> J[handoff]
-    J --> C
+1. `CONTINUE` bypasses the Enterprise Router.
+2. `ROUTE` falls back to the Enterprise Router.
+3. Low-confidence `CONTINUE` falls back safely.
+4. Invalid model output falls back safely.
+5. With no active agent, the lightweight classifier can still detect global session actions.
+6. `HUMAN_HANDOFF` returns the global `human_handoff` route and session-control metadata.
+7. `END_SESSION` returns the global `end_session` route and session-control metadata.
+8. Global actions work on the first turn.
+9. `CONTINUE` without an active agent is normalized to `ROUTE`.
+
+### Additional validation
+
+```bash
+python -m compileall -q libs/agent_framework/src templates/agent_template_backend/app
 ```
 
-### Nós
+Compilation completed successfully.
 
-| Nó | Entrada | Saída |
-|---|---|---|
-| `input_guardrails` | `user_text`, `context` | `sanitized_input`, `guardrails` |
-| `routing_decision` | `sanitized_input`, `business_context` | `route`, `intent`, `mcp_tools` |
-| `agent_execution` | `state` completo | `response_text`, `mcp_results`, `rag_metadata` |
-| `output_supervisor` | `response_text` | `response_text` revisado |
-| `output_guardrails` | `response_text` | `response_text`, `guardrails` |
-| `judge` | `response_text`, evidências | `judges` |
-| `persist` | `state` completo | checkpoint, memória, mensagens |
+### Source files
 
-### Router
+The files below were consolidated into this manual:
 
-```yaml
-routing:
-  mode: router
-  fallback_agent: billing_agent
-  enable_llm_router: false
-  intents:
-    billing_invoice_explanation:
-      route: billing_agent
-      keywords:
-        - fatura
-        - cobrança
-        - boleto
-      mcp_tools:
-        - consultar_fatura
-        - consultar_pagamentos
-```
+- `Documentacao/Manual de Roteamento Multi-Agent.docx`
+- `Documentacao/Route_Stickiness_Semantica_Agent_Framework_OCI.docx`
+- `Documentacao/README_ROUTING_MODES.md`
+- `Documentacao/README_ENTERPRISE_ROUTING.md`
+- `Documentacao/RELEASE_NOTES_GENERIC_DETERMINISTIC_INTENT_SHIFT_V15.md`
+- `Documentacao/RELEASE_NOTES_ROUTE_STICKINESS_DETERMINISTIC_INTENT_SHIFT_V14.md`
+- `Documentacao/RELEASE_NOTES_ROUTE_STICKINESS_TRANSACTION_SHIFT.md`
+- `Documentacao/TEST_RESULTS_ROUTE_STICKINESS.md`
 
-### Supervisor
+### Maintenance rule
 
-```yaml
-supervisor:
-  enabled: true
-  profile: supervisor
-  max_turns: 5
-  handoff_enabled: true
-  fallback_route: support_agent
-```
-
-### Memory
-
-| Provider | Uso |
-|---|---|
-| `memory` | Execução local e testes. |
-| `sqlite` | Desenvolvimento local persistente. |
-| `mongodb` | Checkpoint e histórico em ambiente distribuído. |
-| `autonomous` | Produção com Oracle Autonomous Database. |
-
-### Checkpoints
-
-Checkpoint contém:
-
-```json
-{
-  "conversation_key": "default:telecom_contas:session-001",
-  "checkpoint_id": "ckpt-001",
-  "state": {},
-  "pending_writes": [],
-  "created_at": "2026-06-19T12:00:00Z"
-}
-```
-
-Formato entregue ao LangGraph:
-
-```python
-pending_writes: list[tuple[str, str, object]]
-```
-
-### Business Context
-
-```yaml
-business_context:
-  customer_key: "11999999999"
-  contract_key: "3000131180"
-  interaction_key: "301953872"
-  account_key: null
-  resource_key: null
-  session_key: "session-001"
-  metadata:
-    source_channel: web
-```
-
-### Ordem de Prioridade dos Dados
-
-1. `tool_arguments`
-2. `business_context`
-3. `context`
-4. `session.metadata`
-5. `state`
-6. extração complementar do texto
-
-### MCP Integration
-
-```mermaid
-flowchart LR
-    AgentNode --> ToolList[mcp_tools]
-    ToolList --> Mapping[mcp_parameter_mapping.yaml]
-    Mapping --> MCP[MCP Gateway/Router]
-    MCP --> Result[mcp_results]
-```
-
-### RAG Integration
-
-```yaml
-rag:
-  enabled: true
-  namespace_strategy: agent_id
-  top_k: 5
-  profile_generation: rag_generation
-```
-
-### Eventos
-
-| Evento | Descrição |
-|---|---|
-| `runtime.started` | Execução iniciada. |
-| `runtime.session.loaded` | Sessão carregada. |
-| `runtime.memory.loaded` | Memória carregada. |
-| `runtime.checkpoint.loaded` | Checkpoint carregado. |
-| `runtime.route.selected` | Rota selecionada. |
-| `runtime.agent.started` | Agente iniciado. |
-| `runtime.agent.completed` | Agente concluído. |
-| `runtime.persist.completed` | Persistência concluída. |
-| `runtime.failed` | Falha controlada. |
-
-### Erros
-
-| Código | Condição | Tratamento |
-|---|---|---|
-| `RUNTIME_INVALID_REQUEST` | GatewayRequest inválido | 422 |
-| `RUNTIME_ROUTE_NOT_FOUND` | Nenhuma rota elegível | fallback ou resposta controlada |
-| `RUNTIME_CHECKPOINT_ERROR` | Falha em checkpoint | retry ou stateless conforme config |
-| `RUNTIME_MEMORY_ERROR` | Falha em memória | retry ou resposta controlada |
-| `RUNTIME_AGENT_ERROR` | Falha no agente | NOC + fallback |
-| `RUNTIME_TIMEOUT` | Timeout geral | resposta controlada |
-
-
-
-### Contrato Durável de Estado Transacional
-
-Hosts que utilizam `AgentRuntime` com transações multi-turno DEVEM declarar no `AgentState` os campos `active_transaction` e `last_transaction`. O primeiro é a fonte canônica da transação em andamento e deve sobreviver a checkpoint/resume; o segundo mantém o snapshot da última transação terminal.
-
-```python
-active_transaction: dict[str, Any]
-last_transaction: dict[str, Any]
-```
-
-`selected_tool_call` e `pending_tool_call` são campos auxiliares/compatibilidade e não substituem o latch canônico. Durante `COLLECTING_PARAMETERS`, a retomada da transação e o consumo de parâmetros pendentes têm precedência sobre keyword routing genérico. Uma mudança de intenção só deve interromper a transação quando for inequívoca ou explicitamente solicitada pelo usuário.
-
-O contrato completo, ciclo de vida, precedência de roteamento, checklist e testes regressivos estão em [`docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md`](../docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md).
-
-
-### Requisitos Não Funcionais
-
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
-
-
-### Critérios de Aceite
-
-- [ ] Runtime recebe GatewayRequest validado.
-- [ ] State contém tenant_id, agent_id, session_id, conversation_key, route e intent.
-- [ ] Input guardrails executam antes do roteamento.
-- [ ] Router ou Supervisor seleciona rota.
-- [ ] Agent Node executa sem acessar payload bruto de canal.
-- [ ] MCP é acessado por contrato.
-- [ ] RAG é acessado por serviço reutilizável.
-- [ ] Output guardrails executam antes da resposta final.
-- [ ] Judges geram JudgeResult.
-- [ ] Memória e checkpoint são persistidos conforme provider.
-- [ ] Hosts transacionais declaram `active_transaction` e `last_transaction` no `AgentState`.
-- [ ] Durante `COLLECTING_PARAMETERS`, respostas a parâmetros pendentes têm precedência sobre keyword routing genérico.
-- [ ] Erros geram NOC e resposta controlada.
-
-
-### Glossário
-
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
-
-### Governance constraints affecting routing
-
-> Consolidated from `specs/SPEC-011-Governance-Model.md`.
-
-### Agent Platform OCI
-
-Version: 1.0.0
-
-
----
-
-### Padrão de leitura
-
-Cada SPEC está organizada para servir tanto como contrato arquitetural quanto como guia prático de adoção.
-
-A estrutura usada é:
-
-1. Conceito.
-2. Problema que resolve.
-3. Quando usar.
-4. Quando não usar.
-5. Arquitetura.
-6. Implementação.
-7. Exemplos.
-8. Erros comuns.
-9. Critérios de aceite.
-
----
-
-
-### 1. Conceito
-
-Governança é o conjunto de papéis, responsabilidades, controles, aprovações, evidências e processos que permite que a Agent Platform OCI seja usada por múltiplos times sem perder padronização, segurança, rastreabilidade e capacidade de evolução.
-
-A governança não substitui a engenharia. Ela define como a engenharia evolui de forma controlada.
-
-Em uma plataforma de agentes, governança cobre:
-
-- quem pode criar agentes;
-- quem pode alterar prompts;
-- quem pode liberar MCP tools;
-- quem aprova mudanças de guardrails;
-- quem aprova modelos;
-- quem aprova datasets;
-- quem promove para produção;
-- quais evidências são obrigatórias;
-- como auditar decisões da plataforma.
-
-### 2. Problema que resolve
-
-Sem governança, cada time tende a criar agentes de forma diferente.
-
-Problemas comuns:
-
-- prompts sem versionamento;
-- MCP tools sem owner;
-- datasets ausentes;
-- agentes sem avaliação;
-- produção sem certification;
-- mudanças de modelo sem rastreabilidade;
-- guardrails duplicados;
-- regras de negócio dentro do runtime;
-- uso diferente da plataforma por cada fornecedor;
-- dificuldade de manutenção.
-
-A governança cria um modelo único de adoção.
-
-### 3. Domínios de governança
-
-| Domínio | Escopo |
-| --- | --- |
-| Platform Governance | Framework, Runtime, Gateways, Evaluator, Certification Suite. |
-| Agent Governance | Agentes, prompts, regras de negócio, datasets e configs. |
-| Model Governance | LLM profiles, providers, fallback, custo e uso. |
-| MCP Governance | Tools, MCP servers, owners, SLAs, autorização e contratos. |
-| Data Governance | BusinessContext, RAG, datasets, memória e retenção. |
-| Security Governance | Identidade, autorização, secrets, auditoria e PII. |
-| Operational Governance | Deploy, monitoramento, alertas, SLOs e incidentes. |
-| Evaluation Governance | Judges, evaluator, certification e métricas. |
-
-
-### 4. Modelo de ownership
-
-### 4.1. Platform Team
-
-Responsável por:
-
-- Agent Framework;
-- Agent Runtime;
-- Agent Gateway;
-- Channel Gateway;
-- AI Gateway;
-- MCP Gateway;
-- Evaluator;
-- Certification Suite;
-- contratos canônicos;
-- documentação da plataforma;
-- templates oficiais.
-
-### 4.2. Domain Team
-
-Responsável por:
-
-- comportamento do agente;
-- prompts;
-- regras de negócio;
-- datasets;
-- configurações específicas;
-- validação funcional;
-- critérios de sucesso.
-
-### 4.3. Integration Team
-
-Responsável por:
-
-- MCP servers;
-- APIs externas;
-- SLAs de tools;
-- contratos de integração;
-- credenciais de backend;
-- disponibilidade de sistemas externos.
-
-### 4.4. SRE / DevOps
-
-Responsável por:
-
-- CI/CD;
-- deploy;
-- observabilidade;
-- alertas;
-- capacidade;
-- SLOs;
-- runbooks;
-- rollback.
-
-### 4.5. Security / Architecture
-
-Responsável por:
-
-- segurança;
-- arquitetura;
-- policies;
-- Workload Identity;
-- secrets;
-- revisão de risco;
-- aprovação de exceções.
-
-### 5. RACI
-
-| Atividade | Platform | Domain | Integration | SRE | Security |
-| --- | --- | --- | --- | --- | --- |
-| Framework change | R/A | C | I | C | C |
-| Runtime change | R/A | C | I | C | C |
-| New agent | C | R/A | C | I | I |
-| New MCP tool | C | C | R/A | I | C |
-| Prompt change | I | R/A | I | I | C |
-| Guardrail change | R | C | I | I | A |
-| Model profile change | R | C | I | I | C |
-| Production deploy | I | C | C | R/A | C |
-| Security review | I | C | C | C | R/A |
-| Certification | R/A | C | C | I | I |
-
-
-### 6. Governança de agentes
-
-Todo agente deve possuir:
-
-```yaml
-agent:
-  id: telecom_contas
-  owner: billing_team
-  technical_owner: ai_platform_team
-  business_objective: "Atendimento sobre faturas, pagamentos e cobranças"
-  status: active
-  version: 1.0.0
-```
-
-Artefatos obrigatórios:
-
-- `agents.yaml`;
-- `routing.yaml`;
-- `prompt_policy.yaml`;
-- `guardrails.yaml`;
-- `judges.yaml`;
-- `tools.yaml`;
-- `mcp_parameter_mapping.yaml`;
-- dataset de regressão;
-- testes;
-- evidências de evaluator;
-- evidências de certification.
-
-### 7. Governança de prompts
-
-Prompts devem ser versionados e rastreáveis.
-
-```yaml
-prompt:
-  name: billing_system_prompt
-  version: 1.3.0
-  owner: billing_team
-  reviewed_at: 2026-06-19
-  status: approved
-```
-
-Mudanças de prompt exigem:
-
-1. revisão do domain owner;
-2. execução de dataset;
-3. evaluator;
-4. comparação contra baseline;
-5. registro da versão.
-
-### 8. Governança de guardrails
-
-Guardrails globais pertencem à plataforma/segurança.
-
-Guardrails por agente pertencem ao domínio, mas precisam seguir o contrato da plataforma.
-
-```yaml
-guardrail:
-  code: REVPREC
-  version: 2.0.0
-  owner: platform_security
-  phase: output
-  mode: enforce
-```
-
-Mudanças em guardrails `enforce` exigem certification.
-
-### 9. Governança de judges
-
-Judges devem ter objetivo, métrica, threshold e owner.
-
-```yaml
-judge:
-  name: groundedness
-  version: 1.1.0
-  threshold: 0.70
-  owner: platform_quality
-```
-
-Mudanças de threshold exigem reexecução do evaluator.
-
-### 10. Governança de modelos
-
-Agentes não referenciam modelo diretamente.
-
-O modelo é resolvido por profile.
-
-```yaml
-profiles:
-  judge:
-    provider: oci_openai
-    model: openai.gpt-4.1
-    temperature: 0
-```
-
-Mudanças de modelo exigem:
-
-- validação de custo;
-- evaluator;
-- validação de qualidade;
-- validação de latência;
-- atualização de release notes.
-
-### 11. Governança de MCP
-
-Cada tool deve ter owner, SLA, timeout e contrato.
-
-```yaml
-tool:
-  name: consultar_fatura
-  version: 1.0.0
-  owner: billing_platform
-  sla: p95_2s
-  timeout_seconds: 30
-  idempotent: true
-```
-
-Tools mutáveis exigem política de confirmação.
-
-### 12. Governança de datasets
-
-Datasets são ativos de qualidade.
-
-```yaml
-dataset:
-  name: telecom_contas_regression
-  version: 1.0.0
-  owner: billing_team
-```
-
-Datasets devem conter:
-
-- entrada;
-- BusinessContext;
-- rota esperada;
-- tools esperadas;
-- critérios mínimos;
-- casos negativos;
-- casos de segurança.
-
-### 13. Processo de aprovação
-
-```mermaid
-flowchart LR
-    Dev[Development] --> Tests[Tests]
-    Tests --> Eval[Evaluator]
-    Eval --> Cert[Certification]
-    Cert --> Sec[Security Review]
-    Sec --> Arch[Architecture Approval]
-    Arch --> HML[Homologation]
-    HML --> PROD[Production]
-```
-
-### 14. Evidências obrigatórias
-
-- relatório de testes;
-- relatório evaluator;
-- relatório certification;
-- trace Langfuse;
-- logs e métricas;
-- checklist de segurança;
-- release notes;
-- versão dos artefatos.
-
-### 15. Erros comuns
-
-| Erro | Impacto | Correção |
-| --- | --- | --- |
-| Prompt sem owner | Dificulta manutenção e aprovação. | Definir owner no metadata. |
-| Tool sem SLA | Operação sem expectativa de resposta. | Registrar SLA em tools.yaml. |
-| Dataset ausente | Sem regressão objetiva. | Criar dataset mínimo. |
-| Guardrail hardcoded | Governança fora do YAML. | Mover para config. |
-| Modelo definido no agente | Quebra governança de modelos. | Usar AI Gateway profiles. |
-
-
-### 16. Critérios de aceite
-
-- [ ] Cada agente possui owner funcional e técnico.
-- [ ] Prompts estão versionados.
-- [ ] Tools MCP possuem owner, SLA e versão.
-- [ ] Guardrails possuem owner e modo.
-- [ ] Judges possuem threshold e versão.
-- [ ] Datasets estão versionados.
-- [ ] Evaluator roda por agente.
-- [ ] Certification aprova antes de produção.
-- [ ] Release possui evidências.
-- [ ] Exceções são documentadas.
+New fixes or evolutions for this subject should update this consolidated document. Release notes may continue to exist as history, but they should not be required to understand or implement the feature.

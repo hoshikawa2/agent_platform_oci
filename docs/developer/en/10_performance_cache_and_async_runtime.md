@@ -1,499 +1,360 @@
-
-### Performance, Cache and Async Runtime
+### Performance, Cache, and Async Runtime
 
 ### How to use this manual
 
 This is a **specialized reference manual**. It does not replace the main tutorial.
 
-- To build an agent end to end, use [`README_en.md`](../../../README_en.md).
-- Use this document when implementing, deep-diving or troubleshooting **concurrency, caching, reduction of LLM calls and cross-loop fixes**.
-- Historical examples consolidated here must be interpreted against the current framework API.
-- If documentation differs, the current code and root README take precedence.
+- To create an agent from start to finish, use [`README_en.md`](../../../README_en.md).
+- Use this document when you need to implement, deepen, or diagnose **concurrency, cache, reduction of LLM calls, and cross-loop fixes**.
+- Historical examples consolidated here should be read in light of the framework's current API.
+- In case of divergence, the code for the version and the current `README_en.md` take precedence.
 
 ### Relationship with the main tutorial
 
-`README_en.md` introduces this capability as part of the normal development flow. This manual consolidates details previously spread across `docs/`, `Documentacao/`, release notes, validation records and specialized guides.
+The `README_en.md` presents this capability in the normal development flow. This manual brings together details that were distributed across `docs/`, `Documentacao/`, release notes, validations, and specialized guides.
 
-Its purpose is to answer **“how does this feature work in depth and how do I troubleshoot it?”** without becoming a second copy of the main tutorial.
+The goal here is to answer **“how does this feature work in depth and how do I solve problems with it?”**, without turning this file into a second copy of the main tutorial.
 
 ### Scope
 
-Concurrency, caching, reduction of llm calls and cross-loop fixes.
+Concurrency, cache, reduction of LLM calls, and cross-loop fixes.
 
 ### Consolidated technical content
 
-### Performance, Cache, Concurrency and Asynchronous Runtime
+### Performance, Cache, Concurrency, and Async Runtime
 
-This guide collects optimizations that reduce latency without changing functional semantics.
+Manual for optimizations on the critical MCP, RAG, and Judge path, reduction of LLM calls, deterministic preemption, and cross-loop deadlock correction in sequencing.
 
-### Optimization principles
+### How to use this document
 
-Use deterministic signals before expensive semantic calls when they are reliable; execute independent work concurrently; avoid recomputing retrieval/tool metadata; cache only when correctness allows it; and keep I/O asynchronous without sharing loop-bound primitives incorrectly.
+This is the consolidated development document for this subject. It brings together architecture, configuration, examples, runtime behavior, compatibility, tests, and troubleshooting that were previously distributed across several files. Source sections were preserved when they provided distinct technical details; release notes were incorporated as current behavior or correction history.
 
-### MCP/RAG/Judges
+### MCP, RAG, and Judge optimizations
 
-MCP preparation and repeated metadata operations can be reused where safe. RAG should avoid repeated retrieval/embedding work through configured cache layers. Independent judges can execute concurrently instead of serially.
+> Content consolidated from `docs/PERFORMANCE_OPTIMIZATIONS_MCP_JUDGES_RAG.md`.
 
-Transactional judge rules still override normal sampling optimization: performance must not skip critical evaluation.
+- `mcp_tools` remains an allowlist; only the query selected through `selection_keywords` is executed.
+- `strategy: hybrid` extraction tries a regex `pattern` before the LLM profile.
+- RAG is skipped when successful MCP evidence is sufficient, except for policy/rule questions.
+- `mcp_results` is provided as evidence to the groundedness judge.
+- `judges.yaml` accepts `sample_rate` and `always_run_for_transactional`.
+- Simple structured queries can return a deterministic response without invoking the agent LLM.
 
-### Routing optimization
+### Shift from query to transactional action
 
-Explicit intent-shift signals can preempt the route-continuity LLM. This reduces token consumption and latency while preserving semantic fallback for ambiguous cases.
+Route stickiness is preempted when an explicit keyword configured in `routing.yaml` identifies another intent/agent. Thus, a session in `retail_order_tracking` moves to `retail_support_exchange_return` when it receives requests such as “return order”. In addition, direct responses from read-only tools are blocked when the message contains `selection_keywords` from any registered transactional tool.
+
+Action words remain in `config/tools.yaml`; the runtime does not maintain hardcoded domain aliases.
+
+
+### Deterministic preemption for an explicit intent change
+
+Stickiness does not call a second LLM when the message contains an explicit change that can be recognized deterministically. Multi-token keywords configured in `routing.yaml` accept up to three intermediate tokens while preserving order. Therefore, `cancelar pedido` recognizes `quero cancelar meu pedido`, `cancelar o meu pedido`, and `pode cancelar esse pedido`. In this case the new intent preempts stickiness and the `keyword_match_strategy=ordered_tokens` metadata makes the decision auditable. Messages with no explicit signal continue using route stickiness normally.
 
 ### Cross-loop deadlock fix
 
-Sequence generation/observability previously could wait on synchronization primitives associated with another event loop. The fix removes cross-loop waiting and keeps sequencing safe for asynchronous runtime and tests that create multiple loops.
+> Content consolidated from `Documentacao/FIX_DEADLOCK_SEQUENCE_CROSS_LOOP.md`.
 
-### Validation
+### Problem
 
-Performance tests should measure latency and call counts, not only functional output. Regression coverage should include concurrent judges, cached/uncached RAG behavior, MCP reuse paths, deterministic routing preemption and observer/sequence calls across separate event loops.
+The synchronous `agent_framework.observer.event()` API could be called from a worker thread with no active event loop. In that case, the previous implementation ran `asyncio.run(aevent(...))`, creating a temporary new event loop. At the same time, `analytics/tim_sequence.py` shared global `asyncio.Lock` instances (`_mongo_index_lock` and `_memory_lock`) across calls that could come from different event loops.
 
-### Source material consolidated
+On the first Mongo operation, `_ensure_mongo_ttl_index_once()` held `_mongo_index_lock` while creating the TTL index. Contention from another loop could leave the second call waiting indefinitely.
+
+### Applied changes
+
+1. `observer.py`
+   - removed `asyncio.run()` from the synchronous `event()` path;
+   - added a dedicated reusable event loop for synchronous calls;
+   - cross-thread submission uses `asyncio.run_coroutine_threadsafe()`;
+   - best-effort loop shutdown when the process terminates.
+
+2. `analytics/tim_sequence.py`
+   - `_mongo_index_lock`: `asyncio.Lock` -> `threading.Lock`;
+   - `_memory_lock`: `asyncio.Lock` -> `threading.Lock`;
+   - TTL-index initialization moved to a synchronous function protected by a thread lock and called through `asyncio.to_thread()`;
+   - the in-memory fallback counter uses a short thread-safe critical section.
+
+3. Tests
+   - `tests/test_observer_cross_loop_deadlock_fix.py` validates:
+     - multiple worker threads using `event()` share the same synchronous observer loop;
+     - in-memory sequence remains monotonic across independent event loops;
+     - TTL-index creation happens only once under cross-loop contention.
+
+### Validation performed
+
+```bash
+PYTHONPATH=libs/agent_framework/src pytest -q tests/test_observer_cross_loop_deadlock_fix.py
+```
+
+Result: `3 passed`.
+
+The full repository suite has pre-existing/independent failures unrelated to this change, including collection conflicts for `test_long_term_memory.py`, static template paths, and checkpoint/workflow tests. Those items were not changed by this fix.
+
+### Operational performance features
+
+> Content consolidated from `Documentacao/README_MAX_OPERACIONAL.md`.
+
+This version adds the operational adjustments that were missing to bring the framework closer to the FIRST production standard.
+
+### Adjustments included in this version
+
+### 1. Langfuse Enterprise Adapter
+
+New module:
+
+```text
+agent_framework/observability/langfuse_enterprise.py
+```
+
+Includes an adapter compatible with Langfuse SDKs v2/v3 for:
+
+- trace updates;
+- trace scoring/evaluation;
+- prompt registry when supported by the SDK;
+- isolation of Langfuse API differences.
+
+### 2. Persistent Token and Cost Accounting
+
+New package:
+
+```text
+agent_framework/billing/
+```
+
+Includes:
+
+- `UsageRecord`
+- `SQLiteUsageRepository`
+- `OracleUsageRepository`
+- `create_usage_repository(settings)`
+
+The LLM provider now records automatically:
+
+- `prompt_tokens`
+- `completion_tokens`
+- `cached_tokens`
+- `total_tokens`
+- `cost_usd`
+- `cost_brl`
+- `tenant_id`
+- `agent_id`
+- `session_id`
+- `message_id`
+
+New endpoint:
+
+```http
+GET /debug/usage
+GET /debug/usage?tenant_id=default
+GET /debug/usage?session_id=<id>
+```
+
+### 3. Operational RAG Service
+
+New module:
+
+```text
+agent_framework/rag/rag_service.py
+```
+
+Includes:
+
+- `RagService.add_documents()`
+- `RagService.retrieve()`
+- `RagResult.as_prompt_context()`
+- telemetry for latency, document count, top scores, and graph.
+
+### 4. New configuration
+
+Variable added:
+
+```env
+USAGE_REPOSITORY_PROVIDER=sqlite
+```
+
+Values:
+
+```text
+sqlite
+oracle
+autonomous
+```
+
+### 5. Local operational compatibility
+
+By default, usage accounting uses SQLite even when everything else is in memory. This makes local testing possible without Oracle.
+
+### Quick test
+
+```bash
+cd agent_template_backend
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Test a message:
+
+```bash
+curl -X POST http://localhost:8000/gateway/message \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"web","payload":{"text":"teste","user_id":"u1","session_id":"s1"}}'
+```
+
+Check usage/cost:
+
+```bash
+curl http://localhost:8000/debug/usage
+```
+
+### To run closer to a production pattern
+
+```env
+SESSION_REPOSITORY_PROVIDER=sqlite
+MEMORY_REPOSITORY_PROVIDER=sqlite
+CHECKPOINT_REPOSITORY_PROVIDER=sqlite
+USAGE_REPOSITORY_PROVIDER=sqlite
+CACHE_BACKEND_PROVIDER=sqlite
+VECTOR_STORE_PROVIDER=sqlite
+ENABLE_LANGFUSE=true
+LANGFUSE_HOST=http://localhost:3000
+LANGFUSE_PUBLIC_KEY=...
+LANGFUSE_SECRET_KEY=...
+```
+
+For Autonomous Database:
+
+```env
+SESSION_REPOSITORY_PROVIDER=oracle
+MEMORY_REPOSITORY_PROVIDER=oracle
+CHECKPOINT_REPOSITORY_PROVIDER=oracle
+USAGE_REPOSITORY_PROVIDER=oracle
+CACHE_BACKEND_PROVIDER=oracle
+VECTOR_STORE_PROVIDER=oracle
+GRAPH_STORE_PROVIDER=oracle
+ADB_USER=...
+ADB_PASSWORD=...
+ADB_DSN=...
+ADB_WALLET_LOCATION=...
+ADB_TABLE_PREFIX=AGENTFW
+```
+
+### Final cache, RAG, and telemetry adjustments
+
+> Content consolidated from `Documentacao/README_FIRST_MAX_OPERATIONAL_FIXES.md`.
+
+This version fixes the gaps identified in the comparison against FIRST.
+
+### Applied fixes
+
+### 1. Operational LangGraph checkpoint
+
+The workflow no longer compiles directly with `MemorySaver()`. The following adapter was created:
+
+```text
+agent_framework/checkpoints/langgraph_saver.py
+```
+
+It connects LangGraph to the framework's configured repository:
+
+- `memory`
+- `sqlite`
+- `oracle` / `autonomous`
+
+In the workflow:
+
+```python
+builder.compile(checkpointer=create_langgraph_checkpointer(self.settings))
+```
+
+### 2. LangGraph telemetry wrapping actual execution
+
+A node wrapper was added to the workflow:
+
+```python
+self._node("billing_agent", self.billing_agent)
+```
+
+This way the `langgraph.node.*` span/event wraps actual node execution, not just an empty block.
+
+Events emitted:
+
+- `langgraph.node.started`
+- `langgraph.node.completed`
+- `langgraph.node.failed`
+- `langgraph.edge.selected`
+
+### 3. RAG integrated into agents
+
+Agents now receive `RagService` and use retrieved context in the prompt:
+
+- BillingAgent
+- ProductAgent
+- OrdersAgent
+- SupportAgent
+
+RAG uses:
+
+- `VECTOR_STORE_PROVIDER=memory|sqlite|oracle|autonomous`
+- `GRAPH_STORE_PROVIDER=memory|oracle|autonomous`
+- `RAG_TOP_K`
+
+### 4. Cache integrated into agent runtime
+
+The following mixin was created:
+
+```text
+agent_template_backend/app/agents/runtime.py
+```
+
+It adds:
+
+- standardized RAG retrieval;
+- cache key for LLM calls;
+- hit/miss with telemetry;
+- distributed cache through `create_cache(settings)`.
+
+### 5. Unit tests
+
+The following directory was created:
+
+```text
+tests/unit
+```
+
+Initial coverage:
+
+- cache;
+- SSE;
+- RAG;
+- checkpoint saver;
+- LangGraph telemetry;
+- agent runtime;
+- static workflow verification;
+- main imports.
+
+Local validation performed:
+
+```text
+12 passed
+```
+
+### How to test
+
+```bash
+cd projeto_agent_framework_first_ready
+pip install -r agent_template_backend/requirements.txt
+pytest -q tests/unit
+```
+
+### Source files
+
+The files below were consolidated into this manual:
 
 - `docs/PERFORMANCE_OPTIMIZATIONS_MCP_JUDGES_RAG.md`
 - `Documentacao/FIX_DEADLOCK_SEQUENCE_CROSS_LOOP.md`
-- operational notes in `Documentacao/README_MAX_OPERACIONAL.md` and `README_FIRST_MAX_OPERATIONAL_FIXES.md`
+- `Documentacao/README_MAX_OPERACIONAL.md`
+- `Documentacao/README_FIRST_MAX_OPERATIONAL_FIXES.md`
 
-### Detailed normative and implementation reference
+### Maintenance rule
 
-The sections below preserve the detailed English project specifications and implementation guides relevant to this capability. They are included here so a developer does not need to reconstruct the behavior from separate documents.
-
-### Runtime execution requirements
-
-> Consolidated from `specs/SPEC-002-Agent-Runtime.md`.
-
-### Escopo
-
-O Agent Runtime executa o ciclo de vida conversacional do agente. A execução inclui normalização de contexto, estado LangGraph, memória, checkpoint, roteamento, supervisor, guardrails, MCP, RAG, LLM, judges, persistência e resposta final.
-
-### Componentes
-
-| Componente | Responsabilidade |
-|---|---|
-| Workflow Builder | Compila o grafo LangGraph. |
-| State Manager | Mantém o estado de execução. |
-| Session Manager | Resolve sessão e conversation_key. |
-| Memory Manager | Carrega e persiste histórico. |
-| Checkpoint Manager | Persiste estado LangGraph. |
-| Input Guardrail Node | Executa guardrails de entrada. |
-| Router Node | Decide rota/intent. |
-| Supervisor Node | Decide handoff ou próximo agente quando habilitado. |
-| Agent Node | Executa agente de domínio. |
-| MCP Client/Router | Executa tools por contrato. |
-| RAG Service | Recupera contexto documental. |
-| Output Supervisor | Revisa resposta antes de saída. |
-| Output Guardrail Node | Executa guardrails de saída. |
-| Judge Node | Avalia resposta. |
-| Persistence Node | Persiste mensagens, memória e checkpoint. |
-
-### State Model
-
-```python
-class AgentState(TypedDict, total=False):
-    user_text: str
-    sanitized_input: str
-    response_text: str
-    tenant_id: str
-    agent_id: str
-    channel: str
-    session_id: str
-    conversation_key: str
-    message_id: str
-    route: str
-    intent: str
-    context: dict
-    business_context: dict
-    tool_arguments: dict
-    mcp_tools: list[str]
-    mcp_results: list[dict]
-    rag_context: str
-    rag_metadata: dict
-    guardrails: list[dict]
-    judges: list[dict]
-    metadata: dict
-    errors: list[dict]
-```
-
-### Workflow
-
-```mermaid
-flowchart TD
-    A[start] --> B[input_guardrails]
-    B --> C[routing_decision]
-    C --> D[agent_execution]
-    D --> E[output_supervisor]
-    E --> F[output_guardrails]
-    F --> G[judge]
-    G --> H[persist]
-    H --> I[end]
-    C --> J[handoff]
-    J --> C
-```
-
-### Nós
-
-| Nó | Entrada | Saída |
-|---|---|---|
-| `input_guardrails` | `user_text`, `context` | `sanitized_input`, `guardrails` |
-| `routing_decision` | `sanitized_input`, `business_context` | `route`, `intent`, `mcp_tools` |
-| `agent_execution` | `state` completo | `response_text`, `mcp_results`, `rag_metadata` |
-| `output_supervisor` | `response_text` | `response_text` revisado |
-| `output_guardrails` | `response_text` | `response_text`, `guardrails` |
-| `judge` | `response_text`, evidências | `judges` |
-| `persist` | `state` completo | checkpoint, memória, mensagens |
-
-### Router
-
-```yaml
-routing:
-  mode: router
-  fallback_agent: billing_agent
-  enable_llm_router: false
-  intents:
-    billing_invoice_explanation:
-      route: billing_agent
-      keywords:
-        - fatura
-        - cobrança
-        - boleto
-      mcp_tools:
-        - consultar_fatura
-        - consultar_pagamentos
-```
-
-### Supervisor
-
-```yaml
-supervisor:
-  enabled: true
-  profile: supervisor
-  max_turns: 5
-  handoff_enabled: true
-  fallback_route: support_agent
-```
-
-### Memory
-
-| Provider | Uso |
-|---|---|
-| `memory` | Execução local e testes. |
-| `sqlite` | Desenvolvimento local persistente. |
-| `mongodb` | Checkpoint e histórico em ambiente distribuído. |
-| `autonomous` | Produção com Oracle Autonomous Database. |
-
-### Checkpoints
-
-Checkpoint contém:
-
-```json
-{
-  "conversation_key": "default:telecom_contas:session-001",
-  "checkpoint_id": "ckpt-001",
-  "state": {},
-  "pending_writes": [],
-  "created_at": "2026-06-19T12:00:00Z"
-}
-```
-
-Formato entregue ao LangGraph:
-
-```python
-pending_writes: list[tuple[str, str, object]]
-```
-
-### Business Context
-
-```yaml
-business_context:
-  customer_key: "11999999999"
-  contract_key: "3000131180"
-  interaction_key: "301953872"
-  account_key: null
-  resource_key: null
-  session_key: "session-001"
-  metadata:
-    source_channel: web
-```
-
-### Ordem de Prioridade dos Dados
-
-1. `tool_arguments`
-2. `business_context`
-3. `context`
-4. `session.metadata`
-5. `state`
-6. extração complementar do texto
-
-### MCP Integration
-
-```mermaid
-flowchart LR
-    AgentNode --> ToolList[mcp_tools]
-    ToolList --> Mapping[mcp_parameter_mapping.yaml]
-    Mapping --> MCP[MCP Gateway/Router]
-    MCP --> Result[mcp_results]
-```
-
-### RAG Integration
-
-```yaml
-rag:
-  enabled: true
-  namespace_strategy: agent_id
-  top_k: 5
-  profile_generation: rag_generation
-```
-
-### Eventos
-
-| Evento | Descrição |
-|---|---|
-| `runtime.started` | Execução iniciada. |
-| `runtime.session.loaded` | Sessão carregada. |
-| `runtime.memory.loaded` | Memória carregada. |
-| `runtime.checkpoint.loaded` | Checkpoint carregado. |
-| `runtime.route.selected` | Rota selecionada. |
-| `runtime.agent.started` | Agente iniciado. |
-| `runtime.agent.completed` | Agente concluído. |
-| `runtime.persist.completed` | Persistência concluída. |
-| `runtime.failed` | Falha controlada. |
-
-### Erros
-
-| Código | Condição | Tratamento |
-|---|---|---|
-| `RUNTIME_INVALID_REQUEST` | GatewayRequest inválido | 422 |
-| `RUNTIME_ROUTE_NOT_FOUND` | Nenhuma rota elegível | fallback ou resposta controlada |
-| `RUNTIME_CHECKPOINT_ERROR` | Falha em checkpoint | retry ou stateless conforme config |
-| `RUNTIME_MEMORY_ERROR` | Falha em memória | retry ou resposta controlada |
-| `RUNTIME_AGENT_ERROR` | Falha no agente | NOC + fallback |
-| `RUNTIME_TIMEOUT` | Timeout geral | resposta controlada |
-
-
-
-### Contrato Durável de Estado Transacional
-
-Hosts que utilizam `AgentRuntime` com transações multi-turno DEVEM declarar no `AgentState` os campos `active_transaction` e `last_transaction`. O primeiro é a fonte canônica da transação em andamento e deve sobreviver a checkpoint/resume; o segundo mantém o snapshot da última transação terminal.
-
-```python
-active_transaction: dict[str, Any]
-last_transaction: dict[str, Any]
-```
-
-`selected_tool_call` e `pending_tool_call` são campos auxiliares/compatibilidade e não substituem o latch canônico. Durante `COLLECTING_PARAMETERS`, a retomada da transação e o consumo de parâmetros pendentes têm precedência sobre keyword routing genérico. Uma mudança de intenção só deve interromper a transação quando for inequívoca ou explicitamente solicitada pelo usuário.
-
-O contrato completo, ciclo de vida, precedência de roteamento, checklist e testes regressivos estão em [`docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md`](../docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md).
-
-
-### Requisitos Não Funcionais
-
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
-
-
-### Critérios de Aceite
-
-- [ ] Runtime recebe GatewayRequest validado.
-- [ ] State contém tenant_id, agent_id, session_id, conversation_key, route e intent.
-- [ ] Input guardrails executam antes do roteamento.
-- [ ] Router ou Supervisor seleciona rota.
-- [ ] Agent Node executa sem acessar payload bruto de canal.
-- [ ] MCP é acessado por contrato.
-- [ ] RAG é acessado por serviço reutilizável.
-- [ ] Output guardrails executam antes da resposta final.
-- [ ] Judges geram JudgeResult.
-- [ ] Memória e checkpoint são persistidos conforme provider.
-- [ ] Hosts transacionais declaram `active_transaction` e `last_transaction` no `AgentState`.
-- [ ] Durante `COLLECTING_PARAMETERS`, respostas a parâmetros pendentes têm precedência sobre keyword routing genérico.
-- [ ] Erros geram NOC e resposta controlada.
-
-
-### Glossário
-
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
-
-### Operational performance and SRE requirements
-
-> Consolidated from `specs/SPEC-020-Operational-Readiness-and-SRE-Model.md`.
-
-### Agent Platform OCI
-
-Version: 1.0.0
-
-
----
-
-### Padrão de leitura
-
-Cada SPEC está organizada para servir tanto como contrato arquitetural quanto como guia prático de adoção.
-
-A estrutura usada é:
-
-1. Conceito.
-2. Problema que resolve.
-3. Quando usar.
-4. Quando não usar.
-5. Arquitetura.
-6. Implementação.
-7. Exemplos.
-8. Erros comuns.
-9. Critérios de aceite.
-
----
-
-
-### 1. Conceito
-
-Operational Readiness define os requisitos mínimos para operar a Agent Platform OCI em produção com confiabilidade, observabilidade, capacidade de resposta a incidentes e recuperação.
-
-### 2. Componentes operados
-
-- Agent Gateway;
-- Channel Gateway;
-- Agent Runtime;
-- AI Gateway;
-- MCP Gateway;
-- MCP Servers;
-- Evaluator;
-- bancos/repositórios;
-- Langfuse/OTEL;
-- Redis/Mongo/ADB quando usados.
-
-### 3. Health e readiness
-
-Endpoints mínimos:
-
-```text
-GET /health
-GET /ready
-GET /version
-```
-
-### 4. SLOs
-
-| Componente | Latência | Disponibilidade |
-| --- | --- | --- |
-| Agent Gateway | p95 < 1s | 99.5% |
-| Agent Runtime | p95 < 5s | 99.0% |
-| AI Gateway | p95 < 10s | 99.0% |
-| MCP Gateway | p95 < 2s | 99.0% |
-| Evaluator | janela batch | execução diária |
-
-
-### 5. Métricas
-
-- requests_total;
-- request_latency_ms;
-- errors_total;
-- active_sessions;
-- llm_tokens_total;
-- llm_cost_estimated;
-- mcp_tool_calls_total;
-- guardrail_blocks_total;
-- judge_scores;
-- evaluator_scores.
-
-### 6. Dashboards
-
-Dashboards mínimos:
-
-- Platform Overview;
-- Runtime;
-- Gateway;
-- AI Gateway;
-- MCP Gateway;
-- Guardrails;
-- Evaluator;
-- Cost/Usage;
-- Incidents.
-
-### 7. Alertas
-
-| Alerta | Condição |
-| --- | --- |
-| HighErrorRate | 5xx acima do limite. |
-| LatencySLOBreach | p95 acima do SLO. |
-| LLMProviderDown | Falhas consecutivas no provider. |
-| MCPTimeoutSpike | Aumento de timeout MCP. |
-| GuardrailSpike | Aumento anômalo de bloqueios. |
-| EvaluatorFailed | Run falhou. |
-
-
-### 8. Runbooks
-
-Runbook deve conter:
-
-- sintoma;
-- impacto;
-- consultas;
-- dashboards;
-- logs;
-- ações;
-- rollback;
-- escalonamento.
-
-### 9. Incident management
-
-Fluxo:
-
-```mermaid
-flowchart LR
-    Detect[Detect] --> Triage[Triage]
-    Triage --> Mitigate[Mitigate]
-    Mitigate --> Recover[Recover]
-    Recover --> Postmortem[Postmortem]
-```
-
-### 10. Capacidade
-
-Avaliar:
-
-- QPS;
-- sessões simultâneas;
-- tokens/minuto;
-- chamadas MCP/minuto;
-- latência de provider;
-- uso de memória;
-- storage de checkpoints.
-
-### 11. Erros comuns
-
-| Erro | Impacto | Correção |
-| --- | --- | --- |
-| Sem readiness | Tráfego antes do app estar pronto. | Implementar /ready. |
-| Sem alertas MCP | Falha silenciosa. | Criar alertas por tool. |
-| Sem runbook | MTTR alto. | Criar runbooks por incidente. |
-| Sem custo LLM | Sem controle financeiro. | Registrar tokens/custos. |
-
-
-### 12. Production readiness checklist
-
-- [ ] Health checks ativos.
-- [ ] Readiness checks ativos.
-- [ ] Logs estruturados.
-- [ ] Métricas exportadas.
-- [ ] Traces exportados.
-- [ ] Dashboards criados.
-- [ ] Alertas configurados.
-- [ ] Runbooks disponíveis.
-- [ ] Rollback validado.
-- [ ] SLOs definidos.
-- [ ] Capacidade estimada.
-- [ ] Incident process definido.
+New fixes or evolutions for this subject should update this consolidated document. Release notes may continue to exist as history, but they should not be required to understand or implement the feature.

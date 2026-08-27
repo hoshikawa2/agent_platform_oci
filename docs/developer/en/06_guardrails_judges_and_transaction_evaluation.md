@@ -1,73 +1,102 @@
-
-### Guardrails, Judges and Transaction Evaluation
+### Guardrails, Judges, and Transaction Evaluation
 
 ### How to use this manual
 
 This is a **specialized reference manual**. It does not replace the main tutorial.
 
-- To build an agent end to end, use [`README_en.md`](../../../README_en.md).
-- Use this document when implementing, deep-diving or troubleshooting **native/external guardrails, judges, transactional sampling and grounding**.
-- Historical examples consolidated here must be interpreted against the current framework API.
-- If documentation differs, the current code and root README take precedence.
+- To create an agent from start to finish, use [`README_en.md`](../../../README_en.md).
+- Use this document when you need to implement, deepen, or diagnose **native/external guardrails, judges, transactional sampling, and grounding**.
+- Historical examples consolidated here should be read in light of the framework's current API.
+- In case of divergence, the code for the version and the current `README_en.md` take precedence.
 
 ### Relationship with the main tutorial
 
-`README_en.md` introduces this capability as part of the normal development flow. This manual consolidates details previously spread across `docs/`, `Documentacao/`, release notes, validation records and specialized guides.
+The `README_en.md` presents this capability in the normal development flow. This manual brings together details that were distributed across `docs/`, `Documentacao/`, release notes, validations, and specialized guides.
 
-Its purpose is to answer **“how does this feature work in depth and how do I troubleshoot it?”** without becoming a second copy of the main tutorial.
+The goal here is to answer **“how does this feature work in depth and how do I solve problems with it?”**, without turning this file into a second copy of the main tutorial.
 
 ### Scope
 
-Native/external guardrails, judges, transactional sampling and grounding.
+Native/external guardrails, judges, transactional sampling, and grounding.
 
 ### Consolidated technical content
 
-### Guardrails, Judges and Transaction Evaluation
+### Guardrails, Judges, and Transaction Evaluation
 
-This guide explains validation layers and how agent-specific policies extend the framework without introducing domain coupling.
+Manual for input/output guardrails, agent-specific extensions, external judges, mandatory execution on transactions, and the signals/evidence used during evaluation.
 
-### Guardrail stages
+### How to use this document
 
-Input guardrails validate/sanitize/block user input before domain execution. Output guardrails validate the produced response before it leaves the runtime. Optional rails can be enabled according to agent/environment policy.
+This is the consolidated development document for this subject. It brings together architecture, configuration, examples, runtime behavior, compatibility, tests, and troubleshooting that were previously distributed across several files. Source sections were preserved when they provided distinct technical details; release notes were incorporated as current behavior or correction history.
 
-### Agent-owned extensions
+### Guardrails implemented in the framework
 
-The framework exposes an SPI/configuration model for external guardrails and judges. An agent points configuration to implementation classes in its own package. The shared framework must not import concrete telecom, retail or company validation modules.
+> Content consolidated from `Documentacao/README_GUARDRAILS_IMPLEMENTADOS.md`.
 
-Synchronous validators may execute in worker threads; asynchronous validators execute on the event loop. Independent judges may execute concurrently to reduce latency while the configured logical result order is preserved.
+This version adds a pragmatic guardrail layer to `agent_framework`, inspired by separating rails by stage: input, output, retrieval, and execution/tool.
 
-### Transactional judge sampling
+### Input rails
 
-Normal evaluation may use sampling, but transactional interactions can be configured with `always_run_for_transactional`. Transaction detection occurs before applying `sample_rate` so critical side-effecting paths are not randomly skipped.
+- `MSIZE` — blocks excessively large messages.
+- `MSK` — masks CPF, CNPJ, phone, e-mail, card, postal code, RG, tokens, and keys.
+- `TOX` — detects toxicity and records severity without blocking by default.
+- `PINJ` — detects prompt injection and records a score.
+- `JBRK` — detects jailbreak/bypass roleplay and records a score.
+- `VLOOP` — blocks repetitive conversational loops.
 
-Signals may include transaction lifecycle state, required/received confirmation, selected or pending tool call, tool-policy result and MCP execution results. Detection intentionally uses multiple signals instead of depending on a single field.
+### Output rails
 
-### Operational evidence
+- `PII_OUT` — masks PII in the agent response.
+- `CMP` — softens absolute promises and excessive guarantee language.
+- `REVPREC` — blocks verbalization of an operational action without tool confirmation.
+- `GND` — signals grounding/risk when there is a specific answer without evidence.
+- `ALUC_RISK` — marks hallucination risk for telemetry and judges.
 
-Judges must distinguish a model claim from an executed action. MCP results and transaction evidence provide grounding for assertions such as cancellation, credit, update or protocol creation.
+### Optional rails
 
-### Compatibility
+- `RET_REL` — validates retrieval-chunk relevance using a minimum score.
+- `TOOL_VAL` — validates MCP/tool name, required arguments, negative values, and allowlist.
 
-Legacy validators may use temporary compatibility shims during migration, but new code should depend on the external SPI/configuration. Native framework guardrails continue to coexist with agent-specific policies.
+### Files changed
 
-### Testing
+- `agent_framework/src/agent_framework/guardrails/rails.py`
+- `agent_framework/src/agent_framework/guardrails/pipeline.py`
+- `agent_framework/src/agent_framework/guardrails/__init__.py`
 
-Test allow/sanitize/block behavior, exceptions/fail-closed behavior where configured, sync/async external validators, judge concurrency, transactional sample-rate bypass, MCP evidence propagation and isolation between two agents with different policies.
+### Quick use
 
-### Source material consolidated
+```python
+from agent_framework.guardrails.pipeline import GuardrailPipeline
 
-- `Documentacao/README_GUARDRAILS_IMPLEMENTADOS.md`
-- `docs/EXTERNAL_GUARDRAILS_JUDGES.md`
-- `docs/JUDGES_TRANSACTIONAL_SAMPLING_FIX.md`
-- Global Supervisor and guardrail validation records under `docs/`
+pipeline = GuardrailPipeline()
 
-### Detailed normative and implementation reference
+sanitized_input, input_decisions = await pipeline.run_input(
+    user_text,
+    {"history_texts": history_texts},
+)
 
-The sections below preserve the detailed English project specifications and implementation guides relevant to this capability. They are included here so a developer does not need to reconstruct the behavior from separate documents.
+final_answer, output_decisions = await pipeline.run_output(
+    answer,
+    context,
+)
+```
 
-### External guardrails and judges SPI
+For tools/MCP:
 
-> Consolidated from `docs/EXTERNAL_GUARDRAILS_JUDGES.md`.
+```python
+_, decisions = await pipeline.run_tool(
+    "cancelar_produto",
+    {"produto": "VAS", "valor": 0},
+    {
+        "required_args": ["produto"],
+        "allowed_tools": ["cancelar_produto", "consultar_fatura"],
+    },
+)
+```
+
+### SPI for external guardrails and judges
+
+> Content consolidated from `docs/EXTERNAL_GUARDRAILS_JUDGES.md`.
 
 `agent_framework_oci` supports agent-owned guardrails and judges without importing domain code into the core.
 
@@ -88,602 +117,107 @@ judges:
 
 Native entries remain unchanged. External synchronous `evaluate()` methods execute in worker threads via `asyncio.to_thread`; asynchronous methods execute concurrently on the framework event loop. Judges run concurrently with `asyncio.gather`, preserving YAML result order. Agent plugins should reuse the LLM supplied by the framework rather than instantiate a separate provider.
 
-The core must not reference a concrete agent package, company, product, telecom identifier or domain-specific policy. Domain-specific variants belong to the agent and should receive distinct public codes/names.
+The core must not reference a concrete agent package, company, product, telecom identifier, or domain-specific policy. Domain-specific variants belong to the agent and should receive distinct public codes/names.
 
 ### Compatibility rule
+
 Domain policies must not be replaced by cosmetically generic text inside the core while losing the original policy. The generic core implementation and the agent-specific implementation may coexist; the embedding agent explicitly selects its own code/name in YAML.
 
 Legacy business validators should migrate to the agent domain. A temporary compatibility shim is acceptable for old imports, but new application code must import the agent-owned implementation.
 
-### Guardrails specification
+### Mandatory judge execution for transactions
 
-> Consolidated from `specs/SPEC-005-Guardrails.md`.
+> Content consolidated from `docs/JUDGES_TRANSACTIONAL_SAMPLING_FIX.md`.
 
-### Escopo
+### Problem
 
-Guardrails são políticas executadas sobre entrada, saída, tool calls, RAG e respostas finais. A plataforma suporta guardrails globais, por agente, por canal e por fase.
+Even with `always_run_for_transactional: true`, judges could be skipped by sampling because the `judge` node sent only `context`, `route`, `intent`, and `mcp_results`. Transactional fields produced by the runtime did not reach `JudgePipeline`.
 
-### Fases
+### Fix
 
-| Fase | Entrada | Saída |
-|---|---|---|
-| Input | `user_text`, `context` | `sanitized_input`, `GuardrailResult` |
-| Tool | `ToolInvocation` | tool permitida/bloqueada |
-| RAG | query/contexto recuperado | contexto aprovado/filtrado |
-| Output | `response_text` | resposta aprovada/sanitizada/bloqueada |
-| Review | resposta + evidências | decisão final |
+The `judge` node now passes:
 
-### GuardrailResult
+- `transaction_status`
+- `confirmation_required`
+- `confirmation_received`
+- `tool_policy_result`
+- `selected_tool_call`
+- `pending_tool_call`
+- `mcp_results` as evidence
 
-```json
-{
-  "code": "PINJ",
-  "phase": "input",
-  "status": "blocked",
-  "severity": "high",
-  "score": 0.98,
-  "message": "Entrada bloqueada por política.",
-  "details": {
-    "matched_policy": "prompt_injection"
-  }
-}
-```
+`JudgePipeline` detects transactions through multiple signals and evaluates `always_run_for_transactional` before applying `sample_rate`.
 
-### Configuração Global
+With the configuration below, common queries continue to be sampled at 25%, but `AWAITING_CONFIRMATION`, `COMPLETED`, `FAILED`, or `CANCELLED` turns always run the judges.
 
 ```yaml
-input:
-  - code: MSK
-    enabled: true
-    mode: enforce
-  - code: VLOOP
-    enabled: true
-    mode: enforce
-  - code: PINJ
-    enabled: true
-    mode: enforce
-
-output:
-  - code: REVPREC
-    enabled: true
-    mode: enforce
-  - code: DLEX_OUT
-    enabled: true
-    mode: enforce
-  - code: PINJ
-    enabled: true
-    mode: observe
+enabled: true
+sample_rate: 0.25
+always_run_for_transactional: true
 ```
 
-### Configuração por Agente
+### Global Supervisor validation
 
-```yaml
-agents:
-  telecom_contas:
-    input:
-      - code: BILLING_INPUT_POLICY
-        enabled: true
-        mode: observe
-    output:
-      - code: BILLING_COMPLIANCE
-        enabled: true
-        mode: enforce
-```
+> Content consolidated from `docs/docs_GLOBAL_SUPERVISOR_VALIDATION.txt`.
 
-### Modos
+VALIDATION - GLOBAL SUPERVISOR
 
-| Modo | Comportamento |
-|---|---|
-| `enforce` | Aplica bloqueio, máscara ou alteração. |
-| `observe` | Registra sem bloquear. |
-| `fail_open` | Em erro técnico, prossegue e emite NOC. |
-| `fail_closed` | Em erro técnico, bloqueia. |
+Implemented changes:
 
-### Tipos
+1. Framework
+- agent_framework.global_supervisor.models
+- agent_framework.global_supervisor.config
+- agent_framework.global_supervisor.session_store
+- agent_framework.global_supervisor.router
+- agent_framework.global_supervisor.client
 
-| Tipo | Implementação |
-|---|---|
-| Determinístico | Regex, listas, tamanho, estrutura, regras. |
-| LLM | Classificação semântica por profile. |
-| Híbrido | Determinístico + LLM em casos ambíguos. |
+2. New service
+- agent_gateway/app/main.py
+- agent_gateway/app/settings.py
+- agent_gateway/config/backends.yaml
+- agent_gateway/README.md
+- agent_gateway/Dockerfile
+- agent_gateway/docs/ARQUITETURA_GLOBAL_SUPERVISOR.md
 
-### Profiles LLM
+3. Docker Compose
+- agent-gateway service added on port 8010.
 
-```yaml
-profiles:
-  guardrail:
-    provider: oci_openai
-    model: openai.gpt-4.1
-    temperature: 0
-    max_tokens: 600
+Validations performed:
 
-  grl:
-    provider: oci_openai
-    model: openai.gpt-4.1
-    temperature: 0
-    max_tokens: 700
-```
+- python3 -m compileall -q agent_framework/src/agent_framework/global_supervisor agent_gateway/app
+  Result: OK
 
-### Fluxo
+- Hybrid-routing smoke test:
+  Input 1: "My bill is too high" -> billing
+  Input 2: "and this amount?" on the same session_id -> billing via active_backend
+  Result: OK
 
-```mermaid
-flowchart TD
-    A[Input] --> B[Deterministic Guardrails]
-    B --> C{Blocked?}
-    C -- yes --> D[Safe Response]
-    C -- no --> E[LLM Guardrails]
-    E --> F{Approved?}
-    F -- no --> D
-    F -- yes --> G[Runtime]
-```
+- FastAPI app import smoke test:
+  from app.main import app, registry, router
+  Result: OK
 
-### Eventos
+Note:
+- The gateway SSE proxy was left as a future step. The `/gateway/message/sse` endpoint already routes and forwards as a normal message; for end-to-end SSE, a proxy from `/gateway/events/{session_id}` to the active backend can be implemented.
 
-| Evento | Descrição |
-|---|---|
-| `guardrail.started` | Execução iniciada. |
-| `guardrail.completed` | Execução concluída. |
-| `guardrail.blocked` | Conteúdo bloqueado. |
-| `guardrail.masked` | Conteúdo mascarado. |
-| `guardrail.failed` | Falha técnica. |
-| `guardrail.observe` | Política observacional registrada. |
+### Guardrail event validation
 
-### Códigos Base
+> Content consolidated from `docs/docs_VALIDATION_GUARDRAILS_IC.txt`.
 
-| Código | Fase | Uso |
-|---|---|---|
-| `MSK` | input/output | Mascaramento. |
-| `VLOOP` | input | Detecção de loop. |
-| `PINJ` | input/output | Prompt injection. |
-| `REVPREC` | output | Revisão de precisão. |
-| `DLEX_OUT` | output | Controle de dados e linguagem na saída. |
-| `RAGSEC` | rag/output | Segurança de contexto recuperado. |
+VALIDATION REPORT - guardrails parallel fail-fast + observer IC
+Date: 2026-06-03
 
-### Testes
+compileall: OK
+smoke-tests: OK
 
-| Teste | Objetivo |
-|---|---|
-| Unitário | Validar guardrail isolado. |
-| Config | Validar YAML e schema. |
-| Integração | Validar execução no workflow. |
-| Observabilidade | Validar eventos e traces. |
-| Negativo | Validar bloqueio. |
-| Observe-only | Validar não bloqueio. |
+### Source files
 
+The files below were consolidated into this manual:
 
-### Requisitos Não Funcionais
+- `Documentacao/README_GUARDRAILS_IMPLEMENTADOS.md`
+- `docs/EXTERNAL_GUARDRAILS_JUDGES.md`
+- `docs/JUDGES_TRANSACTIONAL_SAMPLING_FIX.md`
+- `docs/docs_GLOBAL_SUPERVISOR_VALIDATION.txt`
+- `docs/docs_VALIDATION_GUARDRAILS_IC.txt`
 
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
+### Maintenance rule
 
-
-### Critérios de Aceite
-
-- [ ] Guardrails globais são carregados por YAML.
-- [ ] Guardrails por agente sobrescrevem ou complementam globais.
-- [ ] GuardrailResult é gerado para cada execução.
-- [ ] Modo enforce bloqueia quando aplicável.
-- [ ] Modo observe não bloqueia.
-- [ ] Falhas técnicas seguem política configurada.
-- [ ] Guardrails LLM usam profile dedicado.
-- [ ] Eventos e métricas são emitidos.
-- [ ] Testes cobrem casos positivos e negativos.
-- [ ] Output guardrails executam antes da resposta final.
-
-
-### Glossário
-
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
-
-### Evaluation specification
-
-> Consolidated from `specs/SPEC-006-Evals.md`.
-
-### Escopo
-
-A camada de Evals executa avaliação online, avaliação offline, regressão, certificação e publicação de métricas. Ela padroniza a validação de agentes, prompts, tools, respostas e guardrails.
-
-### Componentes
-
-| Componente | Responsabilidade |
-|---|---|
-| Online Judges | Avaliação durante a execução. |
-| Offline Evaluator | Avaliação batch de conversas. |
-| Dataset Runner | Execução de datasets versionados. |
-| Regression Runner | Comparação entre versões. |
-| Certification Suite | Validação técnica e funcional. |
-| Metrics Engine | Cálculo de métricas. |
-| Persistence | Persistência de runs e itens. |
-| Exporter | Exportação TXT.GZ/JSON/HTML. |
-| Publisher | Publicação de scores no Langfuse. |
-
-### Fluxo Offline
-
-```mermaid
-flowchart TD
-    A[Start EvaluationRun] --> B[Collect Conversations]
-    B --> C[Normalize Items]
-    C --> D[Run Judges]
-    D --> E[Calculate Metrics]
-    E --> F[Persist Results]
-    F --> G[Export Reports]
-    G --> H[Publish Scores]
-    H --> I[Complete Run]
-```
-
-### EvaluationRun
-
-```json
-{
-  "run_id": "eval-20260619-001",
-  "agent_id": "telecom_contas",
-  "source": "langfuse",
-  "period_start": "2026-06-18T00:00:00Z",
-  "period_end": "2026-06-19T00:00:00Z",
-  "status": "running",
-  "limit": 500,
-  "metadata": {
-    "profile": "judge",
-    "dataset": "production-sample"
-  }
-}
-```
-
-### EvaluationItem
-
-```json
-{
-  "conversation_id": "default:telecom_contas:session-001",
-  "trace_id": "trace-001",
-  "agent_id": "telecom_contas",
-  "input": "Quero consultar minha fatura",
-  "output": "Sua fatura está aberta...",
-  "evidence": {
-    "mcp_results": [],
-    "rag_context": ""
-  },
-  "scores": {
-    "quality": 0.86,
-    "groundedness": 0.78,
-    "safety": 1.0,
-    "resolution": 0.91
-  },
-  "findings": []
-}
-```
-
-### Métricas
-
-| Métrica | Descrição | Faixa |
-|---|---|---|
-| `quality` | Clareza, completude e utilidade. | 0–1 |
-| `groundedness` | Aderência a evidências MCP/RAG. | 0–1 |
-| `safety` | Conformidade de segurança. | 0–1 |
-| `resolution` | Capacidade de resolver a intenção. | 0–1 |
-| `tool_correctness` | Uso correto de tools. | 0–1 |
-| `policy_compliance` | Aderência a regras de domínio. | 0–1 |
-
-### Dataset
-
-```yaml
-dataset:
-  name: telecom_contas_billing
-  version: 1.0.0
-  items:
-    - id: billing-001
-      input: "Quero consultar minha fatura"
-      business_context:
-        customer_key: "11999999999"
-        contract_key: "3000131180"
-      expected:
-        route: billing_agent
-        tools:
-          - consultar_fatura
-        min_scores:
-          quality: 0.75
-          groundedness: 0.70
-          safety: 1.0
-```
-
-### Judges
-
-```yaml
-judges:
-  - name: response_quality
-    enabled: true
-    threshold: 0.7
-    profile: judge
-
-  - name: groundedness
-    enabled: true
-    threshold: 0.6
-    profile: judge
-
-  - name: safety
-    enabled: true
-    threshold: 1.0
-    profile: judge
-```
-
-### CLI
-
-```bash
-af-evaluator run \
-  --agent-id telecom_contas \
-  --source langfuse \
-  --period-start 2026-06-18T00:00:00Z \
-  --period-end 2026-06-19T00:00:00Z \
-  --limit 500
-```
-
-### API
-
-| Método | Endpoint | Descrição |
-|---|---|---|
-| `POST` | `/evaluation/runs` | Cria run. |
-| `GET` | `/evaluation/runs/{run_id}` | Consulta run. |
-| `GET` | `/evaluation/runs/{run_id}/items` | Lista itens. |
-| `POST` | `/evaluation/datasets/{name}/run` | Executa dataset. |
-| `GET` | `/health` | Health check. |
-
-### Persistência
-
-| Tabela | Conteúdo |
-|---|---|
-| `EVAL_RUNS` | Runs executadas. |
-| `EVAL_ITEMS` | Conversas avaliadas. |
-| `EVAL_SCORES` | Scores por métrica. |
-| `EVAL_FINDINGS` | Achados. |
-| `EVAL_EXPORTS` | Arquivos exportados. |
-
-### Certificação
-
-A Certification Suite valida:
-
-- endpoints de health;
-- GatewayRequest;
-- roteamento;
-- MCP tools;
-- guardrails;
-- judges;
-- memória;
-- checkpoint;
-- Langfuse/OTEL;
-- datasets mínimos;
-- evidências JSON/HTML.
-
-### Eventos
-
-| Evento | Descrição |
-|---|---|
-| `eval.run.started` | Run iniciada. |
-| `eval.item.completed` | Item avaliado. |
-| `eval.run.completed` | Run concluída. |
-| `eval.run.failed` | Run falhou. |
-| `eval.score.published` | Score publicado. |
-
-
-### Requisitos Não Funcionais
-
-| Categoria | Requisito |
-|---|---|
-| Disponibilidade | Componentes deployáveis expõem `/health` e `/ready`. |
-| Escalabilidade | Apps stateless escalam horizontalmente. Estado conversacional fica em repositórios externos. |
-| Segurança | Segredos são fornecidos por secret store ou Kubernetes Secrets. |
-| Observabilidade | Logs, métricas e traces usam correlação por request_id, trace_id, session_id, tenant_id e agent_id. |
-| Auditabilidade | Decisões de rota, guardrail, judge, MCP e LLM são rastreáveis. |
-| Portabilidade | Execução suportada em local, Docker Compose e Kubernetes/OKE. |
-| Configuração | Comportamento variável é controlado por `.env` e YAML versionado. |
-
-
-### Critérios de Aceite
-
-- [ ] Evaluator executa runs por período/agente.
-- [ ] Langfuse é fonte suportada.
-- [ ] Datasets são versionados.
-- [ ] LLM Judges usam profile `judge`.
-- [ ] Scores são persistidos.
-- [ ] TXT.GZ/JSON/HTML são exportáveis.
-- [ ] Scores podem ser publicados no Langfuse.
-- [ ] Certification Suite gera evidências.
-- [ ] Métricas mínimas são padronizadas.
-- [ ] Falhas permitem retomada por checkpoint de run.
-
-
-### Glossário
-
-| Termo | Definição |
-|---|---|
-| Agent Platform | Plataforma composta por runtime, gateways, evaluator, templates, contratos e componentes operacionais. |
-| Agent Framework | Biblioteca/core reutilizável com contratos, guardrails, judges, memória, telemetria, providers e utilitários. |
-| Agent Runtime | Motor de execução de agentes baseado em LangGraph, estado, sessão, memória, checkpoints, roteamento e ciclo de vida. |
-| Agent Gateway | Aplicação deployável de entrada, roteamento e orquestração entre backends/agentes. |
-| Channel Gateway | Aplicação ou módulo de normalização de payloads de canais para GatewayRequest. |
-| AI Gateway | Aplicação de governança, roteamento e abstração de chamadas LLM/embedding. |
-| MCP Gateway | Aplicação de governança e roteamento de tools MCP. |
-| Evaluator | Camada de avaliação online/offline, regressão e certificação. |
-| Business Context | Conjunto de chaves canônicas de negócio: customer_key, contract_key, interaction_key, account_key, resource_key e session_key. |
-
-### Evaluation and certification framework
-
-> Consolidated from `specs/SPEC-019-Evaluation-and-Certification-Framework.md`.
-
-### Agent Platform OCI
-
-Version: 1.0.0
-
-
----
-
-### Padrão de leitura
-
-Cada SPEC está organizada para servir tanto como contrato arquitetural quanto como guia prático de adoção.
-
-A estrutura usada é:
-
-1. Conceito.
-2. Problema que resolve.
-3. Quando usar.
-4. Quando não usar.
-5. Arquitetura.
-6. Implementação.
-7. Exemplos.
-8. Erros comuns.
-9. Critérios de aceite.
-
----
-
-
-### 1. Conceito
-
-Evaluation mede qualidade e comportamento. Certification valida prontidão técnica e funcional.
-
-Evaluator responde:
-
-```text
-O agente respondeu bem?
-A resposta está fundamentada?
-A tool certa foi chamada?
-Houve regressão?
-```
-
-Certification responde:
-
-```text
-O agente está pronto para rodar?
-Endpoints funcionam?
-MCP funciona?
-Guardrails funcionam?
-Observabilidade funciona?
-```
-
-### 2. Arquitetura
-
-```mermaid
-flowchart LR
-    Runtime[Runtime] --> LF[Langfuse]
-    LF --> Eval[Offline Evaluator]
-    Dataset[Datasets] --> Eval
-    Eval --> Scores[Scores]
-    Eval --> Reports[Reports]
-    Cert[Certification Suite] --> Runtime
-    Cert --> Evidence[Evidences]
-```
-
-### 3. Métricas
-
-| Métrica | Descrição |
-| --- | --- |
-| quality | Clareza, completude e utilidade. |
-| groundedness | Aderência a evidências MCP/RAG. |
-| safety | Conformidade de segurança. |
-| resolution | Resolve a intenção. |
-| tool_correctness | Usa tools corretas. |
-| route_accuracy | Rota/intenção corretas. |
-| policy_compliance | Aderência à política de domínio. |
-
-
-### 4. Dataset
-
-```yaml
-dataset:
-  name: telecom_contas_regression
-  version: 1.0.0
-  items:
-    - id: billing-001
-      input: "Quero consultar minha fatura"
-      business_context:
-        customer_key: "11999999999"
-        contract_key: "3000131180"
-      expected:
-        route: billing_agent
-        tools:
-          - consultar_fatura
-        min_scores:
-          quality: 0.75
-          groundedness: 0.70
-```
-
-### 5. EvaluationRun
-
-```json
-{
-  "run_id": "eval-001",
-  "agent_id": "telecom_contas",
-  "source": "langfuse",
-  "period_start": "2026-06-18T00:00:00Z",
-  "period_end": "2026-06-19T00:00:00Z",
-  "status": "running"
-}
-```
-
-### 6. CLI
-
-```bash
-af-evaluator run   --agent-id telecom_contas   --dataset datasets/telecom_contas.yaml
-```
-
-### 7. Certification
-
-Valida:
-
-- health;
-- GatewayRequest;
-- routing;
-- identity;
-- MCP;
-- RAG;
-- guardrails;
-- judges;
-- memory;
-- checkpoint;
-- Langfuse;
-- OTEL.
-
-### 8. Evidências
-
-- JSON;
-- HTML;
-- TXT.GZ legado;
-- scores Langfuse;
-- logs;
-- traces;
-- screenshots quando aplicável.
-
-### 9. Erros comuns
-
-| Erro | Impacto | Correção |
-| --- | --- | --- |
-| Dataset só com casos felizes | Baixa cobertura. | Incluir negativos e bordas. |
-| Evaluator sem baseline | Sem comparação. | Registrar baseline. |
-| Certification sem MCP real/mock | Integração não validada. | Criar tool test. |
-| Judge sem threshold | Sem critério objetivo. | Definir threshold. |
-
-
-### 10. Critérios de aceite
-
-- [ ] Dataset versionado.
-- [ ] Evaluator executado.
-- [ ] Scores persistidos.
-- [ ] Certification executada.
-- [ ] Relatórios gerados.
-- [ ] Thresholds definidos.
-- [ ] Casos negativos incluídos.
-- [ ] Scores publicados quando aplicável.
+New fixes or evolutions for this subject should update this consolidated document. Release notes may continue to exist as history, but they should not be required to understand or implement the feature.

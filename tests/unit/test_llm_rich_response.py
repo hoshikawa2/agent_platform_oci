@@ -3,7 +3,13 @@ from types import SimpleNamespace
 import pytest
 
 from agent_framework.llm.base import LLMProvider
-from agent_framework.llm.providers import MockLLMProvider, OCISDKProvider, _extract_reasoning_content
+from agent_framework.llm.providers import (
+    MockLLMProvider,
+    OCISDKProvider,
+    _extract_reasoning_content,
+    _extract_openai_message_content,
+    _extract_finish_reason,
+)
 from agent_framework.llm.types import LLMResponse
 
 
@@ -64,3 +70,37 @@ def test_oci_sdk_reasoning_is_extracted_from_choice_message():
     response = SimpleNamespace(data=SimpleNamespace(chat_response=chat_response))
 
     assert OCISDKProvider._extract_reasoning_content(response) == "oci reasoning"
+
+
+def test_openai_compatible_plain_string_content_is_preserved():
+    message = SimpleNamespace(content='{"decision":"KEEP"}')
+    assert _extract_openai_message_content(message) == '{"decision":"KEEP"}'
+
+
+def test_openai_compatible_list_content_is_joined():
+    message = SimpleNamespace(content=[
+        SimpleNamespace(text='{"decision":'),
+        {"text": '"KEEP"}'},
+    ])
+    assert _extract_openai_message_content(message) == '{"decision":"KEEP"}'
+
+
+def test_openai_compatible_dict_message_and_content_are_supported():
+    message = {"content": [{"text": "{\"ok\":true}"}]}
+    assert _extract_openai_message_content(message) == '{"ok":true}'
+
+
+def test_openai_compatible_unknown_content_fails_closed_to_empty_string():
+    message = SimpleNamespace(content=object())
+    assert _extract_openai_message_content(message) == ""
+
+
+def test_openai_compatible_reasoning_is_not_used_as_answer_fallback():
+    message = SimpleNamespace(content=None, reasoning_content='{"decision":"KEEP"}')
+    assert _extract_openai_message_content(message) == ""
+    assert _extract_reasoning_content(message) == '{"decision":"KEEP"}'
+
+
+def test_finish_reason_is_extracted_from_object_and_dict():
+    assert _extract_finish_reason(SimpleNamespace(finish_reason="length")) == "length"
+    assert _extract_finish_reason({"finish_reason": "stop"}) == "stop"

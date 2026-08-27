@@ -384,7 +384,7 @@ def test_agent_state_declares_durable_transaction_latch():
     import importlib.util
     from pathlib import Path
 
-    state_path = Path(__file__).parents[2] / "app" / "state.py"
+    state_path = Path(__file__).parents[1] / "templates" / "agent_template_backend" / "app" / "state.py"
     spec = importlib.util.spec_from_file_location("contas_agent_state_v10", state_path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader

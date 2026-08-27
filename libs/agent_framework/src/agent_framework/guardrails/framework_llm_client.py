@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import os
 import re
@@ -85,15 +87,9 @@ def _extract_text(raw: Any) -> str:
 
 def _parse_json(text: str) -> dict[str, Any]:
     try:
-        return json.loads(text)
+        return parse_json_object(text)
     except Exception:
-        match = re.search(r"\{[\s\S]*\}", text or "")
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except Exception:
-                pass
-    return {"allowed": False, "label": "ERROR", "reason": (text or "")[:500]}
+        return {"allowed": False, "label": "ERROR", "reason": (text or "")[:500]}
 
 
 def _first_substring_match(text: str, triggers: tuple[str, ...]) -> str | None:

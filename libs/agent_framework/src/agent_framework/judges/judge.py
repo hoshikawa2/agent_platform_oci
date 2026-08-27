@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import hashlib
 import logging
@@ -646,16 +648,4 @@ def _safe_context(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_json(raw: Any) -> dict[str, Any]:
-    text = str(raw or '').strip()
-    if text.startswith('```'):
-        text = text.strip('`')
-        if text.lower().startswith('json'):
-            text = text[4:].strip()
-    start = text.find('{')
-    end = text.rfind('}')
-    if start >= 0 and end >= start:
-        text = text[start:end + 1]
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError('LLM judge returned non-object JSON')
-    return data
+    return parse_json_object(raw)

@@ -135,6 +135,7 @@ src/agent_framework/llm/__init__.py
 src/agent_framework/llm/base.py
 src/agent_framework/llm/profile_resolver.py
 src/agent_framework/llm/providers.py
+src/agent_framework/llm/structured_output.py
 src/agent_framework/llm/types.py
 src/agent_framework/mcp/__init__.py
 src/agent_framework/mcp/client.py

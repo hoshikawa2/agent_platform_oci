@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import logging
 from typing import Any
@@ -80,19 +82,7 @@ class CalibratedJudgeLLMClient:
 
 
 def _parse_json(raw: Any) -> dict[str, Any]:
-    text = str(raw or '').strip()
-    if text.startswith('```'):
-        text = text.strip('`')
-        if text.lower().startswith('json'):
-            text = text[4:].strip()
-    start = text.find('{')
-    end = text.rfind('}')
-    if start >= 0 and end >= start:
-        text = text[start:end + 1]
     try:
-        data = json.loads(text)
+        return parse_json_object(raw)
     except Exception as exc:
-        raise ValueError(f'Calibrated judge returned invalid JSON: {str(raw)[:500]}') from exc
-    if not isinstance(data, dict):
-        raise ValueError('Calibrated judge returned non-object JSON')
-    return data
+        raise ValueError(f'Calibrated judge returned invalid structured output: {str(raw)[:500]}') from exc

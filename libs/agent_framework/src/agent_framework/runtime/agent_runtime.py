@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import hashlib
 import json
 import logging
@@ -710,10 +712,8 @@ class AgentRuntimeMixin:
                         max_tokens=80,
                     )
                     raw = self._llm_response_text(response).strip()
-                    if raw.startswith("```"):
-                        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
-                    payload = json.loads(raw)
-                    value = payload.get(field_name) if isinstance(payload, dict) else None
+                    payload = parse_json_object(raw)
+                    value = payload.get(field_name)
                 except Exception as exc:
                     logger.warning(
                         "mcp.parameter.llm_extract_failed tool=%s field=%s error=%s",

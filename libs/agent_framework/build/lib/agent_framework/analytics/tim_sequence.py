@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
+
+logger = logging.getLogger("agent_framework.analytics.tim_sequence")
+
+# In-process fallback. This is not cross-process/global, but keeps telemetry alive
+# when the configured shared sequence backend is unavailable, matching the
+# framework principle that observability must not break business execution.
+_memory_lock = threading.Lock()
+_memory_counters: dict[str, int] = defaultdict(int)
+
+SequenceProvider = Literal["auto", "redis", "mongodb", "mongo", "memory", "none"]
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def sequence_enabled() -> bool:
+    return _env_bool("PUBSUB_SEQUENCE_ENABLED", True)
+
+
+def _sequence_provider() -> SequenceProvider:
+    raw = (os.getenv("PUBSUB_SEQUENCE_PROVIDER") or "auto").strip().lower()
+    if raw in {"mongo"}:
+        return "mongodb"
+    if raw in {"auto", "redis", "mongodb", "memory", "none"}:
+        return raw  # type: ignore[return-value]
+    logger.warning("tim_sequence.invalid_provider provider=%s; using auto", raw)
+    return "auto"
+
+
+def _redis_url() -> str | None:
+    return os.getenv("PUBSUB_SEQUENCE_REDIS_URL") or os.getenv("REDIS_URL")
+
+
+def _mongo_uri() -> str | None:
+    return (
+        os.getenv("PUBSUB_SEQUENCE_MONGODB_URI")
+        or os.getenv("MONGODB_URI")
+        or os.getenv("MONGO_URI")
+    )
+
+
+def _mongo_database() -> str:
+    return (
+        os.getenv("PUBSUB_SEQUENCE_MONGODB_DATABASE")
+        or os.getenv("MONGODB_DATABASE")
+        or os.getenv("MONGO_DATABASE")
+        or "agent_platform"
+    )
+
+
+def _legacy_agent_name() -> str:
+    return _safe_part(os.getenv("AGENT_NAME") or "agent", "agent")
+
+
+def _mongo_collection() -> str:
+    """Return the shared MongoDB collection used by every event producer.
+
+    The collection must not vary by agent. A transaction can emit GRL, AGA,
+    NOC and other events from different components, and all of them must
+    increment the same counter document. Deployments may override the name,
+    but the configured value must be identical in every producer/pod.
+    """
+    return (
+        os.getenv("PUBSUB_SEQUENCE_MONGODB_COLLECTION")
+        or os.getenv("MONGODB_EVENT_COUNTERS_COLLECTION")
+        or os.getenv("EVENT_COUNTERS_COLLECTION")
+        or "observer_event_counters"
+    )
+
+
+def _ttl_seconds() -> int:
+    raw = os.getenv("PUBSUB_SEQUENCE_TTL_SECONDS") or os.getenv("SESSION_TTL_SECONDS") or "86400"
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 86400
+
+
+def _fallback_enabled() -> bool:
+    # An in-memory fallback creates duplicate sequences when multiple pods or
+    # event producers handle the same transaction. Keep it opt-in only for
+    # local/single-process development.
+    return _env_bool("PUBSUB_SEQUENCE_MEMORY_FALLBACK", False)
+
+
+def _key_prefix() -> str:
+    return os.getenv("PUBSUB_SEQUENCE_KEY_PREFIX") or "observer:sequence"
+
+
+def _safe_part(value: Any, fallback: str) -> str:
+    text = str(value or fallback).strip()
+    return text.replace(" ", "_").replace("/", "_").replace("\\", "_")
+
+
+def build_sequence_key(
+    agent_id: str | None,
+    session_id: str | None,
+    transaction_id: str | None = None,
+) -> str:
+    """Build one counter key for the whole transaction.
+
+    ``agent_id`` is intentionally ignored for transaction-scoped counters.
+    A single transaction may emit events from different agents/components
+    (for example GRL and AGA), and those events must share one monotonic
+    sequence. ``session_id`` is retained only as a compatibility fallback when
+    no transaction identifier is present.
+    """
+    if transaction_id:
+        transaction = _safe_part(transaction_id, "unknown_transaction")
+        return f"{_key_prefix()}:transaction:{transaction}"
+
+    # Legacy fallback. Including the agent here avoids changing old session-only
+    # behavior, but new integrations should always provide transactionId.
+    agent = _safe_part(agent_id or os.getenv("AGENT_NAME"), "agent")
+    session = _safe_part(session_id, "unknown_session")
+    return f"{_key_prefix()}:{agent}:session:{session}"
+
+
+async def _next_sequence_redis(key: str, ttl_seconds: int) -> int | None:
+    url = _redis_url()
+    if not url:
+        return None
+    try:
+        import redis.asyncio as redis_async  # type: ignore
+
+        client = redis_async.Redis.from_url(url, decode_responses=True)
+        try:
+            value = await client.incr(key)
+            if ttl_seconds > 0 and value == 1:
+                await client.expire(key, ttl_seconds)
+            return int(value)
+        finally:
+            try:
+                await client.aclose()
+            except AttributeError:  # redis-py older compatibility
+                await client.close()
+    except Exception:
+        logger.exception("tim_sequence.redis_failed key=%s", key)
+        return None
+
+
+_mongo_index_checked = False
+_mongo_index_lock = threading.Lock()
+
+
+def _next_sequence_mongodb_sync(
+    key: str,
+    agent_id: str | None,
+    session_id: str | None,
+    transaction_id: str | None,
+    ttl_seconds: int,
+) -> int | None:
+    uri = _mongo_uri()
+    if not uri:
+        return None
+
+    from pymongo import MongoClient, ReturnDocument  # type: ignore
+
+    client = MongoClient(uri)
+    try:
+        collection = client[_mongo_database()][_mongo_collection()]
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=ttl_seconds) if ttl_seconds > 0 else None
+
+        # update: dict[str, Any] = {
+        #     "$inc": {"sequence": 1},
+        #     "$set": {
+        #         "agentId": agent_id or os.getenv("AGENT_NAME") or "agent",
+        #         "sessionId": session_id,
+        #         "transactionId": transaction_id,
+        #         "sequenceScope": "transaction" if transaction_id else "session",
+        #         "updatedAt": now,
+        #     },
+        #     "$setOnInsert": {
+        #         "_id": key,
+        #         "createdAt": now,
+        #     },
+        # }
+        update: dict[str, Any] = {
+            "$inc": {"sequence": 1},
+            "$set": {
+                "agentId": agent_id or os.getenv("AGENT_NAME") or "agent",
+                "sessionId": session_id,
+                "transactionId": transaction_id,
+                "sequenceScope": "transaction" if transaction_id else "session",
+                "updatedAt": now,
+            },
+            "$setOnInsert": {
+                "createdAt": now,
+            },
+        }
+        if expires_at is not None:
+            update["$set"]["expiresAt"] = expires_at
+
+        doc = collection.find_one_and_update(
+            {"_id": key},
+            update,
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        if not doc:
+            return None
+        return int(doc.get("sequence", 0))
+    finally:
+        client.close()
+
+
+def _ensure_mongo_ttl_index_once_sync(ttl_seconds: int) -> None:
+    """Best-effort TTL index initialization, safe across threads/event loops.
+
+    ``asyncio.Lock`` must not be shared by independent event loops. Observer
+    compatibility calls may originate in worker threads, so this one-time
+    process-local guard deliberately uses ``threading.Lock``. The blocking
+    Mongo operation is executed by the async wrapper in a worker thread.
+    """
+    global _mongo_index_checked
+    if _mongo_index_checked or ttl_seconds <= 0 or not _mongo_uri():
+        return
+
+    with _mongo_index_lock:
+        if _mongo_index_checked:
+            return
+        try:
+            from pymongo import MongoClient  # type: ignore
+
+            client = MongoClient(_mongo_uri())
+            try:
+                collection = client[_mongo_database()][_mongo_collection()]
+                collection.create_index("expiresAt", expireAfterSeconds=0, background=True)
+            finally:
+                client.close()
+        except Exception:
+            logger.warning("tim_sequence.mongodb_ttl_index_failed", exc_info=True)
+        finally:
+            # The index is an observability housekeeping concern, not a
+            # prerequisite for sequence generation. Do not retry on every
+            # event if the application user lacks index privileges.
+            _mongo_index_checked = True
+
+
+async def _ensure_mongo_ttl_index_once(ttl_seconds: int) -> None:
+    await asyncio.to_thread(_ensure_mongo_ttl_index_once_sync, ttl_seconds)
+
+
+async def _next_sequence_mongodb(
+    key: str,
+    agent_id: str | None,
+    session_id: str | None,
+    transaction_id: str | None,
+    ttl_seconds: int,
+) -> int | None:
+    if not _mongo_uri():
+        return None
+    try:
+        await _ensure_mongo_ttl_index_once(ttl_seconds)
+        return await asyncio.to_thread(
+            _next_sequence_mongodb_sync,
+            key,
+            agent_id,
+            session_id,
+            transaction_id,
+            ttl_seconds,
+        )
+    except Exception:
+        logger.exception("tim_sequence.mongodb_failed key=%s", key)
+        return None
+
+
+async def _next_sequence_memory(key: str) -> int:
+    # Tiny in-process critical section; a thread lock is intentional because
+    # this fallback can be reached from more than one asyncio event loop.
+    with _memory_lock:
+        _memory_counters[key] += 1
+        return _memory_counters[key]
+
+
+async def next_sequence(
+    agent_id: str | None,
+    session_id: str | None,
+    transaction_id: str | None = None,
+) -> int | None:
+    """Return the next observer sequence isolated by transaction.
+
+    The preferred scope is only ``transaction_id``. Agent/event family must
+    never participate in the key because one transaction can emit events from
+    several components. ``session_id`` is used only as a backward-compatible
+    fallback. Redis and MongoDB increments remain atomic across replicas.
+    """
+    if not sequence_enabled() or (not transaction_id and not session_id):
+        return None
+
+    provider = _sequence_provider()
+    if provider == "none":
+        return None
+
+    key = build_sequence_key(agent_id, session_id, transaction_id)
+    ttl_seconds = _ttl_seconds()
+    value: int | None = None
+
+    if provider == "memory":
+        return await _next_sequence_memory(key)
+
+    if provider == "redis":
+        value = await _next_sequence_redis(key, ttl_seconds)
+    elif provider == "mongodb":
+        value = await _next_sequence_mongodb(
+            key, agent_id, session_id, transaction_id, ttl_seconds
+        )
+    else:  # auto
+        if _redis_url():
+            value = await _next_sequence_redis(key, ttl_seconds)
+        if value is None and _mongo_uri():
+            value = await _next_sequence_mongodb(
+                key, agent_id, session_id, transaction_id, ttl_seconds
+            )
+
+    if value is not None:
+        return value
+    if _fallback_enabled():
+        return await _next_sequence_memory(key)
+    return None
+
+
+async def ensure_sequence(payload: dict[str, Any]) -> dict[str, Any]:
+    """Inject sequence if missing, preserving explicit values from metadata/body.
+
+    Used by the flat Pub/Sub schema, where sessionId/agentId sit at the root.
+    For the nested analytics envelope (OCI Streaming) use
+    :func:`ensure_sequence_envelope`.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("sequence") is not None:
+        return payload
+    session_id = payload.get("sessionId") or payload.get("session_id")
+    transaction_id = (
+        payload.get("transactionId")
+        or payload.get("transaction_id")
+        or payload.get("transactionID")
+    )
+    agent_id = payload.get("agentId") or payload.get("agent_id") or os.getenv("AGENT_NAME")
+    seq = await next_sequence(agent_id, session_id, transaction_id)
+    if seq is not None:
+        payload["sequence"] = seq
+    return payload
+
+
+async def ensure_sequence_envelope(event: dict[str, Any]) -> dict[str, Any]:
+    """Inject sequence into a ``build_analytics_event`` envelope.
+
+    The envelope shape is ``{eventType, source, eventDate, payload, metadata}``.
+    Unlike the flat Pub/Sub payload, sessionId/agentId are not at the root: they
+    live inside ``payload`` and/or ``metadata``. We read them from the merged
+    ``{**payload, **metadata}`` view, mirroring the flat mapper
+    (tim_payload_mapper.map_analytics_event_to_tim_flat_payload) and the legacy
+    observer (observer/api.py: metadata.sessionId -> sessionId).
+
+    The counter is written at the envelope root, as a sibling of ``eventType`` —
+    the faithful analog of the legacy flat payload where ``sequence`` sat next to
+    ``eventType``/``traceId``. The outer transport contract ``{type, payload}`` is
+    left untouched; only this inner field is added.
+    """
+    if not isinstance(event, dict):
+        return event
+    if event.get("sequence") is not None:
+        return event
+    body = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    data = {**body, **metadata}
+    session_id = data.get("sessionId") or data.get("session_id")
+    # Os adapters do BO emitem snake_case; o contrato TIM usa transactionId e
+    # payloads antigos trazem transactionID. Sem as tres grafias o contador cai
+    # em escopo de sessao e perde o isolamento por transacao.
+    transaction_id = (
+        data.get("transactionId")
+        or data.get("transaction_id")
+        or data.get("transactionID")
+    )
+    agent_id = data.get("agentId") or data.get("agent_id") or os.getenv("AGENT_NAME")
+    seq = await next_sequence(agent_id, session_id, transaction_id)
+    if seq is not None:
+        event["sequence"] = seq
+    return event

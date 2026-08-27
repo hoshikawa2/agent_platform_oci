@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import logging
 from dataclasses import dataclass
@@ -40,9 +42,6 @@ class SemanticRouteContinuity:
         )
         self.history_turns = max(
             1, int(getattr(settings, "ROUTE_STICKINESS_HISTORY_TURNS", 2))
-        )
-        self.max_tokens = max(
-            16, int(getattr(settings, "ROUTE_STICKINESS_MAX_TOKENS", 80))
         )
 
     async def evaluate(
@@ -202,8 +201,6 @@ class SemanticRouteContinuity:
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
-            temperature=0.0,
-            max_tokens=self.max_tokens,
             profile_name=self.profile_name,
             component_name="route_continuity",
             generation_name="llm.route_continuity",
@@ -244,18 +241,7 @@ class SemanticRouteContinuity:
         return compact
 
     def _parse_json(self, answer: Any) -> dict[str, Any]:
-        text = str(answer).strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.lower().startswith("json"):
-                text = text[4:].strip()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            start, end = text.find("{"), text.rfind("}")
-            if start >= 0 and end > start:
-                return json.loads(text[start : end + 1])
-            raise
+        return parse_json_object(answer)
 
     async def _emit(self, state: dict[str, Any], payload: dict[str, Any]) -> None:
         if self.telemetry:

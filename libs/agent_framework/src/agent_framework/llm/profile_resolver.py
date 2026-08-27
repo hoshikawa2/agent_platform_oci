@@ -63,7 +63,7 @@ class LLMProfileResolver:
 
         if self.enabled:
             self._profiles = self._load_profiles(self.path)
-            logger.info("LLM profiles enabled path=%s profiles=%s", self.path, sorted(self._profiles.keys()))
+            logger.info("LLM profiles enabled path=%s profiles=%s", self.path.resolve(), sorted(self._profiles.keys()))
         else:
             logger.info("LLM profiles disabled; using .env settings only")
 

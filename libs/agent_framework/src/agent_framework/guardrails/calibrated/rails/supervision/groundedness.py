@@ -8,6 +8,8 @@ Implementa o Protocol ``Rail`` de contracts.py (AT-06.4).
 """
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import logging
 
@@ -127,7 +129,7 @@ class GroundednessRail:
 
         try:
             raw = self._client.invoke(self.code, input_vars)
-            result: dict = json.loads(raw) if isinstance(raw, str) else raw
+            result: dict = parse_json_object(raw) if isinstance(raw, str) else raw
         except Exception as exc:
             logger.error(
                 "groundedness_rail.invoke_error session=%s exc=%r — assuming no violation",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import logging
 import re
@@ -246,13 +248,4 @@ class GlobalSupervisorRouter:
         return text.strip()
 
     def _parse_json(self, raw: Any) -> dict[str, Any]:
-        if isinstance(raw, dict):
-            return raw
-        text = str(raw).strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?", "", text).strip()
-            text = re.sub(r"```$", "", text).strip()
-        match = re.search(r"\{.*\}", text, flags=re.S)
-        if match:
-            text = match.group(0)
-        return json.loads(text)
+        return parse_json_object(raw)

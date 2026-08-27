@@ -9,6 +9,7 @@ from typing import Any
 from .config_loader import load_intents, load_router_defaults, load_state_policies
 from .continuity import SemanticRouteContinuity
 from .models import IntentDefinition, RouteDecision, RouterStatePolicy
+from agent_framework.llm.structured_output import parse_json_object
 from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
 from agent_framework.workflows.input_contract import match_expected_input
 
@@ -753,19 +754,7 @@ class EnterpriseRouter:
         return None
 
     def _parse_json(self, text: str) -> dict[str, Any]:
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.lower().startswith("json"):
-                text = text[4:].strip()
-        try:
-            return json.loads(text)
-        except Exception:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                return json.loads(text[start : end + 1])
-            raise
+        return parse_json_object(text)
 
     async def _emit(self, decision: RouteDecision, state: dict[str, Any]) -> None:
         if self.telemetry:

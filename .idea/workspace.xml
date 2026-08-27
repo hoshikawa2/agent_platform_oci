@@ -6,7 +6,6 @@
   <component name="ChangeListManager">
     <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/developer/pt/02_routing_stickiness_and_intent_shift.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/developer/pt/02_routing_stickiness_and_intent_shift.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -96,7 +95,7 @@
       <workItem from="1785414225783" duration="148000" />
       <workItem from="1785414447653" duration="704000" />
       <workItem from="1785630146329" duration="316000" />
-      <workItem from="1787832640995" duration="3537000" />
+      <workItem from="1787832640995" duration="4662000" />
     </task>
     <task id="LOCAL-00001" summary="Ajustes na documentação e remanejamento dos folders">
       <option name="closed" value="true" />

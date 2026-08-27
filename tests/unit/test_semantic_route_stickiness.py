@@ -89,6 +89,9 @@ async def test_continue_bypasses_router_without_regex_rules():
     assert decision.method == "continuity"
     assert decision.metadata["route_bypassed"] is True
     assert llm.calls[0][1]["profile_name"] == "route_continuity"
+    # LLM tuning belongs to llm_profiles.yaml; continuity must not override it.
+    assert "max_tokens" not in llm.calls[0][1]
+    assert "temperature" not in llm.calls[0][1]
     prompt = json.loads(llm.calls[0][0][1]["content"])
     assert prompt["current_message"] == "o que está incluso?"
     assert "product_agent" not in prompt["other_agents"]

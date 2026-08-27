@@ -58,6 +58,55 @@ def _coerce_reasoning_text(value: Any) -> str | None:
     return text or None
 
 
+def _coerce_message_content(value: Any) -> str:
+    """Normalize OpenAI-compatible message content without using reasoning as answer.
+
+    OpenAI-compatible implementations may expose ``message.content`` as a plain
+    string, a list of content parts, or SDK objects/dicts containing ``text``.
+    Unknown shapes fail closed to an empty string instead of serializing the raw
+    response object into the assistant answer.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        chunks: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                chunks.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+                continue
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
+        return "".join(chunks)
+    if isinstance(value, dict):
+        text = value.get("text")
+        return text if isinstance(text, str) else ""
+    text = getattr(value, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+def _extract_openai_message_content(message: Any) -> str:
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        return _coerce_message_content(message.get("content"))
+    return _coerce_message_content(getattr(message, "content", None))
+
+
+def _extract_finish_reason(choice: Any) -> str | None:
+    if choice is None:
+        return None
+    value = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
+    return str(value) if value is not None else None
+
+
 def _extract_reasoning_content(obj: Any) -> str | None:
     """Best-effort extraction across OpenAI-compatible and OCI response shapes."""
     if obj is None:
@@ -432,9 +481,29 @@ class OCICompatibleOpenAIProvider(LLMProvider):
                     model_parameters=model_parameters,
                 ) as generation:
                     resp = await client.chat.completions.create(**request_kwargs)
-                    message = resp.choices[0].message
-                    answer = message.content or ""
-                    reasoning_content = _extract_reasoning_content(message)
+                    choices = getattr(resp, "choices", None) or []
+                    if not choices:
+                        message = None
+                        answer = ""
+                        reasoning_content = None
+                        finish_reason = None
+                        logger.warning(
+                            "OpenAI-compatible LLM returned no choices provider=%s model=%s profile=%s component=%s",
+                            provider, model, resolved_profile_name, component_name,
+                        )
+                    else:
+                        choice = choices[0]
+                        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+                        answer = _extract_openai_message_content(message)
+                        reasoning_content = _extract_reasoning_content(message)
+                        finish_reason = _extract_finish_reason(choice)
+
+                    logger.info(
+                        "OpenAI-compatible LLM response provider=%s model=%s profile=%s component=%s "
+                        "finish_reason=%s content_len=%d reasoning_len=%d",
+                        provider, model, resolved_profile_name, component_name,
+                        finish_reason, len(answer), len(reasoning_content or ""),
+                    )
 
                     usage_metadata = self.token_collector.enrich(model, getattr(resp, "usage", None))
                     usage_metadata.update({
@@ -445,7 +514,15 @@ class OCICompatibleOpenAIProvider(LLMProvider):
                         "component": component_name,
                         "model": model,
                         "provider": provider,
+                        "finish_reason": finish_reason,
+                        "content_length": len(answer),
+                        "reasoning_content_length": len(reasoning_content or ""),
                         **model_parameters,
+                    })
+                    llm_metadata.update({
+                        "finish_reason": finish_reason,
+                        "content_length": len(answer),
+                        "reasoning_content_length": len(reasoning_content or ""),
                     })
                     generation.set_output(answer)
                     generation.set_usage(usage_metadata)

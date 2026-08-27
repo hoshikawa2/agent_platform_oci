@@ -42,6 +42,8 @@ Uso via função standalone (compatibilidade):
 """
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import logging
 from typing import Any
@@ -239,10 +241,10 @@ def classify_confirmation(
         return False, f"invoke_error — fallback pessimista: {exc}"
 
     try:
-        payload: dict[str, Any] = json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as exc:
+        payload: dict[str, Any] = parse_json_object(raw)
+    except (ValueError, TypeError) as exc:
         logger.warning(
-            "confirmation_rail.json_parse_failed raw=%r error=%r — fallback pessimista",
+            "confirmation_rail.structured_parse_failed raw=%r error=%r — fallback pessimista",
             raw[:200],
             exc,
         )

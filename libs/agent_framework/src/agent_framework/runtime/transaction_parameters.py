@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import logging
 import re
@@ -152,13 +154,11 @@ async def extract_transaction_parameters(
         return {}
 
     raw = _response_text(response).strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
     try:
-        payload = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = parse_json_object(raw)
+    except (TypeError, ValueError):
         logger.warning(
-            "transaction.parameter.llm_invalid_json tool=%s pending=%s raw=%r",
+            "transaction.parameter.llm_invalid_structured_output tool=%s pending=%s raw=%r",
             tool_name,
             pending,
             raw[:240],

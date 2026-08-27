@@ -18,6 +18,27 @@ O objetivo é que cada novo agente implemente apenas sua lógica de domínio —
 
 >**Note: Se deseja ir direto e testar a DEMO, vá até a Seção 17 e 18.**
 
+## Índice de Desenvolvimento — Agent Framework OCI
+
+### Outros idiomas
+
+- [Developer documentation in English](README_en.md)
+- [Índice técnico detalhado em Português](docs/developer/pt/INDEX_DEVELOPER_GUIDE.md)
+- [Detailed technical index in English](docs/developer/en/INDEX_DEVELOPER_GUIDE.md)
+
+### Como usar esta documentação
+
+A documentação possui três níveis:
+
+1. **Tutorial principal:** este [`README.md`](README.md) — criação, configuração, execução e teste de um agente do início ao fim.
+2. **Arquitetura:** [01 — Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) — componentes, responsabilidades e onde implementar cada coisa.
+3. **Referências especializadas:** manuais `02` a `11` — implementação profunda e troubleshooting por capacidade.
+
+Se você está começando um novo agente, siga este `README.md` desde o início. Para aprofundamento ou troubleshooting, use os links abaixo.
+
+Se algo não está funcionando ou se deseja entender melhor funcionalidades da arquitetura do Agent Framework OCI, vá até [34. Funcionalidades Avançadas](#34-funcionalidades-avançadas). Você vai encontrar detalhamento sobre funcionalidades avançadas, como conceitos, exemplos e manuais de utilização.
+
+
 
 ## SPECs / SDDs da Agent Platform OCI
 
@@ -11177,6 +11198,112 @@ A adoção das funcionalidades do `Tuning-Performance` pode proporcionar:
 
 O conteúdo desta pasta deve ser tratado como uma extensão adicional do framework. Sua utilização requer implementação, configuração, testes funcionais e validação das regras de negócio antes da implantação em produção.
 
-### RAG provider alternativo (KBDB Enterprise)
+### Buscar pelo problema
 
-O RAG original continua sendo o default (`RAG_PROVIDER=standard`). Para usar a arquitetura KBDB enterprise como alternativa de serving, configure `RAG_PROVIDER=kbdb`. Os agentes continuam usando o mesmo `RagService`/`_retrieve_rag_context()` e os dois backends não são executados simultaneamente. Consulte `docs/RAG_PROVIDER_KBDB.md`.
+| Problema / dúvida | O que normalmente está envolvido | Onde procurar |
+|---|---|---|
+| O framework não encontra o agente/intenção correta | routing, intents, threshold, modo determinístico/LLM | [Routing e Stickiness](docs/developer/pt/02_routing_stickiness_and_intent_shift.md) |
+| O agente fica preso no mesmo assunto e não troca de intent | route stickiness, intent shift, handoff | [Routing e Stickiness](docs/developer/pt/02_routing_stickiness_and_intent_shift.md) |
+| Uma resposta que deveria preencher parâmetro é interpretada como novo intent | precedência transacional, parameter extraction | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) |
+| A transação fica pedindo o mesmo parâmetro | estado transacional, extractor, schema | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) e [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) |
+| A confirmação “sim/não” não continua o fluxo | confirmation state, transaction state | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) |
+| Uma transação encerrada reaparece | checkpoint antigo versus estado transacional ativo | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) e [LTM/Checkpoint](docs/developer/pt/08_long_term_memory_and_checkpoint.md) |
+| O sistema diz que executou algo, mas não existe evidência | MCP result, estado `COMPLETED`, judges transacionais | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) e [Guardrails/Judges](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md) |
+| Uma tool não aparece ou não é encontrada | `tools.yaml`, catálogo MCP, discovery | [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) |
+| MCP Server não aparece no catálogo | registration, manifest/discovery, MCP Gateway | [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) e [Gateways](docs/developer/pt/05_agent_gateway_mcp_gateway_and_auth.md) |
+| Parâmetros enviados à tool estão errados | schema, mapping, BusinessContext, extractor | [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) |
+| Uma operação transacional executa sem confirmação | tool policy, `require_confirmation` | [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) |
+| Uma busca por nome exige correspondência exata demais | extração/mapeamento de parâmetros e lógica do agente | [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) |
+| Recebo 401 entre gateway/backend/MCP | Basic Auth, credenciais por hop | [Gateways e Auth](docs/developer/pt/05_agent_gateway_mcp_gateway_and_auth.md) |
+| Preciso decidir se algo pertence ao framework ou ao agente | boundary core/agente | [Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) |
+| Guardrail específico de um agente está quebrando outro | extensibilidade, imports de domínio no core | [Guardrails e Judges](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md) |
+| Judge não roda em uma transação | sampling, `always_run_for_transactional`, sinais transacionais | [Guardrails e Judges](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md) |
+| Groundedness está avaliando sem contexto correto | RAG context, MCP evidence, judge inputs | [RAG/Grounding](docs/developer/pt/07_rag_business_context_and_grounding.md) |
+| RAG não encontra conteúdo | provider, ingestão, embeddings, configuração | [RAG/Grounding](docs/developer/pt/07_rag_business_context_and_grounding.md) |
+| Não sei se usar RAG, memória ou tool | separação de responsabilidades | [Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) e [RAG/Grounding](docs/developer/pt/07_rag_business_context_and_grounding.md) |
+| Memória desaparece ao trocar de sessão | LTM versus conversation memory | [LTM e Checkpoint](docs/developer/pt/08_long_term_memory_and_checkpoint.md) |
+| Memória de um cliente/agente aparece em outro | identity key, tenant/agent/customer isolation | [LTM e Checkpoint](docs/developer/pt/08_long_term_memory_and_checkpoint.md) |
+| Preciso recuperar `reasoning_content` | `ainvoke_response()` | [LLM Rich Response](docs/developer/pt/09_llm_rich_response_reasoning.md) |
+| `reasoning_content` vem `None` | provider/model não expõe o campo | [LLM Rich Response](docs/developer/pt/09_llm_rich_response_reasoning.md) |
+| Há chamadas LLM desnecessárias | routing determinístico, concorrência, cache | [Performance](docs/developer/pt/10_performance_cache_and_async_runtime.md) |
+| Há deadlock ou espera entre event loops | cross-loop sequence/runtime | [Performance](docs/developer/pt/10_performance_cache_and_async_runtime.md) |
+| Logs/traces não correlacionam o mesmo agente | labels, IDs e mapeamento de observabilidade | [Observabilidade](docs/developer/pt/11_observability_persistence_and_operational_readiness.md) |
+| Sequence está interferindo no processamento | implementação assíncrona de sequência | [Observabilidade](docs/developer/pt/11_observability_persistence_and_operational_readiness.md) e [Performance](docs/developer/pt/10_performance_cache_and_async_runtime.md) |
+| Um exemplo antigo não compila | documentação histórica versus API atual | [Validação README x Código](docs/developer/pt/VALIDATION_README_ALIGNMENT.md) |
+| Preciso criar um agente novo do zero | fluxo completo | [`README.md`](README.md) |
+| Preciso saber onde colocar uma nova feature | arquitetura e boundaries | [Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) |
+
+### 34. Funcionalidades Avançadas
+
+### [01 — Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md)
+
+**O que é:** visão dos componentes, contratos e limites de responsabilidade.
+
+**Use quando:** precisar entender a plataforma, decidir onde implementar algo ou evitar acoplamento entre core e agente.
+
+### [02 — Routing, Route Stickiness e Intent Shift](docs/developer/pt/02_routing_stickiness_and_intent_shift.md)
+
+**O que é:** referência completa de descoberta de agente/intent, stickiness, handoff e mudança de intenção.
+
+**Use quando:** a mensagem cai no agente errado, não troca de intent ou perde continuidade.
+
+### [03 — Workflows Transacionais e Estado](docs/developer/pt/03_transaction_workflows_and_state.md)
+
+**O que é:** ciclo transacional multi-turno, estados, confirmação, pausa/retomada e evidência operacional.
+
+**Use quando:** há loops, confirmações incorretas, retomadas erradas ou operações críticas.
+
+### [04 — MCP, Tools, Policies e Extração de Parâmetros](docs/developer/pt/04_mcp_integration_tools_and_policies.md)
+
+**O que é:** referência de tools, MCP Servers, mappings, policies e parameter extraction.
+
+**Use quando:** integração/execução de tool está incorreta ou precisa ser criada.
+
+### [05 — Agent Gateway, MCP Gateway e Autenticação](docs/developer/pt/05_agent_gateway_mcp_gateway_and_auth.md)
+
+**O que é:** responsabilidades dos gateways, governança e autenticação entre componentes.
+
+**Use quando:** houver problema de entrada, catálogo, autorização, 401 ou deployment dos gateways.
+
+### [06 — Guardrails, Judges e Avaliação Transacional](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md)
+
+**O que é:** validações nativas/externas, judges, grounding e regras para turnos transacionais.
+
+**Use quando:** uma validação bloqueia, não roda ou produz avaliação incorreta.
+
+### [07 — RAG, BusinessContext e Grounding](docs/developer/pt/07_rag_business_context_and_grounding.md)
+
+**O que é:** providers de RAG, contexto recuperado, BusinessContext e grounding.
+
+**Use quando:** conhecimento recuperado não chega corretamente ao agente/judge.
+
+### [08 — Long-Term Memory e Checkpoint](docs/developer/pt/08_long_term_memory_and_checkpoint.md)
+
+**O que é:** memória durável, memória conversacional, identidade e snapshots de estado.
+
+**Use quando:** contexto some, vaza ou workflow retoma do lugar errado.
+
+### [09 — LLM Rich Response e reasoning_content](docs/developer/pt/09_llm_rich_response_reasoning.md)
+
+**O que é:** resposta estruturada de inferência além do `str` retornado por `ainvoke()`.
+
+**Use quando:** consumidores precisam de metadados, usage ou reasoning disponibilizado pelo provider.
+
+### [10 — Performance, Cache e Runtime Assíncrono](docs/developer/pt/10_performance_cache_and_async_runtime.md)
+
+**O que é:** otimizações de concorrência, cache, LLM e event loops.
+
+**Use quando:** houver latência evitável, processamento serial ou deadlock.
+
+### [11 — Observabilidade, Persistência e Prontidão Operacional](docs/developer/pt/11_observability_persistence_and_operational_readiness.md)
+
+**O que é:** correlação, eventos, labels, sequence, persistência e diagnóstico.
+
+**Use quando:** for necessário provar o caminho executado ou diagnosticar produção.
+
+### Tutorial principal
+
+[`README.md`](README.md) continua sendo a referência para o passo a passo completo:
+
+`arquitetura → configuração → criação do agente → registro → estado → routing → tools → MCP → identidade → execução → testes → gateways → memória → RAG`.
+

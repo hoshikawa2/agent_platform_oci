@@ -18,6 +18,28 @@ The goal is for each new agent to implement only its domain logic — prompts, b
 
 >**Note: If you want to test the DEMO, go to the Section 17 and 18.**
 
+## Developer Index — Agent Framework OCI
+
+### Other languages
+
+- [Documentação de desenvolvimento em Português](README.md)
+- [Detailed technical index in English](docs/developer/en/INDEX_DEVELOPER_GUIDE.md)
+- [Índice técnico detalhado em Português](docs/developer/pt/INDEX_DEVELOPER_GUIDE.md)
+
+### How to use this documentation
+
+The documentation has three clear levels:
+
+1. **Main tutorial:** this [`README_en.md`](README_en.md) — build, configure, run and test an agent end to end.
+2. **Architecture:** [01 — Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) — components, boundaries and implementation placement.
+3. **Specialized references:** manuals `02` through `11` — deep implementation and troubleshooting by capability.
+
+If you are creating a new agent, follow this `README_en.md` from the beginning. For deeper implementation details or troubleshooting, use the links below.
+
+If something is not working or if you want to understand the features of the Agent Framework OCI architecture, go to [34. Advanced Features](#34-advanced-features)
+
+
+
 ## SPECs / SDDs of the Agent Platform OCI
 
 The Agent Platform OCI documentation is organized into numbered SPECs/SDDs, each covering an architectural, operational, or governance area of the platform. The objective is to standardize the construction, evolution, operation, and certification of enterprise agents based on the Agent Framework OCI.
@@ -11082,3 +11104,107 @@ Adopting the `Tuning-Performance` capabilities can provide:
 * consistent behavior across agents and projects.
 
 The content of this folder should be treated as an additional framework extension. Its use requires implementation, configuration, functional testing, and business-rule validation before production deployment.
+
+### Search by problem
+
+| Problem / question | Usually involves | Go to |
+|---|---|---|
+| Framework selects the wrong agent/intent | routing, intents, thresholds, deterministic/LLM mode | [Routing and Stickiness](docs/developer/en/02_routing_stickiness_and_intent_shift.md) |
+| Agent stays stuck on the same subject | route stickiness, intent shift, handoff | [Routing and Stickiness](docs/developer/en/02_routing_stickiness_and_intent_shift.md) |
+| A parameter answer is mistaken for a new intent | transaction precedence, parameter extraction | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) |
+| Transaction keeps asking for the same parameter | transaction state, extractor, schema | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) and [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
+| “yes/no” confirmation does not continue the flow | confirmation state | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) |
+| A closed transaction reappears | old checkpoint vs active transaction | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) and [LTM/Checkpoint](docs/developer/en/08_long_term_memory_and_checkpoint.md) |
+| System claims an operation ran but there is no evidence | MCP results, `COMPLETED`, transaction judges | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) and [Guardrails/Judges](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md) |
+| A tool is missing | tools config, MCP catalog/discovery | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
+| MCP Server is missing from catalog | registration, manifest/discovery, MCP Gateway | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) and [Gateways](docs/developer/en/05_agent_gateway_mcp_gateway_and_auth.md) |
+| Tool parameters are wrong | schema, mapping, BusinessContext, extraction | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
+| Transactional tool executes without confirmation | policy, `require_confirmation` | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
+| 401 between gateway/backend/MCP | Basic Auth, hop credentials | [Gateways and Auth](docs/developer/en/05_agent_gateway_mcp_gateway_and_auth.md) |
+| Need to decide framework vs agent ownership | core/agent boundary | [Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) |
+| Agent-specific guardrail breaks another agent | extension model, domain imports | [Guardrails and Judges](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md) |
+| Judge does not run for a transaction | sampling, transaction signals | [Guardrails and Judges](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md) |
+| Groundedness gets the wrong context | RAG context, MCP evidence, judge inputs | [RAG/Grounding](docs/developer/en/07_rag_business_context_and_grounding.md) |
+| RAG returns no useful content | provider, ingestion, embeddings | [RAG/Grounding](docs/developer/en/07_rag_business_context_and_grounding.md) |
+| Unsure whether to use RAG, memory or a tool | responsibility separation | [Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) |
+| Memory disappears across sessions | LTM vs conversation memory | [LTM and Checkpoint](docs/developer/en/08_long_term_memory_and_checkpoint.md) |
+| Memory leaks across customer/agent | identity isolation | [LTM and Checkpoint](docs/developer/en/08_long_term_memory_and_checkpoint.md) |
+| Need `reasoning_content` | `ainvoke_response()` | [LLM Rich Response](docs/developer/en/09_llm_rich_response_reasoning.md) |
+| `reasoning_content` is `None` | provider/model does not expose it | [LLM Rich Response](docs/developer/en/09_llm_rich_response_reasoning.md) |
+| Too many LLM calls | deterministic routing, concurrency, cache | [Performance](docs/developer/en/10_performance_cache_and_async_runtime.md) |
+| Deadlock across event loops | cross-loop runtime/sequence | [Performance](docs/developer/en/10_performance_cache_and_async_runtime.md) |
+| Logs/traces do not correlate the same agent | labels, IDs, observability mapping | [Observability](docs/developer/en/11_observability_persistence_and_operational_readiness.md) |
+| Historical example no longer compiles | stale docs vs current API | [README Alignment Validation](docs/developer/en/VALIDATION_README_ALIGNMENT.md) |
+| Need to create a new agent from scratch | complete flow | [`README_en.md`](README_en.md) |
+
+### 34. Advanced Features
+
+### [01 — Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md)
+
+**What it is:** component, contract and responsibility-boundary reference.
+
+**Use it when:** understanding the platform or deciding where a feature belongs.
+
+### [02 — Routing, Route Stickiness and Intent Shift](docs/developer/en/02_routing_stickiness_and_intent_shift.md)
+
+**What it is:** agent/intent discovery, stickiness, handoff and intent-shift reference.
+
+**Use it when:** routing is wrong or session continuity behaves incorrectly.
+
+### [03 — Transactional Workflows and State](docs/developer/en/03_transaction_workflows_and_state.md)
+
+**What it is:** multi-turn transaction lifecycle, states, confirmation, resume and execution evidence.
+
+**Use it when:** transactions loop, resume incorrectly or perform critical operations.
+
+### [04 — MCP, Tools, Policies and Parameter Extraction](docs/developer/en/04_mcp_integration_tools_and_policies.md)
+
+**What it is:** tools, MCP Servers, mappings, policies and extraction reference.
+
+**Use it when:** building or troubleshooting tool integration.
+
+### [05 — Agent Gateway, MCP Gateway and Authentication](docs/developer/en/05_agent_gateway_mcp_gateway_and_auth.md)
+
+**What it is:** gateway responsibilities, governance and component authentication.
+
+**Use it when:** troubleshooting ingress, catalog, authorization or gateway deployment.
+
+### [06 — Guardrails, Judges and Transaction Evaluation](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md)
+
+**What it is:** native/external validation, judges, grounding and transaction evaluation.
+
+**Use it when:** validation blocks, skips or evaluates incorrectly.
+
+### [07 — RAG, BusinessContext and Grounding](docs/developer/en/07_rag_business_context_and_grounding.md)
+
+**What it is:** RAG providers, retrieved context, BusinessContext and grounding.
+
+**Use it when:** retrieved knowledge does not reach the runtime/judge correctly.
+
+### [08 — Long-Term Memory and Checkpoint](docs/developer/en/08_long_term_memory_and_checkpoint.md)
+
+**What it is:** durable memory, conversational memory, identity and state snapshots.
+
+**Use it when:** context disappears, leaks or resumes incorrectly.
+
+### [09 — LLM Rich Response and reasoning_content](docs/developer/en/09_llm_rich_response_reasoning.md)
+
+**What it is:** structured inference output beyond the `str` returned by `ainvoke()`.
+
+**Use it when:** consumers require provider metadata, usage or reasoning exposed by the provider.
+
+### [10 — Performance, Cache and Async Runtime](docs/developer/en/10_performance_cache_and_async_runtime.md)
+
+**What it is:** concurrency, caching, LLM and event-loop optimization reference.
+
+**Use it when:** reducing avoidable latency or diagnosing deadlocks.
+
+### [11 — Observability, Persistence and Operational Readiness](docs/developer/en/11_observability_persistence_and_operational_readiness.md)
+
+**What it is:** correlation, events, labels, sequencing, persistence and production diagnostics.
+
+**Use it when:** proving execution paths or diagnosing production behavior.
+
+### Main tutorial
+
+[`README_en.md`](README_en.md) remains the complete step-by-step guide.

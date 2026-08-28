@@ -492,6 +492,119 @@ class AgentWorkflow:
                 "next_state": "SESSION_ENDED",
             }
 
+    @staticmethod
+    def _output_guardrail_context(state: dict) -> dict:
+        """Monta o contexto operacional do turno para os guardrails de saída.
+
+        Mantém evidências/protocolos necessários aos rails, mas impede que uma
+        transação encerrada ou semanticamente interrompida governe o novo turno.
+        O histórico completo permanece no state/checkpoint para auditoria.
+        """
+        ctx = dict(state.get("context", {}) or {})
+        mcp_results = state.get("mcp_results") or []
+        ctx["evidence"] = mcp_results or ctx.get("evidence")
+        ctx["tool_result"] = mcp_results or ctx.get("tool_result")
+        ctx["tool_executed"] = any(isinstance(r, dict) and r.get("ok") for r in mcp_results)
+
+        history = list(state.get("history") or [])
+        current_user_text = str(state.get("user_text") or "").strip()
+        if current_user_text:
+            if (
+                not history
+                or not isinstance(history[-1], dict)
+                or str(history[-1].get("content") or "") != current_user_text
+                or str(history[-1].get("role") or "") != "user"
+            ):
+                history.append({"role": "user", "content": current_user_text})
+
+        route_decision = state.get("route_decision") or {}
+        route_metadata = route_decision.get("metadata") if isinstance(route_decision, dict) else {}
+        route_metadata = route_metadata if isinstance(route_metadata, dict) else {}
+        pre_validation = state.get("transaction_pre_validation") or {}
+        pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
+        tx_status = str(
+            state.get("transaction_status") or pre_validation.get("status") or ""
+        ).strip().upper()
+        terminal_tx = bool(pre_validation.get("terminal")) or tx_status in {
+            "COMPLETED", "FAILED", "CANCELLED", "BLOCKED", "OUT_OF_SCOPE"
+        }
+        semantic_intent_shift = (
+            str(route_metadata.get("transaction_interruption") or "").strip().lower()
+            == "intent_shift"
+        )
+        stickiness_intent_shift = bool(route_metadata.get("route_stickiness_preempted"))
+        should_isolate_history = semantic_intent_shift or (terminal_tx and stickiness_intent_shift)
+
+        current_route = str(
+            state.get("route")
+            or (route_decision.get("route") if isinstance(route_decision, dict) else "")
+            or ""
+        ).strip()
+        current_intent = str(
+            state.get("intent")
+            or (route_decision.get("intent") if isinstance(route_decision, dict) else "")
+            or ""
+        ).strip()
+        ctx["current_user_message"] = current_user_text
+        ctx["current_route"] = current_route
+        ctx["current_intent"] = current_intent
+
+        if should_isolate_history:
+            operational_history = (
+                [{"role": "user", "content": current_user_text}]
+                if current_user_text else []
+            )
+            ctx["historical_transaction_ignored"] = True
+            ctx["historical_transaction_status"] = tx_status or (
+                "INTERRUPTED" if semantic_intent_shift else "TERMINAL"
+            )
+            if semantic_intent_shift:
+                ctx["historical_transaction_interruption"] = "intent_shift"
+            for stale_key in (
+                "transaction_pre_validation",
+                "transaction_status",
+                "active_transaction",
+                "transaction",
+            ):
+                ctx.pop(stale_key, None)
+        else:
+            operational_history = history
+
+        ctx["conversation_history"] = operational_history
+        ctx["history_texts"] = [
+            str(item.get("content") or "")
+            for item in operational_history
+            if isinstance(item, dict) and item.get("content") not in (None, "")
+        ]
+
+        protocols: list[str] = []
+        seen: set[str] = set()
+        protocol_keys = {
+            "protocol_number", "protocolo_id", "interactionProtocol",
+            "protocolNumber", "finalizacao_protocol",
+        }
+
+        def walk(value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key in protocol_keys and item not in (None, ""):
+                        text = str(item).strip()
+                        if text and text not in seen:
+                            seen.add(text)
+                            protocols.append(text)
+                    elif isinstance(item, (dict, list, tuple)):
+                        walk(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    walk(item)
+
+        walk(mcp_results)
+        if protocols:
+            ctx["expected_protocols"] = protocols
+            ctx["requer_protocolo"] = True
+            ctx.setdefault("tipo_fluxo", "ajuste")
+        return ctx
+
     async def output_supervisor(self, state):
         """Valida a resposta candidata com o OutputSupervisor corporativo.
 
@@ -507,15 +620,15 @@ class AgentWorkflow:
             }
 
         candidate = state.get("answer") or ""
-        context = {
-            **(state.get("context") or {}),
+        context = self._output_guardrail_context(state)
+        context.update({
             "tenant_id": state.get("tenant_id"),
             "agent_id": state.get("agent_id"),
             "session_id": state.get("conversation_key") or state.get("session_id"),
             "route": state.get("route"),
             "intent": state.get("intent"),
             "supervisor_attempt": int(state.get("supervisor_attempt", 0)),
-        }
+        })
         async with self.telemetry.span(
             "workflow.output_supervisor",
             session_id=state.get("conversation_key") or state.get("session_id"),
@@ -601,7 +714,7 @@ class AgentWorkflow:
                 component="workflow.output_guardrails.start",
             )
             final, decisions = await self.guardrails.run_output(
-                state["answer"], state.get("context", {})
+                state["answer"], self._output_guardrail_context(state)
             )
             for _decision in decisions:
                 await self.guardrail_telemetry.evaluated("output", _decision)

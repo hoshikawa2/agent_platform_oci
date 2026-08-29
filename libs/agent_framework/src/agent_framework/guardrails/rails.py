@@ -25,6 +25,7 @@ from .calibrated.output_sanitization import mascarar_pii_output, sanitizar_toxic
 from .calibrated.rules.pinj_patterns import _PINJ_PATTERNS, is_obvious_injection
 from .calibrated.rules.tox_blocklist import _EXPLICIT_TERMS, _THREAT_PATTERNS, is_obvious_toxic
 from .framework_llm_client import classify_with_framework_llm
+from agent_framework.workflows.input_contract import has_meaningful_unmatched_policy, has_semantic_classifier
 
 
 def _lower(text: str) -> str:
@@ -220,8 +221,6 @@ class OutputToxicitySanitizationRail(Guardrail):
 
 
 class OutOfScopeRail(Guardrail):
-    """OOS calibrado: classificador LLM para escopo de domínio de atendimento configurado."""
-
     code = "OOS"
     stage = "input"
 
@@ -251,6 +250,79 @@ class CoherenceRail(Guardrail):
 
     async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
         ctx = _ctx(context)
+        transaction_status = str(ctx.get("transaction_status") or "").strip().upper()
+        missing_parameters = [str(x) for x in (ctx.get("missing_parameters") or []) if str(x).strip()]
+        if transaction_status == "COLLECTING_PARAMETERS" and missing_parameters:
+            return RailDecision(
+                code=self.code,
+                allowed=True,
+                reason="Coerência delegada ao contrato de parâmetros da transação ativa",
+                sanitized_text=text,
+                metadata={
+                    "mechanism": "transaction_parameter_contract",
+                    "calibrated": True,
+                    "delegated": True,
+                    "transaction_status": transaction_status,
+                    "missing_parameters": missing_parameters,
+                },
+            )
+        expected_input = ctx.get("expected_input")
+        if isinstance(expected_input, dict) and expected_input.get("allowed_values"):
+            # Backward-compatible default: enumerated contracts without an
+            # explicit unmatched policy own coherence deterministically and
+            # reprompt every value outside allowed_values.
+            if has_semantic_classifier(expected_input):
+                return RailDecision(
+                    code=self.code,
+                    allowed=True,
+                    reason="Coerência e semântica delegadas ao semantic_classifier do expected_input",
+                    sanitized_text=text,
+                    metadata={
+                        "mechanism": "expected_input_semantic_classifier",
+                        "calibrated": True,
+                        "delegated": True,
+                    },
+                )
+            if not has_meaningful_unmatched_policy(expected_input):
+                return RailDecision(
+                    code=self.code,
+                    allowed=True,
+                    reason="Coerência delegada ao contrato expected_input do workflow pausado",
+                    sanitized_text=text,
+                    metadata={
+                        "mechanism": "expected_input_contract",
+                        "calibrated": True,
+                        "delegated": True,
+                    },
+                )
+
+            # Opt-in semantic unmatched handling: COER still classifies the
+            # free-text reply, but does NOT block the graph.  Its underlying
+            # signal is consumed by expected_input to choose reprompt vs the
+            # workflow-declared meaningful_input action. Other safety rails
+            # continue to execute and may block independently.
+            out = await classify_with_framework_llm(
+                _llm(ctx), "COER", {"text": text or "", "context": ctx},
+                profile_name="guardrail", component_name="guardrail.coer", generation_name="guardrail.coer",
+            )
+            semantic_coherent = bool(out.get("allowed", True))
+            return RailDecision(
+                code=self.code,
+                allowed=True,
+                reason=(
+                    "Entrada coerente; decisão delegada à política unmatched do expected_input"
+                    if semantic_coherent
+                    else "Entrada incoerente; decisão delegada ao reprompt do expected_input"
+                ),
+                sanitized_text=text,
+                metadata={
+                    "mechanism": "expected_input_contract",
+                    "calibrated": True,
+                    "delegated": True,
+                    "semantic_coherent": semantic_coherent,
+                    "data": out,
+                },
+            )
         out = await classify_with_framework_llm(
             _llm(ctx), "COER", {"text": text or "", "context": ctx},
             profile_name="guardrail", component_name="guardrail.coer", generation_name="guardrail.coer",
@@ -565,6 +637,49 @@ class DataLeakageInputRail(Guardrail):
         return RailDecision(code=self.code, allowed=bool(out.get("allowed", True)), reason=str(out.get("reason") or out.get("label") or "DLEX_IN avaliado"), sanitized_text=text, metadata={"mechanism": "llm_rail", "data": out, "calibrated": True})
 
 
+def _mask_authorized_protocol_values(value: Any, protocols: list[str]) -> Any:
+    """Mask only protocol values explicitly authorized for the current turn.
+
+    This function is used only to build the DLEX_OUT classifier payload. It does
+    not mutate the runtime state or the user-visible response. Unrelated values
+    remain untouched and therefore continue to be evaluated normally by DLEX.
+    """
+
+    if isinstance(value, str):
+        masked = value
+        for protocol in protocols:
+            if protocol:
+                masked = masked.replace(protocol, "<AUTHORIZED_PROTOCOL>")
+        return masked
+    if isinstance(value, dict):
+        return {key: _mask_authorized_protocol_values(item, protocols) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_authorized_protocol_values(item, protocols) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_authorized_protocol_values(item, protocols) for item in value)
+    return value
+
+
+def _dlex_block_may_be_authorized_protocol(out: dict[str, Any]) -> bool:
+    """Return True only when DLEX appears to object to the protocol itself.
+
+    The recheck must not run for unrelated leakage (tokens, credentials,
+    prompts, third-party data, etc.), because those violations remain blocking.
+    """
+
+    reason = str(out.get("reason") or out.get("label") or "").lower()
+    protocol_terms = ("protocolo", "protocol", "identificador", "identifier")
+    unrelated_terms = (
+        "token", "secret", "segredo", "api key", "api_key", "chave",
+        "senha", "password", "credencial", "credential", "prompt",
+        "instrução interna", "instrucoes internas", "instruções internas",
+        "terceiro", "third-party", "outro cliente",
+    )
+    return any(term in reason for term in protocol_terms) and not any(
+        term in reason for term in unrelated_terms
+    )
+
+
 class DataLeakageOutputRail(Guardrail):
     code = "DLEX_OUT"
     stage = "output"
@@ -573,8 +688,110 @@ class DataLeakageOutputRail(Guardrail):
         ctx = _ctx(context)
         if not ctx.get("__guardrails_yaml_controlled") and not _truthy(os.getenv("GUARDRAIL_DLEX_OUT_ENABLED"), False):
             return RailDecision(code=self.code, allowed=True, metadata={"skipped": "covered_by_OOS_and_MSK", "calibrated": True})
-        out = await classify_with_framework_llm(_llm(ctx), "DLEX_OUT", {"text": text or "", "context": ctx}, profile_name="grl", component_name="guardrail.dlex_out", generation_name="guardrail.dlex_out")
-        return RailDecision(code=self.code, allowed=bool(out.get("allowed", True)), reason=str(out.get("reason") or out.get("label") or "DLEX_OUT avaliado"), sanitized_text=text, metadata={"mechanism": "llm_rail", "data": out, "calibrated": True})
+
+        original_text = text or ""
+        expected_protocols = [
+            str(value).strip()
+            for value in (ctx.get("expected_protocols") or [])
+            if str(value).strip()
+        ]
+        matched_expected_protocols = [
+            protocol for protocol in expected_protocols if protocol in original_text
+        ]
+
+        # Protocols explicitly produced/expected by the current workflow are
+        # authorized output values. Mask only those exact values before DLEX
+        # classification so that the LLM cannot mistake them for leaked internal
+        # identifiers. Any other number/identifier remains visible to DLEX.
+        classifier_text = original_text
+        classifier_ctx: dict[str, Any] = ctx
+        if matched_expected_protocols:
+            classifier_text = _mask_authorized_protocol_values(
+                original_text, matched_expected_protocols
+            )
+            classifier_ctx = _mask_authorized_protocol_values(
+                ctx, matched_expected_protocols
+            )
+
+        out = await classify_with_framework_llm(
+            _llm(ctx),
+            "DLEX_OUT",
+            {"text": classifier_text, "context": classifier_ctx},
+            profile_name="grl",
+            component_name="guardrail.dlex_out",
+            generation_name="guardrail.dlex_out",
+        )
+
+        # A workflow-generated protocol listed in ``expected_protocols`` is an
+        # explicitly authorized customer-facing value. Some LLM classifiers can
+        # still reject the neutral placeholder merely because the surrounding
+        # sentence contains the word "protocolo". When that happens, re-run the
+        # classifier with the exact authorized value replaced by plain public
+        # wording. This second pass preserves every other part of the response
+        # (tokens, credentials, third-party data, internal instructions, etc.),
+        # so unrelated leakage continues to be blocked. Only if the response is
+        # safe without the authorized identifier do we override the false
+        # positive from the first pass.
+        protocol_authorization_verified = False
+        protocol_recheck = None
+        if (
+            matched_expected_protocols
+            and not bool(out.get("allowed", True))
+            and _dlex_block_may_be_authorized_protocol(out)
+        ):
+            recheck_text = original_text
+            recheck_ctx: dict[str, Any] = ctx
+            for protocol in matched_expected_protocols:
+                recheck_text = recheck_text.replace(
+                    protocol, "referência pública autorizada para este cliente"
+                )
+            recheck_ctx = _mask_authorized_protocol_values(
+                ctx, matched_expected_protocols
+            )
+            recheck_ctx = dict(recheck_ctx)
+            recheck_ctx["authorized_customer_protocol"] = True
+            recheck_ctx["authorization_rule"] = (
+                "Protocolos presentes em expected_protocols foram produzidos "
+                "pelo workflow atual e são autorizados para divulgação ao próprio cliente."
+            )
+            protocol_recheck = await classify_with_framework_llm(
+                _llm(ctx),
+                "DLEX_OUT",
+                {"text": recheck_text, "context": recheck_ctx},
+                profile_name="grl",
+                component_name="guardrail.dlex_out.protocol_authorization_recheck",
+                generation_name="guardrail.dlex_out.protocol_authorization_recheck",
+            )
+            if bool(protocol_recheck.get("allowed", True)):
+                out = {
+                    "allowed": True,
+                    "label": "OK",
+                    "reason": "protocolo esperado pelo workflow explicitamente autorizado",
+                    "protocol_recheck": protocol_recheck,
+                }
+                protocol_authorization_verified = True
+
+        metadata = {
+            "mechanism": "llm_rail",
+            "data": out,
+            "calibrated": True,
+        }
+        if matched_expected_protocols:
+            metadata.update(
+                {
+                    "protocol_authorization": "expected_values",
+                    "authorized_protocols_masked": len(matched_expected_protocols),
+                    "protocol_authorization_verified": protocol_authorization_verified,
+                    "protocol_recheck": protocol_recheck,
+                }
+            )
+        return RailDecision(
+            code=self.code,
+            allowed=bool(out.get("allowed", True)),
+            reason=str(out.get("reason") or out.get("label") or "DLEX_OUT avaliado"),
+            sanitized_text=text,
+            metadata=metadata,
+        )
 
 
 class RetrievalRelevanceRail(Guardrail):

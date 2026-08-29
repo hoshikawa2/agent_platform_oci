@@ -160,7 +160,7 @@ class AgentWorkflow:
         builder.add_conditional_edges(
             "input_guardrails",
             self._after_input_guardrails,
-            {"blocked": "persist", "continue": "load_long_term_memory"},
+            {"blocked": "output_guardrails", "continue": "load_long_term_memory"},
         )
         builder.add_edge("load_long_term_memory", "routing_decision")
         builder.add_conditional_edges(
@@ -196,6 +196,31 @@ class AgentWorkflow:
 
     def _after_input_guardrails(self, state):
         return "blocked" if state.get("blocked") else "continue"
+
+    @staticmethod
+    def _input_guardrail_user_message(decisions, state, sanitized_text):
+        # Keep the technical guardrail reason in telemetry, but expose only a
+        # safe, actionable message to the end user. The message is intentionally
+        # routed through output_guardrails before persistence/delivery.
+        blocked = [d for d in decisions if not getattr(d, "allowed", True)]
+        first = blocked[0] if blocked else None
+        code = str(getattr(first, "code", "") or "").upper()
+        if code == "COER":
+            return (
+                "Não consegui entender sua última mensagem porque ela parece "
+                "incompleta ou ambígua. Pode reformular ou completar o que você quis dizer?"
+            )
+        if code == "INPUT_SIZE":
+            return "Sua mensagem ficou muito longa para eu processar de uma vez. Pode resumir ou dividir em partes?"
+        if code == "DLEX_IN":
+            return "Não posso usar essa informação da forma solicitada. Reformule o pedido sem incluir dados ou conteúdo restrito."
+        if code == "PINJ":
+            return "Não posso seguir instruções que tentem alterar as regras do atendimento. Posso continuar ajudando com a sua solicitação."
+        if code == "TOX":
+            return "Não consegui prosseguir com essa mensagem. Pode reformular o pedido para continuarmos o atendimento?"
+        if code == "CMP":
+            return "Não posso prosseguir com essa solicitação dessa forma. Posso ajudar com uma alternativa permitida."
+        return "Não consegui processar essa mensagem. Pode reformular para eu continuar o atendimento?"
 
     async def input_guardrails(self, state):
         if state.get("session_ended") is True:
@@ -281,12 +306,33 @@ class AgentWorkflow:
                 component="workflow.input_guardrails.final",
             )
             if any(not d.allowed for d in decisions):
+                # A blocking input guardrail stops the turn before routing/tools.
+                # Clear turn-local routing/tool state so stale data from a prior
+                # turn cannot appear as if it was executed after the block.
+                user_message = self._input_guardrail_user_message(decisions, state, sanitized)
                 return {
                     "sanitized_input": sanitized,
-                    "answer": "Não consegui seguir com essa mensagem por regra de segurança.",
-                    "final_answer": "Não consegui seguir com essa mensagem por regra de segurança.",
+                    "answer": user_message,
+                    "final_answer": None,
                     "guardrail_decisions": [d.model_dump() for d in decisions],
                     "route": "blocked",
+                    "intent": "input_guardrail_blocked",
+                    "route_decision": {
+                        "route": "blocked",
+                        "agent": None,
+                        "intent": "input_guardrail_blocked",
+                        "confidence": 1.0,
+                        "reason": "Entrada interrompida por guardrail antes do roteamento.",
+                        "method": "guardrail",
+                        "next_state": state.get("next_state"),
+                        "handoff": False,
+                        "metadata": {},
+                        "domain": state.get("domain"),
+                        "mcp_tools": [],
+                    },
+                    "mcp_tools": [],
+                    "mcp_results": [],
+                    "judge_results": [],
                     "blocked": True,
                 }
             return {

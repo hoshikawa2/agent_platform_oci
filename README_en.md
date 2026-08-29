@@ -32,7 +32,7 @@ The documentation has three clear levels:
 
 1. **Main tutorial:** this [`README_en.md`](README_en.md) — build, configure, run and test an agent end to end.
 2. **Architecture:** [01 — Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) — components, boundaries and implementation placement.
-3. **Specialized references:** manuals `02` through `11` — deep implementation and troubleshooting by capability.
+3. **Specialized references:** manuals `02` through `12` — deep implementation and troubleshooting by capability.
 
 If you are creating a new agent, follow this `README_en.md` from the beginning. For deeper implementation details or troubleshooting, use the links below.
 
@@ -11205,6 +11205,14 @@ The content of this folder should be treated as an additional framework extensio
 
 **Use it when:** proving execution paths or diagnosing production behavior.
 
+### [12 — Input Guardrail Feedback and Blocked-Turn Semantics](docs/developer/en/12_input_guardrail_feedback_and_blocked_turns.md)
+
+**What it is:** user-facing semantics for input blocks, blocked-turn state cleanup, and output-guardrail validation of the generated feedback.
+
+**Use it when:** `COER`/input guardrails generate generic messages, `route=blocked` carries stale results, or you need to reason about precedence between input guardrails, routing, and tools.
+
 ### Main tutorial
 
 [`README_en.md`](README_en.md) remains the complete step-by-step guide.
+
+| Workflow completes and generates a protocol, but the final response becomes a safety message | `expected_protocols`, `CMP`, `DLEX_OUT`, `output_guardrails` ordering | [Guardrails and Judges](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md) |

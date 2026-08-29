@@ -32,3 +32,49 @@ O exemplo usa `MemorySaver` apenas para ser autocontido. Em aplicações reais u
 ## Regra arquitetural
 
 Código de domínio não deve importar `langgraph.graph.StateGraph`. Para grafos de agentes use `FrameworkStateGraph`; para workflows determinísticos de negócio use `WorkflowRuntime`.
+
+## Entrada enumerada, reprompt e `semantic_classifier`
+
+O contrato `expected_input` pode declarar qualquer conjunto de opções em
+`allowed_values`. O match literal continua determinístico; quando a resposta não
+coincide literalmente com uma opção, o agente pode habilitar um classificador
+semântico com prompt próprio.
+
+```yaml
+expected_input:
+  key: resposta_usuario
+  allowed_values: [SIM, NAO]
+  normalize: upper_strip
+  reprompt: "Não entendi. Responda sim ou não."
+  semantic_classifier:
+    enabled: true
+    prompt: |
+      Classifique {{ user_input }} em exatamente uma opção de {{ allowed_values }}.
+      Para este workflow, aceitação/entendimento => SIM; negação, nova pergunta
+      ou hipótese factual a validar => NAO.
+      Retorne somente uma opção de {{ allowed_values }}.
+```
+
+O framework não conhece o significado de `SIM`, `NAO` nem de nenhuma outra
+opção. Ele apenas injeta `allowed_values`, `pending_prompt` e `user_input`, chama
+a LLM e valida estritamente se a saída pertence à lista declarada. Uma saída
+fora da lista usa o `reprompt`.
+
+O mesmo mecanismo funciona sem alteração do framework para, por exemplo,
+`[CONFIRMAR, ALTERAR, CANCELAR]` ou qualquer outra lista configurada pelo agente.
+O rail `COER` delega a semântica ao `semantic_classifier` nesse modo; PINJ,
+toxicidade, PII e os demais rails de segurança continuam independentes.
+
+Há dois diretórios equivalentes para facilitar comparação com os demais
+cenários de Tuning-Performance:
+
+- `agent_template_backend/` — nome padrão de template;
+- `agent_template_backend_pause_resume/` — nome histórico deste exemplo.
+
+Ambos contêm o mesmo workflow `confirmacao.v1.yaml`.
+
+
+
+### Reentrada contextual por opção
+
+Uma opção do `semantic_classifier` pode declarar `option_actions.<OPCAO>.action: contextual_reentry`. Nesse caso o workflow pausado não é retomado: o framework libera a pausa e reexecuta o roteamento usando somente o contexto conversacional ancorado que originou a decisão mais a fala atual. A fala original é preservada para auditoria e o contexto reconstruído não vira evidência de negócio; parâmetros candidatos continuam sujeitos a validação e confirmação normais.

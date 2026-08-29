@@ -459,6 +459,68 @@ class WorkflowRuntime:
         self._compiled[key] = graph
         return graph
 
+    def _snapshot_interrupts(self, snapshot: Any) -> list[Any]:
+        """Return real LangGraph interrupt payloads from a durable snapshot.
+
+        ``snapshot.next`` only means that LangGraph still exposes pending graph
+        work.  It is *not* proof that execution is waiting for user input.
+        Pause semantics belong exclusively to real ``interrupt()`` payloads.
+
+        LangGraph/checkpointer versions expose durable interrupts in more than
+        one shape.  Newer snapshots normally attach them to ``task.interrupts``;
+        other supported versions persist them in ``snapshot.values`` under the
+        reserved ``__interrupt__`` key.  Accept both representations so a real
+        pause is never mistaken for generic pending work and failed closed.
+        """
+        interrupts: list[Any] = []
+
+        def append_interrupt(item: Any) -> None:
+            if isinstance(item, dict) and "value" in item:
+                value = item.get("value")
+            else:
+                value = getattr(item, "value", item)
+            # Avoid duplicating the same payload when a LangGraph version
+            # exposes it through both task metadata and durable state values.
+            if value not in interrupts:
+                interrupts.append(value)
+
+        for task in getattr(snapshot, "tasks", ()) or ():
+            for item in getattr(task, "interrupts", ()) or ():
+                append_interrupt(item)
+
+        # Compatibility with LangGraph/checkpointer snapshots where interrupts
+        # are durable state values instead of task metadata. This is the shape
+        # observed with pause nodes such as ``formatar__pause``.
+        values = getattr(snapshot, "values", None)
+        if isinstance(values, dict):
+            persisted = values.get("__interrupt__")
+            if isinstance(persisted, (list, tuple)):
+                for item in persisted:
+                    append_interrupt(item)
+            elif persisted is not None:
+                append_interrupt(persisted)
+
+        # Be tolerant of versions/adapters that expose a top-level collection.
+        for item in getattr(snapshot, "interrupts", ()) or ():
+            append_interrupt(item)
+
+        return interrupts
+
+    def _is_structurally_terminal(self, definition: WorkflowDefinition, state: dict[str, Any]) -> bool:
+        """Return True when the current completed node has an active edge to END.
+
+        This intentionally evaluates the workflow definition rather than relying
+        on ``snapshot.next``.  Some LangGraph/checkpointer combinations may leave
+        a truthy ``next`` after the final action node has already completed.
+        """
+        current_node = state.get("current_node")
+        if not isinstance(current_node, str) or not current_node:
+            return False
+        for edge in self._outgoing(definition).get(current_node, []):
+            if _matches(edge.when, state):
+                return edge.target in {"END", "__end__"}
+        return False
+
     def _result_from_state(self, definition: WorkflowDefinition, eid: str, state: dict[str, Any]) -> WorkflowRunResult:
         return WorkflowRunResult(
             execution_id=eid,
@@ -505,12 +567,9 @@ class WorkflowRuntime:
             state = await graph.ainvoke(initial, config=config)
             phase = "aget_state"
             snapshot = await graph.aget_state(config)
-            if getattr(snapshot, "next", None):
-                interrupts = []
-                for task in getattr(snapshot, "tasks", ()) or ():
-                    for item in getattr(task, "interrupts", ()) or ():
-                        interrupts.append(getattr(item, "value", item))
-                pause = interrupts[-1] if interrupts else {"node": state.get("current_node")}
+            interrupts = self._snapshot_interrupts(snapshot)
+            if interrupts:
+                pause = interrupts[-1]
                 return WorkflowRunResult(
                     execution_id=eid,
                     workflow_name=name,
@@ -520,6 +579,14 @@ class WorkflowRuntime:
                     state=state,
                     pause=pause if isinstance(pause, dict) else {"value": pause},
                     trace=list(state.get("trace") or []),
+                )
+            if self._is_structurally_terminal(definition, state):
+                return self._result_from_state(definition, eid, state)
+            if getattr(snapshot, "next", None):
+                raise RuntimeError(
+                    "LangGraph retornou trabalho pendente sem interrupt real em estado não terminal; "
+                    f"workflow={definition.name!r} current_node={state.get('current_node')!r} "
+                    f"next={getattr(snapshot, 'next', None)!r}"
                 )
             return self._result_from_state(definition, eid, state)
         except Exception as exc:
@@ -582,12 +649,9 @@ class WorkflowRuntime:
             state = await graph.ainvoke(Command(resume=resume_value), config=config)
             phase = "aget_state_resume"
             snapshot = await graph.aget_state(config)
-            if getattr(snapshot, "next", None):
-                interrupts = []
-                for task in getattr(snapshot, "tasks", ()) or ():
-                    for item in getattr(task, "interrupts", ()) or ():
-                        interrupts.append(getattr(item, "value", item))
-                pause = interrupts[-1] if interrupts else {"node": state.get("current_node")}
+            interrupts = self._snapshot_interrupts(snapshot)
+            if interrupts:
+                pause = interrupts[-1]
                 return WorkflowRunResult(
                     execution_id=execution_id,
                     workflow_name=name,
@@ -597,6 +661,14 @@ class WorkflowRuntime:
                     state=state,
                     pause=pause if isinstance(pause, dict) else {"value": pause},
                     trace=list(state.get("trace") or []),
+                )
+            if self._is_structurally_terminal(definition, state):
+                return self._result_from_state(definition, execution_id, state)
+            if getattr(snapshot, "next", None):
+                raise RuntimeError(
+                    "LangGraph retornou trabalho pendente sem interrupt real em estado não terminal; "
+                    f"workflow={definition.name!r} current_node={state.get('current_node')!r} "
+                    f"next={getattr(snapshot, 'next', None)!r}"
                 )
             return self._result_from_state(definition, execution_id, state)
         except Exception as exc:

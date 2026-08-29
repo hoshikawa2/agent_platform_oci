@@ -32,7 +32,7 @@ A documentação possui três níveis:
 
 1. **Tutorial principal:** este [`README.md`](README.md) — criação, configuração, execução e teste de um agente do início ao fim.
 2. **Arquitetura:** [01 — Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) — componentes, responsabilidades e onde implementar cada coisa.
-3. **Referências especializadas:** manuais `02` a `11` — implementação profunda e troubleshooting por capacidade.
+3. **Referências especializadas:** manuais `02` a `12` — implementação profunda e troubleshooting por capacidade.
 
 Se você está começando um novo agente, siga este `README.md` desde o início. Para aprofundamento ou troubleshooting, use os links abaixo.
 
@@ -11217,6 +11217,9 @@ O conteúdo desta pasta deve ser tratado como uma extensão adicional do framewo
 | Recebo 401 entre gateway/backend/MCP | Basic Auth, credenciais por hop | [Gateways e Auth](docs/developer/pt/05_agent_gateway_mcp_gateway_and_auth.md) |
 | Preciso decidir se algo pertence ao framework ou ao agente | boundary core/agente | [Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) |
 | Guardrail específico de um agente está quebrando outro | extensibilidade, imports de domínio no core | [Guardrails e Judges](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md) |
+| Uma frase incompleta recebe mensagem genérica de “regra de segurança” | feedback de input guardrail, `COER`, blocked-turn state | [Feedback de Guardrails de Entrada](docs/developer/pt/12_input_guardrail_feedback_and_blocked_turns.md) |
+| `route=blocked` aparece junto com tools/resultados de outro turno | limpeza de estado do turno bloqueado | [Feedback de Guardrails de Entrada](docs/developer/pt/12_input_guardrail_feedback_and_blocked_turns.md) |
+| Workflow conclui e gera protocolo, mas a resposta final vira mensagem de segurança | `expected_protocols`, `CMP`, `DLEX_OUT`, ordem de `output_guardrails` | [Guardrails e Judges](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md) |
 | Judge não roda em uma transação | sampling, `always_run_for_transactional`, sinais transacionais | [Guardrails e Judges](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md) |
 | Groundedness está avaliando sem contexto correto | RAG context, MCP evidence, judge inputs | [RAG/Grounding](docs/developer/pt/07_rag_business_context_and_grounding.md) |
 | RAG não encontra conteúdo | provider, ingestão, embeddings, configuração | [RAG/Grounding](docs/developer/pt/07_rag_business_context_and_grounding.md) |
@@ -11300,6 +11303,12 @@ O conteúdo desta pasta deve ser tratado como uma extensão adicional do framewo
 **O que é:** correlação, eventos, labels, sequence, persistência e diagnóstico.
 
 **Use quando:** for necessário provar o caminho executado ou diagnosticar produção.
+
+### [12 — Feedback de Guardrails de Entrada e Turnos Bloqueados](docs/developer/pt/12_input_guardrail_feedback_and_blocked_turns.md)
+
+**O que é:** semântica de mensagens públicas para bloqueios de input, limpeza do estado do turno e passagem da resposta pelos guardrails de saída.
+
+**Use quando:** um `COER`/guardrail de entrada gera mensagem genérica, `route=blocked` carrega resultados antigos ou há dúvida sobre a precedência entre input guardrails, routing e tools.
 
 ### Tutorial principal
 

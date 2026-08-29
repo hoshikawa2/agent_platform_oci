@@ -44,6 +44,103 @@ class SemanticRouteContinuity:
             1, int(getattr(settings, "ROUTE_STICKINESS_HISTORY_TURNS", 2))
         )
 
+    async def evaluate_global_control(
+        self,
+        state: dict[str, Any],
+        *,
+        intents: list[IntentDefinition],
+        allowed_controls: set[str] | None = None,
+    ) -> RouteDecision | None:
+        """Classify only global conversation controls before local workflow ownership.
+
+        This probe exists for turns that did not satisfy a paused workflow's
+        deterministic ``expected_input`` contract. It deliberately returns only
+        explicitly allowed global controls (currently HUMAN_HANDOFF and/or
+        END_SESSION) and ignores CONTINUE/ROUTE, so ordinary workflow answers are
+        still resolved by the workflow's own semantic classifier.
+
+        No linguistic keyword/regex rules are introduced here; the existing
+        route-continuity semantic classifier remains the single semantic source.
+        """
+        controls = {str(x).strip().upper() for x in (allowed_controls or {"HUMAN_HANDOFF"})}
+        controls &= {"HUMAN_HANDOFF", "END_SESSION"}
+        if not controls or not self.enabled or self.llm is None:
+            return None
+
+        active_agent = str(state.get("active_agent") or "").strip()
+        enabled_intents = [intent for intent in intents if intent.enabled]
+        known_agents = {intent.agent for intent in enabled_intents}
+        if active_agent and active_agent not in known_agents:
+            active_agent = ""
+
+        text = str(state.get("sanitized_input") or state.get("user_text") or "").strip()
+        if not text:
+            return None
+
+        try:
+            evaluation = await self._classify(
+                state,
+                text=text,
+                active_agent=active_agent,
+                intents=enabled_intents,
+            )
+        except Exception as exc:
+            logger.warning("Global session-control probe failed: %s", exc)
+            return None
+
+        accepted = evaluation.confidence >= self.confidence_threshold
+        await self._emit(
+            state,
+            {
+                "decision": evaluation.decision,
+                "confidence": evaluation.confidence,
+                "reason": evaluation.reason,
+                "active_agent": active_agent,
+                "route_bypassed": accepted and evaluation.decision in controls,
+                "profile_name": self.profile_name,
+                "global_control_probe": True,
+                "allowed_controls": sorted(controls),
+            },
+        )
+        if not accepted or evaluation.decision not in controls:
+            return None
+
+        if evaluation.decision == "HUMAN_HANDOFF":
+            return RouteDecision(
+                route="human_handoff",
+                agent="human_handoff",
+                intent="human_handoff",
+                confidence=evaluation.confidence,
+                reason=evaluation.reason or "O usuário solicitou atendimento humano.",
+                method="continuity",
+                handoff=True,
+                metadata={
+                    "route_bypassed": True,
+                    "continuity_decision": evaluation.decision,
+                    "continuity_profile": self.profile_name,
+                    "session_control": "HUMAN_HANDOFF",
+                    "global_control_preempted_workflow": True,
+                    "raw_llm_answer": evaluation.raw[:1000],
+                },
+            )
+
+        return RouteDecision(
+            route="end_session",
+            agent="end_session",
+            intent="end_session",
+            confidence=evaluation.confidence,
+            reason=evaluation.reason or "O usuário solicitou o encerramento do atendimento.",
+            method="continuity",
+            metadata={
+                "route_bypassed": True,
+                "continuity_decision": evaluation.decision,
+                "continuity_profile": self.profile_name,
+                "session_control": "END_SESSION",
+                "global_control_preempted_workflow": True,
+                "raw_llm_answer": evaluation.raw[:1000],
+            },
+        )
+
     async def evaluate(
         self,
         state: dict[str, Any],

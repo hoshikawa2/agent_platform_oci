@@ -6,7 +6,7 @@ The documentation has three clear levels:
 
 1. **Main tutorial:** [`README_en.md`](README_en.md) — creation, configuration, execution, and testing of an agent from start to finish.
 2. **Architecture:** [01 — Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) — components, responsibilities, and where to implement each concern.
-3. **Specialized references:** manuals `02` through `11` — in-depth implementation and troubleshooting by capability.
+3. **Specialized references:** manuals `02` through `12` — in-depth implementation and troubleshooting by capability.
 
 If you are starting a new agent, begin with `README_en.md`.
 
@@ -31,7 +31,10 @@ If something is not working, use **Search by problem** below.
 | I receive 401 between gateway/backend/MCP | Basic Auth, credentials per hop | [Gateways and Auth](docs/developer/en/05_agent_gateway_mcp_gateway_and_auth.md) |
 | I need to decide whether something belongs to the framework or the agent | core/agent boundary | [Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) |
 | An agent-specific guardrail is breaking another agent | extensibility, domain imports in the core | [Guardrails and Judges](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md) |
+| An incomplete phrase receives a generic “security rule” message | input-guardrail feedback, `COER`, blocked-turn state | [Input Guardrail Feedback](./12_input_guardrail_feedback_and_blocked_turns.md) |
+| `route=blocked` appears together with tools/results from another turn | blocked-turn state cleanup | [Input Guardrail Feedback](./12_input_guardrail_feedback_and_blocked_turns.md) |
 | A judge does not run in a transaction | sampling, `always_run_for_transactional`, transaction signals | [Guardrails and Judges](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md) |
+| Workflow completes and generates a protocol, but the final response becomes a safety message | `expected_protocols`, `CMP`, `DLEX_OUT`, `output_guardrails` ordering | [Guardrails and Judges](./06_guardrails_judges_and_transaction_evaluation.md) |
 | Groundedness is evaluating without the correct context | RAG context, MCP evidence, judge inputs | [RAG/Grounding](docs/developer/en/07_rag_business_context_and_grounding.md) |
 | RAG does not find content | provider, ingestion, embeddings, configuration | [RAG/Grounding](docs/developer/en/07_rag_business_context_and_grounding.md) |
 | I do not know whether to use RAG, memory, or a tool | separation of responsibilities | [Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) and [RAG/Grounding](docs/developer/en/07_rag_business_context_and_grounding.md) |
@@ -115,6 +118,12 @@ If something is not working, use **Search by problem** below.
 
 **Use when:** it is necessary to prove the executed path or diagnose production.
 
+### [12 — Input Guardrail Feedback and Blocked-Turn Semantics](./12_input_guardrail_feedback_and_blocked_turns.md)
+
+**What it is:** public handling of input blocks, blocked-turn state cleanup, and output-guardrail validation of generated feedback.
+
+**Use when:** block messages are generic, `COER` should ask for clarification, or blocked-turn metadata contains stale routing/tool results.
+
 ### Main tutorial
 
 [`README_en.md`](README_en.md) remains the reference for the complete step-by-step flow:
@@ -131,3 +140,4 @@ When evolving a feature:
 - update the specialized manual with behavior, configuration, examples, and troubleshooting;
 - update SPECs if the contract changed;
 - keep release notes as history, not as the only current documentation.
+

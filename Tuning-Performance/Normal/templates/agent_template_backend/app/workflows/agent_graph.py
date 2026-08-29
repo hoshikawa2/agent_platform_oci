@@ -159,7 +159,7 @@ class AgentWorkflow:
         builder.add_conditional_edges(
             "input_guardrails",
             self._after_input_guardrails,
-            {"blocked": "persist", "continue": "routing_decision"},
+            {"blocked": "output_guardrails", "continue": "routing_decision"},
         )
         builder.add_conditional_edges(
             "routing_decision",
@@ -194,6 +194,31 @@ class AgentWorkflow:
 
     def _after_input_guardrails(self, state):
         return "blocked" if state.get("blocked") else "continue"
+
+    @staticmethod
+    def _input_guardrail_user_message(decisions, state, sanitized_text):
+        # Keep the technical guardrail reason in telemetry, but expose only a
+        # safe, actionable message to the end user. The message is intentionally
+        # routed through output_guardrails before persistence/delivery.
+        blocked = [d for d in decisions if not getattr(d, "allowed", True)]
+        first = blocked[0] if blocked else None
+        code = str(getattr(first, "code", "") or "").upper()
+        if code == "COER":
+            return (
+                "Não consegui entender sua última mensagem porque ela parece "
+                "incompleta ou ambígua. Pode reformular ou completar o que você quis dizer?"
+            )
+        if code == "INPUT_SIZE":
+            return "Sua mensagem ficou muito longa para eu processar de uma vez. Pode resumir ou dividir em partes?"
+        if code == "DLEX_IN":
+            return "Não posso usar essa informação da forma solicitada. Reformule o pedido sem incluir dados ou conteúdo restrito."
+        if code == "PINJ":
+            return "Não posso seguir instruções que tentem alterar as regras do atendimento. Posso continuar ajudando com a sua solicitação."
+        if code == "TOX":
+            return "Não consegui prosseguir com essa mensagem. Pode reformular o pedido para continuarmos o atendimento?"
+        if code == "CMP":
+            return "Não posso prosseguir com essa solicitação dessa forma. Posso ajudar com uma alternativa permitida."
+        return "Não consegui processar essa mensagem. Pode reformular para eu continuar o atendimento?"
 
     async def input_guardrails(self, state):
         if state.get("session_ended") is True:
@@ -279,12 +304,33 @@ class AgentWorkflow:
                 component="workflow.input_guardrails.final",
             )
             if any(not d.allowed for d in decisions):
+                # A blocking input guardrail stops the turn before routing/tools.
+                # Clear turn-local routing/tool state so stale data from a prior
+                # turn cannot appear as if it was executed after the block.
+                user_message = self._input_guardrail_user_message(decisions, state, sanitized)
                 return {
                     "sanitized_input": sanitized,
-                    "answer": "Não consegui seguir com essa mensagem por regra de segurança.",
-                    "final_answer": "Não consegui seguir com essa mensagem por regra de segurança.",
+                    "answer": user_message,
+                    "final_answer": None,
                     "guardrail_decisions": [d.model_dump() for d in decisions],
                     "route": "blocked",
+                    "intent": "input_guardrail_blocked",
+                    "route_decision": {
+                        "route": "blocked",
+                        "agent": None,
+                        "intent": "input_guardrail_blocked",
+                        "confidence": 1.0,
+                        "reason": "Entrada interrompida por guardrail antes do roteamento.",
+                        "method": "guardrail",
+                        "next_state": state.get("next_state"),
+                        "handoff": False,
+                        "metadata": {},
+                        "domain": state.get("domain"),
+                        "mcp_tools": [],
+                    },
+                    "mcp_tools": [],
+                    "mcp_results": [],
+                    "judge_results": [],
                     "blocked": True,
                 }
             return {
@@ -492,119 +538,6 @@ class AgentWorkflow:
                 "next_state": "SESSION_ENDED",
             }
 
-    @staticmethod
-    def _output_guardrail_context(state: dict) -> dict:
-        """Monta o contexto operacional do turno para os guardrails de saída.
-
-        Mantém evidências/protocolos necessários aos rails, mas impede que uma
-        transação encerrada ou semanticamente interrompida governe o novo turno.
-        O histórico completo permanece no state/checkpoint para auditoria.
-        """
-        ctx = dict(state.get("context", {}) or {})
-        mcp_results = state.get("mcp_results") or []
-        ctx["evidence"] = mcp_results or ctx.get("evidence")
-        ctx["tool_result"] = mcp_results or ctx.get("tool_result")
-        ctx["tool_executed"] = any(isinstance(r, dict) and r.get("ok") for r in mcp_results)
-
-        history = list(state.get("history") or [])
-        current_user_text = str(state.get("user_text") or "").strip()
-        if current_user_text:
-            if (
-                not history
-                or not isinstance(history[-1], dict)
-                or str(history[-1].get("content") or "") != current_user_text
-                or str(history[-1].get("role") or "") != "user"
-            ):
-                history.append({"role": "user", "content": current_user_text})
-
-        route_decision = state.get("route_decision") or {}
-        route_metadata = route_decision.get("metadata") if isinstance(route_decision, dict) else {}
-        route_metadata = route_metadata if isinstance(route_metadata, dict) else {}
-        pre_validation = state.get("transaction_pre_validation") or {}
-        pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
-        tx_status = str(
-            state.get("transaction_status") or pre_validation.get("status") or ""
-        ).strip().upper()
-        terminal_tx = bool(pre_validation.get("terminal")) or tx_status in {
-            "COMPLETED", "FAILED", "CANCELLED", "BLOCKED", "OUT_OF_SCOPE"
-        }
-        semantic_intent_shift = (
-            str(route_metadata.get("transaction_interruption") or "").strip().lower()
-            == "intent_shift"
-        )
-        stickiness_intent_shift = bool(route_metadata.get("route_stickiness_preempted"))
-        should_isolate_history = semantic_intent_shift or (terminal_tx and stickiness_intent_shift)
-
-        current_route = str(
-            state.get("route")
-            or (route_decision.get("route") if isinstance(route_decision, dict) else "")
-            or ""
-        ).strip()
-        current_intent = str(
-            state.get("intent")
-            or (route_decision.get("intent") if isinstance(route_decision, dict) else "")
-            or ""
-        ).strip()
-        ctx["current_user_message"] = current_user_text
-        ctx["current_route"] = current_route
-        ctx["current_intent"] = current_intent
-
-        if should_isolate_history:
-            operational_history = (
-                [{"role": "user", "content": current_user_text}]
-                if current_user_text else []
-            )
-            ctx["historical_transaction_ignored"] = True
-            ctx["historical_transaction_status"] = tx_status or (
-                "INTERRUPTED" if semantic_intent_shift else "TERMINAL"
-            )
-            if semantic_intent_shift:
-                ctx["historical_transaction_interruption"] = "intent_shift"
-            for stale_key in (
-                "transaction_pre_validation",
-                "transaction_status",
-                "active_transaction",
-                "transaction",
-            ):
-                ctx.pop(stale_key, None)
-        else:
-            operational_history = history
-
-        ctx["conversation_history"] = operational_history
-        ctx["history_texts"] = [
-            str(item.get("content") or "")
-            for item in operational_history
-            if isinstance(item, dict) and item.get("content") not in (None, "")
-        ]
-
-        protocols: list[str] = []
-        seen: set[str] = set()
-        protocol_keys = {
-            "protocol_number", "protocolo_id", "interactionProtocol",
-            "protocolNumber", "finalizacao_protocol",
-        }
-
-        def walk(value):
-            if isinstance(value, dict):
-                for key, item in value.items():
-                    if key in protocol_keys and item not in (None, ""):
-                        text = str(item).strip()
-                        if text and text not in seen:
-                            seen.add(text)
-                            protocols.append(text)
-                    elif isinstance(item, (dict, list, tuple)):
-                        walk(item)
-            elif isinstance(value, (list, tuple)):
-                for item in value:
-                    walk(item)
-
-        walk(mcp_results)
-        if protocols:
-            ctx["expected_protocols"] = protocols
-            ctx["requer_protocolo"] = True
-            ctx.setdefault("tipo_fluxo", "ajuste")
-        return ctx
-
     async def output_supervisor(self, state):
         """Valida a resposta candidata com o OutputSupervisor corporativo.
 
@@ -620,15 +553,15 @@ class AgentWorkflow:
             }
 
         candidate = state.get("answer") or ""
-        context = self._output_guardrail_context(state)
-        context.update({
+        context = {
+            **(state.get("context") or {}),
             "tenant_id": state.get("tenant_id"),
             "agent_id": state.get("agent_id"),
             "session_id": state.get("conversation_key") or state.get("session_id"),
             "route": state.get("route"),
             "intent": state.get("intent"),
             "supervisor_attempt": int(state.get("supervisor_attempt", 0)),
-        })
+        }
         async with self.telemetry.span(
             "workflow.output_supervisor",
             session_id=state.get("conversation_key") or state.get("session_id"),
@@ -714,7 +647,7 @@ class AgentWorkflow:
                 component="workflow.output_guardrails.start",
             )
             final, decisions = await self.guardrails.run_output(
-                state["answer"], self._output_guardrail_context(state)
+                state["answer"], state.get("context", {})
             )
             for _decision in decisions:
                 await self.guardrail_telemetry.evaluated("output", _decision)

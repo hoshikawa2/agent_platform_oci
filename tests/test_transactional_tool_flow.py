@@ -666,3 +666,565 @@ async def test_route_intent_shift_clears_collecting_transaction_before_new_tools
     assert state["next_state"] is None
     assert state["missing_parameters"] == []
     assert state["tool_policy_result"]["action"] == "cancelled_by_intent_shift"
+
+
+def test_transaction_clarification_uses_agent_declared_user_prompt():
+    from types import SimpleNamespace
+
+    class _PromptRouter:
+        registry = SimpleNamespace(
+            get_tool=lambda _name: SimpleNamespace(
+                args_schema={
+                    "subject": {
+                        "type": "string",
+                        "description": "Item técnico da operação.",
+                        "user_prompt": "Qual cobrança você deseja tratar?",
+                    }
+                },
+                requires=["subject"],
+                description="Operação de teste",
+            )
+        )
+
+        def resolve_execution_policy(self, tool_name, arguments=None):
+            return {
+                "operation_type": "transactional",
+                "require_confirmation": True,
+                "requires": ["subject"],
+            }
+
+    runtime = object.__new__(AgentRuntimeMixin)
+    runtime.tool_router = _PromptRouter()
+    state = {
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "intent": "test_intent",
+        "missing_parameters": ["subject"],
+        "active_transaction": {
+            "transaction_id": "tx1",
+            "tool_name": "tool_teste",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "test_intent",
+            "parameter_schema": {
+                "subject": {
+                    "type": "string",
+                    "description": "Item técnico da operação.",
+                    "user_prompt": "Qual cobrança você deseja tratar?",
+                }
+            },
+        },
+    }
+
+    assert runtime.transaction_clarification_message(state) == "Qual cobrança você deseja tratar?"
+
+
+def test_transaction_clarification_never_leaks_technical_parameter_name_without_metadata():
+    runtime = object.__new__(AgentRuntimeMixin)
+    state = {
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["internal_subject_code"],
+        "active_transaction": {
+            "transaction_id": "tx1",
+            "tool_name": "tool_teste",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "parameter_schema": {"internal_subject_code": "string"},
+        },
+    }
+
+    text = runtime.transaction_clarification_message(state)
+    assert text == "Para prosseguir, preciso de mais uma informação para continuar com a solicitação."
+    assert "internal_subject_code" not in text
+    assert "internal subject code" not in text
+
+
+@pytest.mark.asyncio
+async def test_confirmation_executes_frozen_snapshot_even_if_operational_state_is_mutated():
+    runtime = _Runtime()
+    state = {
+        "user_text": "Quero devolver o pedido 123 porque me arrependi",
+        "sanitized_input": "Quero devolver o pedido 123 porque me arrependi",
+        "mcp_tools": ["consultar_pedido", "solicitar_devolucao"],
+        "route": "support_agent",
+        "intent": "retail_support_exchange_return",
+    }
+    await runtime.execute_tools_for_intent(state)
+    assert state["transaction_status"] == "AWAITING_CONFIRMATION"
+    assert state["confirmation_snapshot"]["arguments"]["order_id"] == "123"
+
+    # Simula enriquecimento/mutação acidental do state entre a pergunta de
+    # confirmação e o turno "sim". A execução deve permanecer no snapshot.
+    state["active_transaction"]["arguments"]["order_id"] = "999"
+    state["pending_tool_call"]["arguments"]["order_id"] = "999"
+    state["user_text"] = "sim"
+    state["sanitized_input"] = "sim"
+
+    await runtime.execute_tools_for_intent(state)
+    assert runtime.calls[-1][0] == "solicitar_devolucao"
+    assert runtime.calls[-1][1]["order_id"] == "123"
+    assert runtime.calls[-1][1]["confirmed"] is True
+    assert state["transaction_status"] == "COMPLETED"
+    assert state.get("confirmation_snapshot") is None
+
+class _RecoverablePreValidationRuntime(_PreValidationRuntime):
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append((tool_name, dict(arguments)))
+        if tool_name == "validar_contestacao":
+            return {
+                "ok": True,
+                "tool_name": tool_name,
+                "result": {
+                    "eligible": False,
+                    "status": "NEEDS_PARAMETER",
+                    "parameter": "subject",
+                    "reason": "subject_not_resolved",
+                },
+            }
+        return {"ok": True, "tool_name": tool_name, "result": {"status": "OPENED"}}
+
+
+@pytest.mark.asyncio
+async def test_prevalidation_can_reopen_only_invalid_parameter_and_preserve_other_values():
+    runtime = _RecoverablePreValidationRuntime(eligible=False)
+    state = {
+        "user_text": "R$ 10,00",
+        "sanitized_input": "R$ 10,00",
+        "route": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "selected_tool_call": {
+            "tool_name": "contestar_cobranca",
+            "arguments": {"subject": "fatura", "valor": 10.0},
+        },
+        "context": {},
+    }
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+    assert result[-1]["pre_validation"] is True
+    assert result[-1]["collecting_parameters"] is True
+    assert result[-1]["transaction_status"] == "COLLECTING_PARAMETERS"
+    assert state["transaction_status"] == "COLLECTING_PARAMETERS"
+    assert state["missing_parameters"] == ["subject"]
+    args = state["selected_tool_call"]["arguments"]
+    assert "subject" not in args
+    assert args["valor"] == 10.0
+    assert state["transaction_pre_validation"]["terminal"] is False
+    assert state["transaction_pre_validation"]["parameter"] == "subject"
+
+class _TerminalShortCircuitRuntime(AgentRuntimeMixin):
+    def __init__(self):
+        self.tool_router = None
+        self.llm = _TransactionTestLLM()
+        self.calls = []
+
+    def _resolve_tool_execution_policy(self, tool_name, arguments=None):
+        if tool_name == "cancelar_vas_avulso":
+            return {"operation_type": "transactional", "require_confirmation": True, "requires": ["subject"]}
+        return {"operation_type": "read_only", "require_confirmation": False, "requires": []}
+
+    def _validate_tool_execution_policy(self, tool_name, arguments=None):
+        return True, None
+
+    def _select_read_only_tools(self, tools, text):
+        return ["consultar_vas"] if "consultar_vas" in tools else []
+
+    def _select_transactional_tool(self, tools, text):
+        # This must never be reached after an explicitly terminal read result.
+        raise AssertionError("transactional selection must be short-circuited")
+
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append(tool_name)
+        return {
+            "ok": False,
+            "tool_name": tool_name,
+            "result": {
+                "success": False,
+                "status": "ANY_DOMAIN_STATUS",
+                "terminal": True,
+                "terminal_action": "block",
+                "reason": "resource_not_authorized",
+                "user_message": "Não é possível operar nesse recurso.",
+            },
+            "error": "Falha de domínio",
+        }
+
+
+@pytest.mark.asyncio
+async def test_explicit_terminal_tool_result_short_circuits_remaining_tool_chain():
+    runtime = _TerminalShortCircuitRuntime()
+    state = {
+        "user_text": "quero cancelar o serviço",
+        "sanitized_input": "quero cancelar o serviço",
+        "mcp_tools": ["consultar_vas", "cancelar_vas_avulso"],
+        "route": "agent",
+        "intent": "cancel",
+    }
+    results = await runtime.execute_tools_for_intent(state)
+    assert runtime.calls == ["consultar_vas"]
+    assert len(results) == 1
+    assert state["transaction_status"] == "BLOCKED"
+    assert state["selected_tool_call"] == {}
+    assert state["pending_tool_call"] == {}
+    assert state["tool_policy_result"]["action"] == "terminal_tool_result"
+
+
+def test_explicit_terminal_tool_result_user_message_is_direct_answer_without_domain_status_hardcode():
+    runtime = _TerminalShortCircuitRuntime()
+    result = {
+        "ok": False,
+        "tool_name": "qualquer_tool",
+        "result": {
+            "terminal": True,
+            "status": "ARBITRARY_APPLICATION_CODE",
+            "user_message": "Mensagem amigável da aplicação.",
+        },
+    }
+    answer = runtime.build_direct_mcp_answer({}, [result], agent_label="Agent")
+    assert answer == "Mensagem amigável da aplicação."
+
+class _ContextualReentryContestLLM:
+    def __init__(self):
+        self.prompts = []
+
+    async def ainvoke(self, messages, **kwargs):
+        import json
+        prompt = messages[-1]["content"]
+        self.prompts.append(prompt)
+        if kwargs.get("profile_name") == "transaction_parameter_extraction":
+            assert "tem uma cobrança aqui que eu não reconheço" in prompt
+            assert "Tamboro Mensal" in prompt
+            assert "quatorze e noventa e nove" in prompt
+            pending = json.loads(prompt.split("pending_parameters: ", 1)[1].split("\n", 1)[0])
+            out = {name: None for name in pending}
+            if "subject" in out:
+                out["subject"] = "Tamboro Mensal"
+            if "valor" in out:
+                out["valor"] = 14.99
+            return {"content": json.dumps(out, ensure_ascii=False)}
+        return {"content": "{}"}
+
+
+class _ContextualReentryPolicyRouter(_ContestPolicyRouter):
+    def __init__(self):
+        from types import SimpleNamespace
+        self.registry = SimpleNamespace(
+            tools={"contestar_cobranca": object()},
+            get_tool=lambda name: SimpleNamespace(
+                selection_keywords=["contestar", "não reconheço"],
+                args_schema={"subject": "string", "valor": "number"},
+                requires=["subject", "valor"],
+                description="Contesta cobrança validada",
+            ),
+        )
+
+
+class _ContextualReentryRuntime(AgentRuntimeMixin):
+    def __init__(self):
+        self.tool_router = _ContextualReentryPolicyRouter()
+        self.llm = _ContextualReentryContestLLM()
+        self.calls = []
+
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append((tool_name, dict(arguments)))
+        return {"ok": True, "tool_name": tool_name, "result": {"status": "OPENED"}}
+
+
+@pytest.mark.asyncio
+async def test_contextual_reentry_uses_bounded_context_for_transaction_parameter_candidates():
+    runtime = _ContextualReentryRuntime()
+    effective = (
+        "CONTEXTO DA SOLICITAÇÃO IMEDIATAMENTE ANTERIOR:\n"
+        "user: tem uma cobrança aqui que eu não reconheço\n"
+        "assistant: Cobrança Tamboro Mensal no valor de R$ 14,99.\n\n"
+        "CONTINUAÇÃO ATUAL DO CLIENTE:\n"
+        "é a de quatorze e noventa e nove"
+    )
+    state = {
+        "user_text": "é a de quatorze e noventa e nove",
+        "sanitized_input": "é a de quatorze e noventa e nove",
+        "mcp_tools": ["contestar_cobranca"],
+        "route": "contestacao_agent",
+        "active_agent": "contestacao_agent",
+        "intent": "contas_contestation",
+        "route_decision": {
+            "route": "contestacao_agent",
+            "agent": "contestacao_agent",
+            "intent": "contas_contestation",
+            "metadata": {
+                "contextual_reentry": True,
+                "contextual_reentry_input": effective,
+                "original_input": "é a de quatorze e noventa e nove",
+                "user_claims_are_evidence": False,
+            },
+        },
+        "pending_domain_workflow": {
+            "workflow_name": "invoice_explanation",
+            "execution_id": "old-exec",
+            "owner_agent": "faturas_agent",
+            "owner_intent": "contas_invoice_explanation",
+            "pause": {},
+        },
+        "transaction_status": "WORKFLOW_PAUSED",
+    }
+
+    results = await runtime.execute_tools_for_intent(state)
+
+    assert state["pending_domain_workflow"] is None
+    assert state["transaction_status"] == "AWAITING_CONFIRMATION"
+    args = state["pending_tool_call"]["arguments"]
+    assert args["subject"] == "Tamboro Mensal"
+    assert args["valor"] == 14.99
+    # The original utterance is still preserved separately; context is an
+    # interpretation aid, not proof that the customer's amount is correct.
+    assert state["route_decision"]["metadata"]["original_input"] == "é a de quatorze e noventa e nove"
+    assert state["route_decision"]["metadata"]["user_claims_are_evidence"] is False
+    assert runtime.calls == []  # confirmation is still mandatory
+    assert results[-1]["awaiting_confirmation"] is True
+
+class _PersistedContextFollowupLLM:
+    async def ainvoke(self, messages, **kwargs):
+        import json
+        prompt = messages[-1]["content"]
+        if kwargs.get("profile_name") == "transaction_parameter_extraction":
+            assert "Cobrança Tamboro Mensal no valor de R$ 14,99" in prompt
+            assert "previous_user_continuation_non_authoritative: é a de quatorze e noventa e nove" in prompt
+            assert "user_message: Tamboro" in prompt
+            pending = json.loads(prompt.split("pending_parameters: ", 1)[1].split("\n", 1)[0])
+            return {"content": json.dumps({name: (14.99 if name == "valor" else None) for name in pending})}
+        return {"content": "{}"}
+
+
+@pytest.mark.asyncio
+async def test_collecting_parameters_merges_partial_router_cache_with_persisted_reentry_context():
+    runtime = _ContextualReentryRuntime()
+    runtime.llm = _PersistedContextFollowupLLM()
+    state = {
+        "user_text": "Tamboro",
+        "sanitized_input": "Tamboro",
+        "route": "contestacao_agent",
+        "active_agent": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "route_decision": {
+            "route": "contestacao_agent",
+            "agent": "contestacao_agent",
+            "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+            "metadata": {
+                # Simulates router precedence extracting only the short entity
+                # mention on the follow-up turn.
+                "transaction_parameter_values": {"subject": "Tamboro Mensal"},
+                "transaction_parameter_source": "llm",
+            },
+        },
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["subject", "valor"],
+        "active_transaction": {
+            "transaction_id": "tx-context",
+            "tool_name": "contestar_cobranca",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "contas_contestation",
+            "requires": ["subject", "valor"],
+            "parameter_schema": {
+                "subject": {"type": "string", "description": "item concreto da fatura"},
+                "valor": {"type": "number", "description": "valor da cobrança"},
+            },
+            "tool_description": "Contesta cobrança validada",
+            "parameter_conversational_context": (
+                "user: tem uma cobrança aqui que eu não reconheço\n"
+                "assistant: Cobrança Tamboro Mensal no valor de R$ 14,99; "
+                "TIM Fashion Mensal no valor de R$ 10,00.\n"
+                "previous_user_continuation_non_authoritative: é a de quatorze e noventa e nove"
+            ),
+            "user_claims_are_evidence": False,
+        },
+        "selected_tool_call": {"tool_name": "contestar_cobranca", "arguments": {}},
+    }
+
+    results = await runtime.execute_tools_for_intent(state, tools=[])
+
+    assert results[-1]["transaction_status"] == "AWAITING_CONFIRMATION"
+    args = state["pending_tool_call"]["arguments"]
+    assert args["subject"] == "Tamboro Mensal"
+    assert args["valor"] == 14.99
+    assert state["active_transaction"]["parameter_conversational_context"].startswith("user: tem uma cobrança")
+    assert state["active_transaction"]["user_claims_are_evidence"] is False
+    assert runtime.calls == []
+
+class _CorrectionDuringCollectingLLM:
+    def __init__(self):
+        self.prompts = []
+
+    async def ainvoke(self, messages, **kwargs):
+        import json
+        prompt = messages[-1]["content"]
+        self.prompts.append(prompt)
+        if kwargs.get("profile_name") == "transaction_parameter_extraction":
+            pending = json.loads(prompt.split("pending_parameters: ", 1)[1].split("\n", 1)[0])
+            out = {name: None for name in pending}
+            # O router já resolveu subject a partir do contexto. O runtime ainda
+            # precisa permitir que a mensagem atual corrija um valor previamente
+            # coletado, mesmo que valor não esteja em missing_parameters.
+            if "valor" in out:
+                out["valor"] = 14.99
+            return {"content": json.dumps(out, ensure_ascii=False)}
+        return {"content": "{}"}
+
+
+@pytest.mark.asyncio
+async def test_collecting_parameters_current_turn_can_correct_already_collected_required_value():
+    runtime = _ContextualReentryRuntime()
+    runtime.llm = _CorrectionDuringCollectingLLM()
+    state = {
+        "user_text": "desculpa, é a de quatorze e noventa e nove",
+        "sanitized_input": "desculpa, é a de quatorze e noventa e nove",
+        "route": "contestacao_agent",
+        "active_agent": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "route_decision": {
+            "route": "contestacao_agent",
+            "agent": "contestacao_agent",
+            "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+            "metadata": {
+                "transaction_parameter_values": {"subject": "Tamboro Mensal"},
+                "transaction_parameter_source": "llm",
+            },
+        },
+        "transaction_status": "COLLECTING_PARAMETERS",
+        # Só subject está oficialmente pendente; valor=19.99 veio do turno anterior.
+        "missing_parameters": ["subject"],
+        "active_transaction": {
+            "transaction_id": "tx-correction",
+            "tool_name": "contestar_cobranca",
+            "arguments": {"valor": 19.99},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "contas_contestation",
+            "requires": ["subject", "valor"],
+            "parameter_schema": {
+                "subject": {"type": "string", "description": "item concreto da fatura"},
+                "valor": {"type": "number", "description": "valor da cobrança"},
+            },
+            "tool_description": "Contesta cobrança validada",
+        },
+        "selected_tool_call": {
+            "tool_name": "contestar_cobranca",
+            "arguments": {"valor": 19.99},
+        },
+    }
+
+    results = await runtime.execute_tools_for_intent(state, tools=[])
+
+    assert results[-1]["transaction_status"] == "AWAITING_CONFIRMATION"
+    args = state["pending_tool_call"]["arguments"]
+    assert args["subject"] == "Tamboro Mensal"
+    assert args["valor"] == 14.99
+    assert state["active_transaction"]["arguments"]["valor"] == 14.99
+    # O prompt de continuação deve deixar valor editável mesmo não estando faltante.
+    assert any('"valor"' in prompt for prompt in runtime.llm.prompts)
+    assert runtime.calls == []
+
+
+class _DomainRedirectRouter(_PreValidationRouter):
+    def resolve_execution_policy(self, tool_name, arguments=None):
+        if tool_name == "cancelar_vas_avulso":
+            return {
+                "operation_type": "transactional",
+                "require_confirmation": True,
+                "requires": ["subject"],
+                "policy_source": "test",
+                "pre_validation": {"enabled": True, "tool": "validar_vas_subject", "fail_open": False},
+            }
+        if tool_name == "tratar_vas_estrategico":
+            return {
+                "operation_type": "conversational",
+                "require_confirmation": False,
+                "requires": ["subject"],
+                "policy_source": "test",
+                "pre_validation": {"enabled": True, "tool": "validar_vas_subject", "fail_open": False},
+            }
+        return {"operation_type": "internal", "require_confirmation": False, "requires": [], "policy_source": "test", "pre_validation": {"enabled": False}}
+
+
+class _DomainRedirectRuntime(AgentRuntimeMixin):
+    def __init__(self):
+        self.tool_router = _DomainRedirectRouter()
+        self.calls = []
+
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append((tool_name, dict(arguments)))
+        if tool_name == "validar_vas_subject":
+            return {
+                "ok": True,
+                "tool_name": tool_name,
+                "result": {
+                    "eligible": True,
+                    "status": "ELIGIBLE",
+                    "resolved_subject": "Youtube Premium",
+                    "transaction_decision": {
+                        "resolved_arguments": {"subject": "Youtube Premium"},
+                        "target_tool": "tratar_vas_estrategico",
+                        "action_changed": True,
+                        "requires_reconfirmation": True,
+                        "confirmation_message": "Identifiquei o serviço Youtube Premium. Esse serviço possui tratamento específico. Você deseja prosseguir?",
+                    },
+                },
+            }
+        return {"ok": True, "tool_name": tool_name, "result": {"status": "DONE"}}
+
+
+@pytest.mark.asyncio
+async def test_prevalidation_can_canonicalize_arguments_and_redirect_domain_action_before_confirmation():
+    runtime = _DomainRedirectRuntime()
+    state = {
+        "user_text": "quero cancelar youtube",
+        "sanitized_input": "quero cancelar youtube",
+        "mcp_tools": ["cancelar_vas_avulso"],
+        "route": "contestacao_agent",
+        "intent": "contas_vas_cancel",
+        "context": {"tool_arguments": {"subject": "youtube"}},
+    }
+    result = await runtime.execute_tools_for_intent(state)
+    assert [name for name, _ in runtime.calls] == ["validar_vas_subject"]
+    assert result[-1]["awaiting_confirmation"] is True
+    assert state["pending_tool_call"]["tool_name"] == "tratar_vas_estrategico"
+    assert state["pending_tool_call"]["arguments"]["subject"] == "Youtube Premium"
+    assert state["active_transaction"]["tool_name"] == "tratar_vas_estrategico"
+    assert state["transaction_pre_validation"]["requested_arguments"]["subject"] == "youtube"
+    assert state["transaction_pre_validation"]["resolved_arguments"]["subject"] == "Youtube Premium"
+    assert runtime.transaction_confirmation_message(state).startswith("Identifiquei o serviço Youtube Premium")
+
+    state["user_text"] = "sim"
+    state["sanitized_input"] = "sim"
+    confirmed = await runtime.execute_tools_for_intent(state, tools=[])
+    assert runtime.calls[-1][0] == "tratar_vas_estrategico"
+    assert runtime.calls[-1][1]["subject"] == "Youtube Premium"
+    assert confirmed[-1]["ok"] is True
+
+@pytest.mark.asyncio
+async def test_runtime_reuses_semantic_confirmation_decision_from_router_metadata():
+    runtime = _Runtime()
+    state = {
+        "user_text": "Quero devolver o pedido 123 porque me arrependi",
+        "sanitized_input": "Quero devolver o pedido 123 porque me arrependi",
+        "mcp_tools": ["solicitar_devolucao"],
+        "route": "support_agent",
+        "intent": "retail_support_exchange_return",
+    }
+    await runtime.execute_tools_for_intent(state)
+    assert state["transaction_status"] == "AWAITING_CONFIRMATION"
+
+    state["user_text"] = "isso mesmo, pode confirmar"
+    state["sanitized_input"] = state["user_text"]
+    state["route_decision"] = {
+        "route": "support_agent",
+        "agent": "support_agent",
+        "intent": "state:WAITING_SUPPORT_CONFIRMATION",
+        "metadata": {
+            "transaction_turn_consumed": True,
+            "transaction_confirmation_decision": "confirm",
+            "transaction_confirmation_source": "semantic",
+        },
+    }
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+    assert state["transaction_status"] == "COMPLETED"
+    assert runtime.calls[-1][0] == "solicitar_devolucao"
+    assert runtime.calls[-1][1]["confirmed"] is True
+    assert result[-1]["ok"] is True

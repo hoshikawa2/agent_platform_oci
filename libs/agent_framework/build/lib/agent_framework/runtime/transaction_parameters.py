@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import json
 import logging
 import re
@@ -76,6 +78,7 @@ async def extract_transaction_parameters(
     known_arguments: Mapping[str, Any] | None = None,
     parameter_schema: Mapping[str, Any] | None = None,
     tool_description: str | None = None,
+    conversational_context: str | None = None,
 ) -> dict[str, Any]:
     """Extract values for pending transactional parameters using the LLM only.
 
@@ -114,14 +117,20 @@ async def extract_transaction_parameters(
         "3. Se nenhum parâmetro pendente foi realmente informado, devolva null para todos.\n"
         "4. Se houver apenas um parâmetro pendente, uma resposta contendo apenas um valor pode ser associada a ele quando isso for semanticamente inequívoco.\n"
         "5. Se houver vários parâmetros pendentes, extraia todos os que estiverem presentes no mesmo turno.\n"
-        "6. O nome do parâmetro não precisa aparecer literalmente na fala; use a semântica, o nome da transação e o schema para associar valores.\n"
-        "7. Em caso de dúvida, prefira null.\n"
-        "8. Responda SOMENTE JSON válido, sem markdown, sem explicação e sem chaves extras.\n\n"
+        "6. O nome do parâmetro não precisa aparecer literalmente na fala. Associe semanticamente o valor usando o nome da transação e os metadados disponíveis para cada campo.\n"
+        "7. Para cada parâmetro, considere o nome técnico, o tipo quando disponível e principalmente a descrição semântica quando disponível. A ausência de tipo ou descrição NÃO impede a extração.\n"
+        "8. Se a mensagem deixar clara a correspondência entre um trecho e um parâmetro, preencha-o mesmo que o usuário não cite o nome técnico do campo.\n"
+        "9. Não use conhecimento externo para completar valores ausentes e não transforme aproximações ou suposições em fatos.\n"
+        "10. conversational_context, quando presente, serve SOMENTE para resolver referências da mensagem atual (por exemplo: 'a de 14,99' apontando para um item citado imediatamente antes). Não trate texto do contexto como uma nova afirmação do cliente nem como evidência de negócio.\n"
+        "11. Quando a mensagem atual identifica um valor OU nome e o contexto imediatamente anterior contém uma única entidade compatível, você pode preencher essa entidade e os atributos pendentes inequivocamente associados a ela como CANDIDATOS. Exemplo genérico: se a fala identifica uma entidade e o contexto associa unicamente essa entidade a um valor requerido, o valor pode ser retornado como candidato. A validação autoritativa ocorrerá depois; não invente se houver ambiguidade.\n"
+        "12. Em caso de dúvida razoável sobre a correspondência ou o valor, prefira null.\n"
+        "13. Responda SOMENTE JSON válido, sem markdown, sem explicação e sem chaves extras.\n\n"
         f"transaction_tool: {tool_name}\n"
         f"transaction_description: {tool_description or ''}\n"
         f"pending_parameters: {json.dumps(pending, ensure_ascii=False)}\n"
         f"parameter_schema: {json.dumps(field_spec, ensure_ascii=False, default=str)}\n"
         f"known_arguments: {json.dumps(known, ensure_ascii=False, default=str)}\n"
+        f"conversational_context: {str(conversational_context or '').strip()}\n"
         f"user_message: {message}\n"
         f"Formato obrigatório: {json.dumps(output_shape, ensure_ascii=False)}"
     )
@@ -133,7 +142,6 @@ async def extract_transaction_parameters(
             component_name="transaction_parameter_extraction",
             generation_name="llm.transaction_parameter_extraction",
             temperature=0.0,
-            max_tokens=max(120, min(500, 80 + 60 * len(pending))),
         )
     except TypeError:
         # Compatibilidade com doubles/testes e providers mínimos que aceitam
@@ -149,13 +157,11 @@ async def extract_transaction_parameters(
         return {}
 
     raw = _response_text(response).strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
     try:
-        payload = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = parse_json_object(raw)
+    except (TypeError, ValueError):
         logger.warning(
-            "transaction.parameter.llm_invalid_json tool=%s pending=%s raw=%r",
+            "transaction.parameter.llm_invalid_structured_output tool=%s pending=%s raw=%r",
             tool_name,
             pending,
             raw[:240],

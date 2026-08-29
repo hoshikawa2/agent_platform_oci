@@ -12,6 +12,35 @@ router:
   confidence_threshold: 0.65
   allow_handoff: true
 
+  transaction_confirmation:
+    # Explicit yes/no stays deterministic. Only inconclusive replies use this LLM fallback.
+    semantic_fallback:
+      enabled: true
+      allowed_values: [SIM, NAO, CONTINUAR]
+      confirm_values: [SIM]
+      reject_values: [NAO]
+      continue_values: [CONTINUAR]
+      include_relevant_context: true
+      profile_name: router
+      prompt: |
+        Você classifica a resposta do cliente a uma confirmação transacional pendente.
+        Considere a pergunta pendente, somente o histórico recente relacionado ao mesmo tema e a fala atual.
+        Não execute a ação e não invente fatos.
+
+        Classes permitidas: {{ allowed_values }}
+        - SIM: confirmação/aceite inequívoco, inclusive equivalentes como "isso mesmo", "pode confirmar", "é isso" quando o contexto tornar o aceite claro.
+        - NAO: recusa/cancelamento inequívoco da ação pendente.
+        - CONTINUAR: qualquer resposta que não confirme nem rejeite inequivocamente, incluindo pergunta adicional, correção, novo dado, ambiguidade ou possível mudança de assunto.
+
+        Pergunta pendente:
+        {{ pending_prompt }}
+
+        Histórico relevante:
+        {{ relevant_conversation_context }}
+
+        Resposta atual do cliente:
+        {{ user_input }}
+
 state_policies:
   - state: WAITING_BILLING_CONFIRMATION
     agent: billing_agent

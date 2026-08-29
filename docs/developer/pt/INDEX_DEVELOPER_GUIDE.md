@@ -7,7 +7,7 @@ A documentação possui três níveis claros:
 
 1. **Tutorial principal:** [`README.md`](../../../README.md) — criação, configuração, execução e teste de um agente do início ao fim.
 2. **Arquitetura:** [01 — Arquitetura e Conceitos](./01_architecture_and_concepts.md) — componentes, responsabilidades e onde implementar cada coisa.
-3. **Referências especializadas:** manuais `02` a `11` — implementação profunda e troubleshooting por capacidade.
+3. **Referências especializadas:** manuais `02` a `12` — implementação profunda e troubleshooting por capacidade.
 
 Se você está começando um novo agente, comece pelo `README.md`.
 
@@ -32,6 +32,9 @@ Se algo não está funcionando, use **Buscar pelo problema** abaixo.
 | Recebo 401 entre gateway/backend/MCP | Basic Auth, credenciais por hop | [Gateways e Auth](./05_agent_gateway_mcp_gateway_and_auth.md) |
 | Preciso decidir se algo pertence ao framework ou ao agente | boundary core/agente | [Arquitetura e Conceitos](./01_architecture_and_concepts.md) |
 | Guardrail específico de um agente está quebrando outro | extensibilidade, imports de domínio no core | [Guardrails e Judges](./06_guardrails_judges_and_transaction_evaluation.md) |
+| Uma frase incompleta recebe mensagem genérica de “regra de segurança” | feedback de input guardrail, `COER`, blocked-turn state | [Feedback de Guardrails de Entrada](./12_input_guardrail_feedback_and_blocked_turns.md) |
+| `route=blocked` aparece junto com tools/resultados de outro turno | limpeza de estado do turno bloqueado | [Feedback de Guardrails de Entrada](./12_input_guardrail_feedback_and_blocked_turns.md) |
+| Workflow conclui e gera protocolo, mas a resposta final vira mensagem de segurança | `expected_protocols`, `CMP`, `DLEX_OUT`, ordem de `output_guardrails` | [Guardrails e Judges](./06_guardrails_judges_and_transaction_evaluation.md) |
 | Judge não roda em uma transação | sampling, `always_run_for_transactional`, sinais transacionais | [Guardrails e Judges](./06_guardrails_judges_and_transaction_evaluation.md) |
 | Groundedness está avaliando sem contexto correto | RAG context, MCP evidence, judge inputs | [RAG/Grounding](./07_rag_business_context_and_grounding.md) |
 | RAG não encontra conteúdo | provider, ingestão, embeddings, configuração | [RAG/Grounding](./07_rag_business_context_and_grounding.md) |
@@ -115,6 +118,12 @@ Se algo não está funcionando, use **Buscar pelo problema** abaixo.
 **O que é:** correlação, eventos, labels, sequence, persistência e diagnóstico.
 
 **Use quando:** for necessário provar o caminho executado ou diagnosticar produção.
+
+### [12 — Feedback de Guardrails de Entrada e Turnos Bloqueados](./12_input_guardrail_feedback_and_blocked_turns.md)
+
+**O que é:** tratamento público de bloqueios de input, limpeza do estado do turno e validação da mensagem gerada pelos guardrails de saída.
+
+**Use quando:** mensagens de bloqueio são genéricas, `COER` deveria pedir esclarecimento ou o metadata de um turno bloqueado contém routing/tools antigos.
 
 ### Tutorial principal
 

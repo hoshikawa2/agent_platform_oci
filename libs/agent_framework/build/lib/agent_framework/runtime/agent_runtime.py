@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent_framework.llm.structured_output import parse_json_object
+
 import hashlib
 import json
 import logging
@@ -11,6 +13,7 @@ from typing import Any, Iterable, Mapping
 
 from agent_framework.memory.summary_memory import MemoryContext, render_recent_messages
 from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
+from agent_framework.workflows.input_contract import match_expected_input
 
 
 logger = logging.getLogger(__name__)
@@ -344,6 +347,23 @@ class AgentRuntimeMixin:
         deduped = list(dict.fromkeys(queries))
         return required, "\n".join(deduped)
 
+    @classmethod
+    def _mcp_rag_sufficient(cls, mcp_results: list[dict[str, Any]]) -> bool:
+        """Retorna True somente quando o domínio declara que MCP basta para este turno.
+
+        Um tool result bem-sucedido não é, por si só, evidência de suficiência
+        semântica. Para pular retrieval, a tool/workflow deve declarar
+        ``rag_sufficient=true`` ou ``knowledge_sufficient=true`` em seu payload.
+        Isso evita que o framework conheça nomes de tools ou termos de negócio.
+        """
+        for item in mcp_results or []:
+            if not isinstance(item, dict) or not item.get("ok"):
+                continue
+            for mapping in cls._iter_mapping_values(item.get("result")):
+                if bool(mapping.get("rag_sufficient")) or bool(mapping.get("knowledge_sufficient")):
+                    return True
+        return False
+
 
     @classmethod
     def _mcp_llm_composition_directive(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, list[str]]:
@@ -372,20 +392,31 @@ class AgentRuntimeMixin:
 
     async def _retrieve_rag_context(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         rag_service = getattr(self, "rag_service", None)
-        if not rag_service:
-            return "", {"enabled": False}
         settings = getattr(self, "settings", None)
+        if not rag_service:
+            return "", {
+                "enabled": False,
+                "attempted": False,
+                "status": "no_service",
+                "reason": "rag_service_not_configured",
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
+            }
         mcp_results = state.get("mcp_results") or []
         requires_rag, rag_query_override = self._mcp_rag_directive(mcp_results)
+        explicit_mcp_sufficient = self._mcp_rag_sufficient(mcp_results)
         if (
             not requires_rag
             and bool(getattr(settings, "SKIP_RAG_WHEN_MCP_SUFFICIENT", True))
-            and any(r.get("ok") and r.get("result") for r in mcp_results)
+            and explicit_mcp_sufficient
         ):
-            text = str(state.get("sanitized_input") or state.get("user_text") or "").lower()
-            policy_terms = ("política", "politica", "regra", "prazo", "como funciona", "por que", "porque")
-            if not any(term in text for term in policy_terms):
-                return "", {"enabled": False, "skipped": True, "reason": "mcp_sufficient"}
+            return "", {
+                "enabled": False,
+                "skipped": True,
+                "reason": "mcp_explicitly_sufficient",
+                "required_by_tool": False,
+                "mcp_explicitly_sufficient": True,
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
+            }
         runtime = self.get_runtime_context(state)
         namespace = (
             (state.get("agent_profile") or {}).get("rag_namespace")
@@ -411,10 +442,13 @@ class AgentRuntimeMixin:
             # observabilidade e para decisões posteriores.
             return "", {
                 "enabled": False,
+                "attempted": True,
                 "failed": True,
                 "technical_error": True,
                 "technical_error_in_rag": True,
+                "status": "error",
                 "error": str(exc),
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
                 "namespace": namespace,
                 "query": rag_query,
                 "query_overridden_by_tool": bool(rag_query_override),
@@ -442,24 +476,41 @@ class AgentRuntimeMixin:
             if any(not bool(getattr(d, "allowed", True)) for d in decisions):
                 return "", {
                     "enabled": False,
+                    "attempted": True,
                     "blocked": True,
+                    "status": "blocked",
                     "reason": "retrieval_guardrail",
+                    "provider": result.metadata.get("provider") or getattr(settings, "RAG_PROVIDER", "standard"),
+                    "namespace": namespace,
+                    "query": rag_query,
+                    "document_count": len(result.documents),
                     "guardrails": retrieval_decisions,
                 }
             context = guarded_context
+        document_count = len(result.documents)
+        provider = result.metadata.get("provider") or getattr(settings, "RAG_PROVIDER", "standard")
+        status = "executed" if context and document_count else "empty"
         return context, {
             "enabled": True,
+            "attempted": True,
+            "status": status,
+            "provider": provider,
             "namespace": namespace,
             "query": rag_query,
             "query_overridden_by_tool": bool(rag_query_override),
             "required_by_tool": bool(requires_rag),
+            "mcp_explicitly_sufficient": explicit_mcp_sufficient,
             "latency_ms": result.latency_ms,
-            "document_count": len(result.documents),
+            "document_count": document_count,
             "graph_neighbors": len(result.graph_neighbors),
             "top_document_ids": [d.id for d in result.documents[:5]],
             "top_scores": [d.score for d in result.documents[:5]],
             "rewritten": result.metadata.get("rewritten"),
             "effective_query": result.query,
+            "confidence": result.metadata.get("confidence"),
+            "low_confidence": result.metadata.get("low_confidence"),
+            "fallback_reason": result.metadata.get("fallback_reason"),
+            "warnings": result.metadata.get("warnings") or [],
             "guardrails": retrieval_decisions,
         }
 
@@ -661,10 +712,8 @@ class AgentRuntimeMixin:
                         max_tokens=80,
                     )
                     raw = self._llm_response_text(response).strip()
-                    if raw.startswith("```"):
-                        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
-                    payload = json.loads(raw)
-                    value = payload.get(field_name) if isinstance(payload, dict) else None
+                    payload = parse_json_object(raw)
+                    value = payload.get(field_name)
                 except Exception as exc:
                     logger.warning(
                         "mcp.parameter.llm_extract_failed tool=%s field=%s error=%s",
@@ -752,13 +801,45 @@ class AgentRuntimeMixin:
         payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
         eligible = payload.get("eligible") if isinstance(payload, dict) else None
         if eligible is True:
+            # Generic domain-decision contract. A validator may canonicalize
+            # transaction arguments and may also decide that the canonical entity
+            # belongs to another domain-owned action/tool. The framework does not
+            # interpret business classes; it only applies the declarative decision.
+            decision = payload.get("transaction_decision") if isinstance(payload, dict) else None
+            decision = decision if isinstance(decision, dict) else {}
+            resolved_arguments = decision.get("resolved_arguments")
+            resolved_arguments = resolved_arguments if isinstance(resolved_arguments, dict) else {}
+            requested_arguments = dict(arguments or {})
+            for key, value in resolved_arguments.items():
+                if value not in (None, "", [], {}):
+                    arguments[str(key)] = value
+
+            effective_tool = str(decision.get("target_tool") or tool_name).strip() or tool_name
+            action_changed = bool(decision.get("action_changed")) or effective_tool != tool_name
+            requires_reconfirmation = bool(decision.get("requires_reconfirmation"))
+            confirmation_message = str(decision.get("confirmation_message") or "").strip()
+
             state["transaction_pre_validation"] = {
-                "tool_name": tool_name, "validator_tool": validator, "eligible": True, "result": result
+                "tool_name": tool_name,
+                "validator_tool": validator,
+                "eligible": True,
+                "result": result,
+                "requested_arguments": requested_arguments,
+                "resolved_arguments": dict(resolved_arguments),
+                "effective_tool_name": effective_tool,
+                "action_changed": action_changed,
+                "requires_reconfirmation": requires_reconfirmation,
+                "confirmation_message": confirmation_message or None,
             }
             if emit_events:
                 await self._emit_ic(
                     "IC.TRANSACTION_PREVALIDATION_PASSED", state,
-                    {"tool_name": tool_name, "validator_tool": validator},
+                    {
+                        "tool_name": tool_name,
+                        "validator_tool": validator,
+                        "effective_tool_name": effective_tool,
+                        "action_changed": action_changed,
+                    },
                     component="agent_runtime.tool_policy",
                 )
             return None
@@ -766,6 +847,55 @@ class AgentRuntimeMixin:
         if transport_failed and bool(cfg.get("fail_open")):
             return None
         status = str((payload or {}).get("status") or ("PREVALIDATION_ERROR" if transport_failed else "OUT_OF_SCOPE"))
+
+        # Generic recoverable validation contract. A domain validator may determine
+        # that one previously extracted parameter does not identify a valid entity
+        # and request that only this parameter be collected again. The framework
+        # does not know what the parameter means; it merely honors the declarative
+        # ``NEEDS_PARAMETER`` + ``parameter`` contract and preserves every other
+        # argument already collected in the transaction.
+        if status == "NEEDS_PARAMETER" and isinstance(payload, dict):
+            parameter = str(payload.get("parameter") or "").strip()
+            if parameter:
+                recovered_arguments = dict(arguments or {})
+                recovered_arguments.pop(parameter, None)
+                recovered_policy = self._resolve_tool_execution_policy(tool_name, recovered_arguments)
+                missing = self._missing_required_arguments(recovered_policy, recovered_arguments)
+                if parameter not in missing:
+                    missing = [parameter, *[name for name in missing if name != parameter]]
+                self._set_collecting_parameters(
+                    state,
+                    tool_name=tool_name,
+                    arguments=recovered_arguments,
+                    policy=recovered_policy,
+                    missing=missing,
+                )
+                state["transaction_pre_validation"] = {
+                    "tool_name": tool_name,
+                    "validator_tool": validator,
+                    "eligible": False,
+                    "status": status,
+                    "parameter": parameter,
+                    "terminal": False,
+                    "result": result,
+                }
+                if emit_events:
+                    await self._emit_ic(
+                        "IC.TRANSACTION_PREVALIDATION_PARAMETER_REJECTED",
+                        state,
+                        {"tool_name": tool_name, "validator_tool": validator, "parameter": parameter},
+                        component="agent_runtime.tool_policy",
+                    )
+                enriched = dict(result or {})
+                enriched.update({
+                    "pre_validation": True,
+                    "target_tool": tool_name,
+                    "collecting_parameters": True,
+                    "missing_parameters": missing,
+                    "transaction_status": "COLLECTING_PARAMETERS",
+                })
+                return enriched
+
         state["transaction_pre_validation"] = {
             "tool_name": tool_name,
             "validator_tool": validator,
@@ -794,6 +924,33 @@ class AgentRuntimeMixin:
         enriched["target_tool"] = tool_name
         enriched["transaction_status"] = "OUT_OF_SCOPE"
         return enriched
+
+    def _apply_prevalidated_transaction_decision(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        policy: dict[str, Any],
+    ) -> tuple[str, dict[str, Any], bool]:
+        """Apply a generic domain decision produced by transaction pre-validation.
+
+        The framework never derives domain semantics here. It only consumes the
+        validator contract: canonical arguments, effective target tool and whether
+        the resulting action needs explicit confirmation.
+        """
+        pv = state.get("transaction_pre_validation")
+        pv = pv if isinstance(pv, dict) and pv.get("eligible") is True else {}
+        effective_tool = str(pv.get("effective_tool_name") or tool_name).strip() or tool_name
+        effective_policy = policy
+        if effective_tool != tool_name:
+            effective_policy = self._resolve_tool_execution_policy(effective_tool, arguments)
+        force_confirmation = bool(pv.get("requires_reconfirmation"))
+        if pv.get("confirmation_message"):
+            state["transaction_confirmation_message_override"] = str(pv.get("confirmation_message"))
+        else:
+            state.pop("transaction_confirmation_message_override", None)
+        return effective_tool, effective_policy, force_confirmation
 
     def _validate_tool_execution_policy(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str | None]:
         """Aplica a mesma política central usada pelo MCPToolRouter."""
@@ -1241,13 +1398,58 @@ class AgentRuntimeMixin:
         return parse_transaction_confirmation(text)
 
     def _transaction_parameter_schema(self, tool_name: str, policy: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Return generic schema metadata for transactional required parameters."""
+        """Return schema metadata for transactional required parameters.
+
+        Backward compatibility is intentional:
+        - legacy ``args_schema: {field: string}`` remains valid;
+        - enriched ``args_schema`` entries may provide ``type``/``description``;
+        - when a legacy entry has no description, a declarative description from
+          ``mcp_parameter_mapping.yaml`` is used when available.
+
+        The framework never assigns domain meaning to a parameter name.  It only
+        forwards metadata declared by the agent so the generic LLM extractor can
+        interpret the user's wording more accurately.
+        """
         cfg = self._tool_config(tool_name)
         raw_schema = dict(getattr(cfg, "args_schema", {}) or {}) if cfg is not None else {}
         required = [str(name) for name in ((policy or {}).get("requires") or getattr(cfg, "requires", []) or [])]
-        if not required:
-            return raw_schema
-        return {name: raw_schema.get(name, "string") for name in required}
+
+        # Optional semantic metadata already declared by the agent for MCP
+        # extraction.  This is only a fallback; args_schema remains authoritative.
+        extract_rules: dict[str, dict[str, Any]] = {}
+        router = getattr(self, "tool_router", None)
+        if router is not None and hasattr(router, "parameter_extract_rules"):
+            try:
+                extract_rules = dict(router.parameter_extract_rules(tool_name) or {})
+            except Exception:
+                # Schema construction must never break legacy agents merely
+                # because optional descriptive metadata cannot be loaded.
+                extract_rules = {}
+
+        names = required or [str(name) for name in raw_schema.keys()]
+        normalized: dict[str, Any] = {}
+        for name in names:
+            raw = raw_schema.get(name, "string")
+            rule = extract_rules.get(name) if isinstance(extract_rules.get(name), dict) else {}
+            fallback_description = str((rule or {}).get("description") or "").strip() or None
+
+            if isinstance(raw, dict):
+                entry = dict(raw)
+                entry.setdefault("type", "string")
+                if not entry.get("description") and fallback_description:
+                    entry["description"] = fallback_description
+                normalized[name] = entry
+            elif fallback_description:
+                normalized[name] = {
+                    "type": raw or "string",
+                    "description": fallback_description,
+                }
+            else:
+                # Preserve the exact legacy representation when there is no
+                # additional metadata to contribute.
+                normalized[name] = raw or "string"
+
+        return normalized
 
     def _transaction_tool_description(self, tool_name: str) -> str:
         cfg = self._tool_config(tool_name)
@@ -1269,11 +1471,24 @@ class AgentRuntimeMixin:
         """
         route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
         cached = route_meta.get("transaction_parameter_values")
+        allowed = set(str(x) for x in missing_parameters)
+        reused: dict[str, Any] = {}
         if isinstance(cached, dict):
-            allowed = set(str(x) for x in missing_parameters)
             reused = {str(k): v for k, v in cached.items() if str(k) in allowed and v not in _EMPTY_VALUES}
-            if reused:
-                return reused
+
+        # Router-side extraction is an optimization, not an authoritative final
+        # extraction.  If it only filled a subset of the pending contract, keep
+        # those candidates and continue extracting the remaining fields instead
+        # of returning early.  This is especially important after contextual
+        # reentry, where a short follow-up may identify the entity while the
+        # bounded prior context carries an associated value that still requires
+        # domain pre-validation.
+        remaining_parameters = [
+            str(name) for name in missing_parameters
+            if str(name) not in reused
+        ]
+        if not remaining_parameters:
+            return reused
 
         active = self._active_transaction(state) or {}
         schema = active.get("parameter_schema") if isinstance(active.get("parameter_schema"), dict) else None
@@ -1281,16 +1496,45 @@ class AgentRuntimeMixin:
             policy = self._resolve_tool_execution_policy(tool_name, known_arguments or {})
             schema = self._transaction_parameter_schema(tool_name, policy)
         description = str(active.get("tool_description") or self._transaction_tool_description(tool_name) or "")
-        text = state.get("sanitized_input") or state.get("user_text") or ""
-        return await extract_transaction_parameters(
+        route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+        contextual_reentry = bool(route_meta.get("contextual_reentry"))
+        # In contextual reentry keep the current utterance separate from prior
+        # conversation. The prior context can resolve references, but remains
+        # non-authoritative and is never promoted to business evidence.
+        text = (
+            route_meta.get("original_input")
+            if contextual_reentry
+            else None
+        ) or state.get("sanitized_input") or state.get("user_text") or ""
+        conversational_context = (
+            route_meta.get("relevant_conversation_context")
+            if contextual_reentry
+            else None
+        )
+        # Once a contextual reentry opens a transaction, preserve only its
+        # bounded conversational context as an interpretation aid for subsequent
+        # COLLECTING_PARAMETERS turns.  It is explicitly non-authoritative: the
+        # domain pre-validation step must still prove every candidate against
+        # backend/MCP evidence before confirmation/execution.
+        if not str(conversational_context or "").strip():
+            conversational_context = active.get("parameter_conversational_context")
+        if contextual_reentry and not str(conversational_context or "").strip():
+            effective = str(route_meta.get("contextual_reentry_input") or "")
+            prefix = "CONTEXTO DA SOLICITAÇÃO IMEDIATAMENTE ANTERIOR:\n"
+            suffix = "\n\nCONTINUAÇÃO ATUAL DO CLIENTE:\n"
+            if prefix in effective and suffix in effective:
+                conversational_context = effective.split(prefix, 1)[1].split(suffix, 1)[0].strip()
+        extracted = await extract_transaction_parameters(
             getattr(self, "llm", None),
             text=str(text),
             tool_name=tool_name,
-            missing_parameters=list(missing_parameters or []),
-            known_arguments=known_arguments or {},
+            missing_parameters=remaining_parameters,
+            known_arguments={**dict(known_arguments or {}), **reused},
             parameter_schema=schema,
             tool_description=description,
+            conversational_context=str(conversational_context or ""),
         )
+        return {**reused, **extracted}
 
     def _transactional_action_match(self, text: str, tools: list[str] | None = None) -> str | None:
         """Detecta solicitação transacional usando metadados de tools.yaml.
@@ -1343,16 +1587,49 @@ class AgentRuntimeMixin:
         return f"WAITING_{self._agent_state_prefix(current)}_CONFIRMATION"
 
     @staticmethod
-    def _workflow_resume_decision(text: str) -> str:
+    def _workflow_resume_decision(text: str, pending: dict[str, Any] | None = None) -> str:
+        # Prefer the workflow's declarative input contract. This removes domain
+        # semantics from the framework: SIM/NAO, numeric choices or free text are
+        # interpreted only from ``expected_input`` persisted by the paused flow.
+        pause = (pending or {}).get("pause") if isinstance(pending, dict) else None
+        expected = pause.get("expected_input") if isinstance(pause, dict) else None
+        matched = match_expected_input(text, expected)
+        if matched is not None:
+            return matched
+
+        # Backward compatibility for old checkpoints that predate expected_input.
+        # This branch is intentionally limited to the previous generic yes/no
+        # behavior and is not used when the workflow provides a contract.
+        if isinstance(expected, dict):
+            return "OUTRO"
         normalized = " ".join((text or "").strip().lower().split())
         normalized = re.sub(r"[.!?]+$", "", normalized).strip()
         yes = {"sim", "s", "claro", "isso", "correto", "pode", "pode sim", "entendi", "conseguiu", "resolveu"}
-        no = {"não", "nao", "n", "não resolveu", "nao resolveu", "não entendi", "nao entendi", "não", "negativo"}
+        no = {"não", "nao", "n", "não resolveu", "nao resolveu", "não entendi", "nao entendi", "negativo"}
         if normalized in yes or normalized.startswith("sim "):
             return "SIM"
         if normalized in no or normalized.startswith("não ") or normalized.startswith("nao "):
             return "NAO"
         return "OUTRO"
+
+    @staticmethod
+    def _workflow_pause_descriptor(workflow: dict[str, Any]) -> dict[str, Any]:
+        """Recover the complete pause descriptor from a workflow result.
+
+        Runtime v2 exposes ``pause`` as a compact public summary, while the
+        LangGraph interrupt carries ``expected_input`` and ``resume_from``. Keep
+        both forms compatible without coupling this logic to a domain workflow.
+        """
+        descriptor = dict(workflow.get("pause") or {}) if isinstance(workflow.get("pause"), dict) else {}
+        state = workflow.get("state") if isinstance(workflow.get("state"), dict) else {}
+        interrupts = state.get("__interrupt__") if isinstance(state, dict) else None
+        if isinstance(interrupts, list) and interrupts:
+            first = interrupts[0]
+            value = first.get("value") if isinstance(first, dict) else None
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    descriptor.setdefault(key, item)
+        return descriptor
 
     @staticmethod
     def _workflow_payload_from_tool_result(result: dict[str, Any]) -> dict[str, Any] | None:
@@ -1379,12 +1656,34 @@ class AgentRuntimeMixin:
                 executed.append(workflow_name)
             state["business_workflows_executed"] = executed
         if workflow.get("status") != "PAUSED":
+            # Clearing must be materialized in the graph-state patch. ``pop``/absence
+            # is not enough with LangGraph state merging: an older latch can survive
+            # into the next turn and incorrectly resume a workflow that already
+            # completed. Only clear the currently owned execution (or an unlabeled
+            # legacy latch); never clear a different concurrently tracked workflow.
+            pending = state.get("pending_domain_workflow")
+            pending_execution = (pending or {}).get("execution_id") if isinstance(pending, dict) else None
+            workflow_execution = metadata.get("workflow_execution_id") or workflow.get("execution_id")
+            if not pending_execution or not workflow_execution or str(pending_execution) == str(workflow_execution):
+                state["pending_domain_workflow"] = None
+                if state.get("transaction_status") == "WORKFLOW_PAUSED":
+                    state["transaction_status"] = None
             return
         state["pending_domain_workflow"] = {
             "workflow_name": metadata.get("workflow_name") or workflow.get("workflow_name"),
             "execution_id": metadata.get("workflow_execution_id") or workflow.get("execution_id"),
             "resume_tool": metadata.get("resume_tool") or "retomar_workflow",
-            "pause": workflow.get("pause") or {},
+            "owner_agent": state.get("active_agent") or state.get("route"),
+            "owner_intent": state.get("intent"),
+            # Anchor the conversational context to the user turn that produced
+            # this exact pause. On a later pause/resume cycle this value is
+            # refreshed, preventing old same-intent topics from leaking into the
+            # next expected_input decision.
+            "context_anchor_message_id": (
+                (state.get("context") or {}).get("message_id")
+                or state.get("message_id")
+            ),
+            "pause": self._workflow_pause_descriptor(workflow),
         }
         state["transaction_status"] = "WORKFLOW_PAUSED"
 
@@ -1393,10 +1692,20 @@ class AgentRuntimeMixin:
         if not isinstance(pending, dict) or not pending.get("execution_id"):
             return None
         tool_name = str(pending.get("resume_tool") or "retomar_workflow")
+        route_metadata = (state.get("route_decision") or {}).get("metadata") or {}
+        routed_resume_value = (
+            route_metadata.get("normalized_input")
+            if route_metadata.get("workflow_resume")
+            else None
+        )
         arguments = {
             "workflow_name": pending.get("workflow_name"),
             "execution_id": pending.get("execution_id"),
-            "resposta_usuario": self._workflow_resume_decision(text),
+            "resposta_usuario": (
+                str(routed_resume_value)
+                if routed_resume_value is not None
+                else self._workflow_resume_decision(text, pending)
+            ),
         }
         result = await self._call_mcp_tool(tool_name, arguments, state)
         workflow = self._workflow_payload_from_tool_result(result)
@@ -1404,7 +1713,10 @@ class AgentRuntimeMixin:
         if workflow and workflow.get("status") == "PAUSED":
             pass
         else:
-            state.pop("pending_domain_workflow", None)
+            # Explicit tombstone: transaction_state_patch() must carry the clear
+            # through LangGraph's state merge. Removing the key locally would let
+            # the previous PAUSED latch remain durable in the graph state.
+            state["pending_domain_workflow"] = None
             if state.get("transaction_status") == "WORKFLOW_PAUSED":
                 state["transaction_status"] = None
         return result
@@ -1534,9 +1846,29 @@ class AgentRuntimeMixin:
         current = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
         txid = transaction_id or current.get("transaction_id") or str(uuid.uuid4())
         if str(current.get("tool_name") or "") != str(tool_name):
-            state["transaction_pre_validation"] = None
+            pre_validation = state.get("transaction_pre_validation")
+            pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
+            effective_prevalidated_tool = str(pre_validation.get("effective_tool_name") or "").strip()
+            # Preserve the validator decision when the active transaction is being
+            # moved to the exact tool selected by that decision. Any unrelated tool
+            # shift still invalidates stale pre-validation evidence.
+            if effective_prevalidated_tool != str(tool_name):
+                state["transaction_pre_validation"] = None
         cfg = self._tool_config(tool_name)
         policy = self._resolve_tool_execution_policy(tool_name, arguments or {})
+        route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+        parameter_context = current.get("parameter_conversational_context")
+        if route_meta.get("contextual_reentry"):
+            bounded = str(route_meta.get("relevant_conversation_context") or "").strip()
+            prior_claim = str(route_meta.get("original_input") or "").strip()
+            if bounded and prior_claim:
+                parameter_context = (
+                    bounded
+                    + "\nprevious_user_continuation_non_authoritative: "
+                    + prior_claim
+                )
+            else:
+                parameter_context = bounded or prior_claim or parameter_context
         tx = {
             "transaction_id": txid,
             "tool_name": tool_name,
@@ -1546,6 +1878,10 @@ class AgentRuntimeMixin:
             "requires": list(policy.get("requires") or getattr(cfg, "requires", []) or []),
             "parameter_schema": self._transaction_parameter_schema(tool_name, policy),
             "tool_description": self._transaction_tool_description(tool_name),
+            # Conversation context is only an interpretation aid.  Never expose
+            # it through transaction_evidence or treat user claims as proof.
+            "parameter_conversational_context": parameter_context or "",
+            "user_claims_are_evidence": False if parameter_context else current.get("user_claims_are_evidence", False),
         }
         state["active_transaction"] = tx
         return tx
@@ -1669,11 +2005,13 @@ class AgentRuntimeMixin:
         state["active_transaction"] = None
         state["selected_tool_call"] = {}
         state["pending_tool_call"] = {}
+        state["confirmation_snapshot"] = None
         state["missing_parameters"] = []
         state["confirmation_required"] = False
         state["confirmation_received"] = status == "COMPLETED"
         state["next_state"] = None
         state["transaction_status"] = status
+        state.pop("transaction_confirmation_message_override", None)
 
     def _normalize_transaction_lifecycle(self, state: dict[str, Any]) -> None:
         """Ensure closed transactions cannot leak into a later user turn."""
@@ -1695,28 +2033,99 @@ class AgentRuntimeMixin:
             state["active_transaction"] = None
             state["selected_tool_call"] = {}
             state["pending_tool_call"] = {}
+            state["confirmation_snapshot"] = None
             state["missing_parameters"] = []
             state["confirmation_required"] = False
             state["confirmation_received"] = False
             state["next_state"] = None
+            state.pop("transaction_confirmation_message_override", None)
             return
         if self._transaction_is_active(state):
             self._active_transaction(state)
+
+    def _freeze_confirmation_snapshot(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Freeze the exact tool call that the user is being asked to confirm.
+
+        Confirmation is a control boundary. Once the runtime exposes a confirmation
+        prompt, later turns must not re-extract/re-resolve arguments before execution.
+        The immutable snapshot is therefore the source of truth for an explicit
+        confirmation. The active transaction may continue carrying presentation/audit
+        metadata, but execution consumes this snapshot only.
+        """
+        active = self._active_transaction(state) or {}
+        snapshot = {
+            "transaction_id": active.get("transaction_id") or str(uuid.uuid4()),
+            "tool_name": str(tool_name or ""),
+            "arguments": dict(arguments or {}),
+            "started_from_intent": active.get("started_from_intent") or state.get("intent"),
+        }
+        state["confirmation_snapshot"] = snapshot
+        return snapshot
+
+    @staticmethod
+    def _confirmation_snapshot(state: dict[str, Any]) -> dict[str, Any] | None:
+        snapshot = state.get("confirmation_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot.get("tool_name"):
+            return None
+        return {
+            **snapshot,
+            "arguments": dict(snapshot.get("arguments") or {}),
+        }
+
+    def _transaction_user_prompt(
+        self,
+        state: dict[str, Any],
+        *,
+        parameter: str,
+    ) -> str:
+        """Render a user-facing prompt without exposing implementation names.
+
+        Domain semantics are declared by the agent in ``args_schema``. Supported
+        optional keys are ``user_prompt`` (preferred), ``label`` and ``description``.
+        Legacy schemas remain valid; when no semantic metadata exists the framework
+        uses a neutral prompt rather than leaking the technical parameter key.
+        """
+        active = self._active_transaction(state) or {}
+        schema = active.get("parameter_schema") if isinstance(active.get("parameter_schema"), dict) else {}
+        raw = schema.get(parameter)
+        entry = raw if isinstance(raw, dict) else {}
+        explicit = str(entry.get("user_prompt") or "").strip()
+        if explicit:
+            return explicit
+        label = str(entry.get("label") or "").strip()
+        if label:
+            return f"Para prosseguir, informe {label}."
+        description = str(entry.get("description") or "").strip()
+        if description:
+            # Descriptions can be long/extractor-oriented. Keep user output concise.
+            sentence = description.split(".", 1)[0].strip()
+            if sentence:
+                return f"Para prosseguir, informe {sentence[0].lower() + sentence[1:] if len(sentence) > 1 else sentence.lower()}."
+        return "Para prosseguir, preciso de mais uma informação para continuar com a solicitação."
 
     def transaction_state_patch(self, state: dict[str, Any]) -> dict[str, Any]:
         keys = (
             "available_mcp_tools", "selected_tool_call", "pending_tool_call",
             "transaction_status", "confirmation_required", "confirmation_received",
             "tool_policy_result", "missing_parameters", "next_state", "pending_domain_workflow", "pending_tool_clarification",
-            "business_workflows_executed", "active_transaction", "last_transaction",
+            "business_workflows_executed", "active_transaction", "last_transaction", "confirmation_snapshot",
             "transaction_evidence", "last_transaction_evidence", "relevant_transaction_evidence",
-            "transaction_pre_validation",
+            "transaction_pre_validation", "tool_terminal_result", "transaction_confirmation_message_override",
         )
         return {key: state.get(key) for key in keys if key in state}
 
 
     def transaction_clarification_message(self, state: dict[str, Any]) -> str | None:
         """Retorna pergunta determinística para parâmetros ou resultado ambíguo."""
+        workflow_reprompt = str(state.get("workflow_input_reprompt") or "").strip()
+        if workflow_reprompt:
+            return workflow_reprompt
         if state.get("transaction_status") == "TOOL_RESULT_CLARIFICATION":
             pending = state.get("pending_tool_clarification") or {}
             question = str(pending.get("question") or "Qual opção você quis dizer?").strip()
@@ -1729,17 +2138,10 @@ class AgentRuntimeMixin:
         missing = list(state.get("missing_parameters") or [])
         if not missing:
             return None
-        labels = {
-            "order_id": "o número do pedido",
-            "reason": "o motivo da solicitação",
-            "customer_id": "a identificação do cliente",
-        }
-        friendly = [labels.get(name, str(name).replace("_", " ")) for name in missing]
-        if len(friendly) == 1:
-            detail = friendly[0]
-        else:
-            detail = ", ".join(friendly[:-1]) + " e " + friendly[-1]
-        return f"Para prosseguir, informe {detail}."
+        # Ask one semantic question at a time. The LLM extractor can still consume
+        # multiple values when the user volunteers them in the same turn. This keeps
+        # the conversation natural and, critically, never exposes internal field names.
+        return self._transaction_user_prompt(state, parameter=str(missing[0]))
 
     @staticmethod
     def _missing_required_arguments(policy: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
@@ -1775,6 +2177,9 @@ class AgentRuntimeMixin:
     def transaction_confirmation_message(self, state: dict[str, Any]) -> str | None:
         if state.get("transaction_status") != "AWAITING_CONFIRMATION":
             return None
+        override = str(state.get("transaction_confirmation_message_override") or "").strip()
+        if override:
+            return override
         pending = state.get("pending_tool_call") or {}
         tool_name = pending.get("tool_name") or "a operação solicitada"
         args = pending.get("arguments") or {}
@@ -1999,12 +2404,148 @@ class AgentRuntimeMixin:
             return None
         return None
 
+    @staticmethod
+    def _terminal_tool_payload(tool_result: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Return an explicitly terminal application payload, if present.
+
+        The framework deliberately does not know domain status codes. A tool may
+        stop the current tool chain only by declaring ``terminal=true`` either
+        on the normalized result wrapper or on its application ``result`` body.
+        """
+        if not isinstance(tool_result, dict):
+            return None
+        nested = tool_result.get("result")
+        candidates = [nested, tool_result] if isinstance(nested, dict) else [tool_result]
+        for payload in candidates:
+            if isinstance(payload, dict) and payload.get("terminal") is True:
+                return payload
+        return None
+
+    def _apply_terminal_tool_result(self, state: dict[str, Any], tool_result: dict[str, Any]) -> None:
+        payload = self._terminal_tool_payload(tool_result) or {}
+        self._finish_active_transaction(state, "BLOCKED", result=tool_result)
+        state["tool_terminal_result"] = tool_result
+        state["tool_policy_result"] = {
+            "action": "terminal_tool_result",
+            "tool_name": tool_result.get("tool_name") or tool_result.get("tool"),
+            "reason": payload.get("reason") or tool_result.get("error"),
+            "terminal_action": payload.get("terminal_action") or "block",
+        }
+
+    def _terminal_workflow_payload(self, tool_result: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Return a terminal COMPLETED workflow payload using only generic signals.
+
+        Workflow terminality must take precedence over RAG/LLM composition. The
+        framework intentionally does not know workflow names or domain status
+        codes; it recognizes only structural terminal contracts.
+        """
+        if not isinstance(tool_result, dict):
+            return None
+        workflow = self._workflow_payload_from_tool_result(tool_result)
+        if not workflow or workflow.get("status") != "COMPLETED":
+            return None
+
+        candidates: list[dict[str, Any]] = [workflow]
+        state = workflow.get("state") if isinstance(workflow.get("state"), dict) else {}
+        outputs = workflow.get("output") if isinstance(workflow.get("output"), dict) else {}
+        terminal_node = str(state.get("current_node") or "").strip()
+        if terminal_node and isinstance(outputs.get(terminal_node), dict):
+            candidates.insert(0, outputs[terminal_node])
+
+        for payload in candidates:
+            session_control = str(payload.get("session_control") or "").strip().upper()
+            terminal_status = str(payload.get("terminal_status") or "").strip()
+            if (
+                payload.get("terminal") is True
+                or payload.get("session_ended") is True
+                or payload.get("handoff") is True
+                or bool(terminal_status)
+                or session_control in {"HUMAN_HANDOFF", "END_SESSION"}
+            ):
+                return payload
+        return None
+
+    def _final_workflow_response_payload(self, tool_result: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Return the final response payload of a COMPLETED workflow.
+
+        This contract is intentionally different from session terminality. A
+        workflow may finish its own response while keeping the user session open.
+        Domain nodes opt in with ``workflow_response_final=true``. This prevents
+        directives emitted by an earlier pause node (for example
+        ``requires_llm_composition``) from being replayed after the user has
+        already completed the workflow.
+        """
+        if not isinstance(tool_result, dict):
+            return None
+        workflow = self._workflow_payload_from_tool_result(tool_result)
+        if not workflow or workflow.get("status") != "COMPLETED":
+            return None
+        state = workflow.get("state") if isinstance(workflow.get("state"), dict) else {}
+        outputs = workflow.get("output") if isinstance(workflow.get("output"), dict) else {}
+        final_node = str(state.get("current_node") or "").strip()
+        candidates: list[dict[str, Any]] = []
+        if final_node and isinstance(outputs.get(final_node), dict):
+            candidates.append(outputs[final_node])
+        # Some workflow adapters promote the final node output to the workflow
+        # root. Support that generic shape as well.
+        candidates.append(workflow)
+        for payload in candidates:
+            if payload.get("workflow_response_final") is True:
+                return payload
+        return None
+
     def build_direct_mcp_answer(self, state: dict[str, Any], mcp_results: list[dict[str, Any]], *, agent_label: str) -> str | None:
-        """Resposta determinística para consultas estruturadas simples."""
+        """Retorna resposta MCP direta somente quando a aplicação declarar isso explicitamente.
+
+        Um resultado de tool não implica, por si só, que a pergunta do usuário foi
+        respondida. O core do framework não conhece nomes de tools nem formatos de
+        domínio. Para encerrar o fluxo antes de RAG/LLM, a configuração da tool deve
+        declarar ``response.direct: true`` e fornecer uma política de apresentação
+        válida. Sem essa declaração, o fluxo continua para retrieval/composição.
+        """
+        # Explicit terminal results own the turn regardless of normal response
+        # composition directives. A completed terminal workflow must therefore be
+        # checked BEFORE requires_rag/requires_llm_composition; otherwise an
+        # instruction emitted by an earlier workflow node can resurrect LLM
+        # composition after the workflow has already handed off/ended the session.
+        for item in mcp_results or []:
+            payload = self._terminal_tool_payload(item)
+            if payload:
+                message = str(payload.get("user_message") or payload.get("message") or payload.get("mensagem") or "").strip()
+                if message:
+                    return message
+
+            workflow_terminal = self._terminal_workflow_payload(item)
+            if workflow_terminal:
+                workflow = self._workflow_payload_from_tool_result(item) or {}
+                message = str(
+                    workflow_terminal.get("user_message")
+                    or workflow_terminal.get("message")
+                    or workflow_terminal.get("mensagem")
+                    or workflow.get("user_message")
+                    or workflow.get("message")
+                    or workflow.get("mensagem")
+                    or ""
+                ).strip()
+                if message:
+                    return message
+
+            workflow_final = self._final_workflow_response_payload(item)
+            if workflow_final:
+                message = str(
+                    workflow_final.get("user_message")
+                    or workflow_final.get("message")
+                    or workflow_final.get("mensagem")
+                    or ""
+                ).strip()
+                if message:
+                    return message
+
         requires_rag, _ = self._mcp_rag_directive(mcp_results)
         requires_llm_composition, _ = self._mcp_llm_composition_directive(mcp_results)
         if requires_rag or requires_llm_composition:
             return None
+
         ok = [r for r in mcp_results if r.get("ok") and isinstance(r.get("result"), dict)]
         for item in ok:
             workflow = self._workflow_payload_from_tool_result(item)
@@ -2014,11 +2555,18 @@ class AgentRuntimeMixin:
                 if prompt:
                     return str(prompt)
             if workflow and workflow.get("status") == "COMPLETED":
+                # A completed workflow is not automatically a direct answer. Only
+                # the terminal node may provide an explicit message. Searching
+                # backwards for any prior ``mensagem`` can replay a prompt emitted
+                # before a pause (e.g. the question the user has just answered) and
+                # suppress the normal LLM/orchestrator composition of terminal data.
                 nodes = workflow.get("output") if isinstance(workflow.get("output"), dict) else {}
-                # prefer last business message emitted by a workflow action
-                for value in reversed(list(nodes.values())):
-                    if isinstance(value, dict) and str(value.get("mensagem") or "").strip():
-                        return str(value["mensagem"]).strip()
+                workflow_state = workflow.get("state") if isinstance(workflow.get("state"), dict) else {}
+                terminal_node = str(workflow_state.get("current_node") or "").strip()
+                terminal_output = nodes.get(terminal_node) if terminal_node else None
+                if isinstance(terminal_output, dict) and str(terminal_output.get("mensagem") or "").strip():
+                    return str(terminal_output["mensagem"]).strip()
+
         text = state.get("sanitized_input") or state.get("user_text") or ""
         if (
             len(ok) != 1
@@ -2026,30 +2574,79 @@ class AgentRuntimeMixin:
             or self._transactional_action_match(str(text)) is not None
         ):
             return None
+
         tool = ok[0].get("tool_name")
         data = ok[0]["result"]
+        router = getattr(self, "tool_router", None)
+        registry = getattr(router, "registry", None)
+        cfg = registry.get_tool(str(tool)) if registry and tool else None
+        policy = dict(getattr(cfg, "response", None) or {}) if cfg else {}
 
-        # Primeiro tenta o contrato genérico e declarativo de apresentação.
-        # Se a aplicação não o configurou, preserva exatamente o fallback legado
-        # abaixo para não quebrar projetos existentes.
-        declared = self._render_declared_tool_response(tool, data, agent_label=agent_label, state=state)
-        if declared is not None:
-            return declared
+        # Importante: renderer/template descreve COMO apresentar uma resposta;
+        # somente ``direct: true`` declara que ela é semanticamente suficiente
+        # para encerrar o turno antes de RAG/LLM.
+        if not bool(policy.get("direct", False)):
+            return None
 
-        if tool == "consultar_pedido":
-            oid=data.get("order_id"); status=data.get("status"); total=data.get("valor_total")
-            lines=[f"[{agent_label}] Pedido {oid}: status {status}."]
-            if total is not None: lines.append(f"Valor total: R$ {float(total):.2f}.".replace('.', ','))
-            items=data.get("itens") or []
-            if items: lines.append("Itens: " + "; ".join(str(i.get("descricao") or i.get("nome") or i.get("sku")) for i in items) + ".")
-            return " ".join(lines)
-        if tool == "consultar_entrega":
-            return f"[{agent_label}] Entrega do pedido {data.get('order_id')}: transportadora {data.get('transportadora')}, rastreio {data.get('codigo_rastreio')}, previsão {data.get('previsao_entrega')}."
-        if tool == "consultar_plano":
-            return f"[{agent_label}] Seu plano é {data.get('plano')}, com {data.get('internet_gb')} GB e status {data.get('status')}."
-        if tool == "consultar_fatura":
-            return f"[{agent_label}] Fatura consultada: {data}."
-        return None
+        return self._render_declared_tool_response(tool, data, agent_label=agent_label, state=state)
+
+    def _clear_active_interaction_context_on_route_shift(self, state: dict[str, Any]) -> bool:
+        """Invalidate active conversational latches when routing leaves their owner.
+
+        This is deliberately generic.  It compares the current route decision with
+        the owner recorded by a paused workflow; it does not inspect domain, tool,
+        workflow or intent names.  Durable checkpoints/history remain intact.
+        """
+        pending_workflow = state.get("pending_domain_workflow")
+        if not isinstance(pending_workflow, dict) or not pending_workflow.get("execution_id"):
+            return False
+
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        route_metadata = route_decision.get("metadata") if isinstance(route_decision.get("metadata"), dict) else {}
+        if route_metadata.get("workflow_resume"):
+            return False
+
+        current_intent = str(route_decision.get("intent") or state.get("intent") or "").strip()
+        current_agent = str(route_decision.get("agent") or route_decision.get("route") or state.get("route") or "").strip()
+        owner_intent = str(pending_workflow.get("owner_intent") or "").strip()
+        owner_agent = str(pending_workflow.get("owner_agent") or "").strip()
+
+        intent_changed = bool(owner_intent and current_intent and owner_intent != current_intent)
+        agent_changed = bool(owner_agent and current_agent and owner_agent != current_agent)
+        if not (intent_changed or agent_changed):
+            return False
+
+        state["last_interrupted_domain_workflow"] = {
+            **pending_workflow,
+            "status": "CANCELLED",
+            "reason": "intent_shift",
+        }
+        state["pending_domain_workflow"] = None
+
+        # The active interaction owns all operational latches, not the durable
+        # audit trail. Clear only live state so a new semantic route starts clean.
+        active_tx = self._active_transaction(state)
+        if isinstance(active_tx, dict) and active_tx.get("tool_name"):
+            self._finish_active_transaction(state, "CANCELLED")
+        else:
+            state["active_transaction"] = None
+            state["selected_tool_call"] = {}
+            state["pending_tool_call"] = {}
+            state["missing_parameters"] = []
+            state["confirmation_required"] = False
+            state["confirmation_received"] = False
+            state["next_state"] = None
+
+        if state.get("transaction_status") in {"WORKFLOW_PAUSED", "COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION", "CANCELLED"}:
+            state["transaction_status"] = None
+        state["transaction_pre_validation"] = None
+        state["pending_tool_clarification"] = None
+        state["tool_policy_result"] = {
+            "action": "cleared_by_intent_shift",
+            "workflow_execution_id": pending_workflow.get("execution_id"),
+        }
+        state["mcp_results"] = []
+        return True
 
     async def execute_tools_for_intent(
         self,
@@ -2069,7 +2666,12 @@ class AgentRuntimeMixin:
         results: list[dict[str, Any]] = []
         available_tools = list(tools if tools is not None else (state.get("mcp_tools") or []))
         state["available_mcp_tools"] = available_tools
-        text = state.get("sanitized_input") or state.get("user_text") or ""
+        route_meta = (state.get("route_decision") or {}).get("metadata") or {}
+        text = (
+            route_meta.get("contextual_reentry_input")
+            if route_meta.get("contextual_reentry")
+            else None
+        ) or state.get("sanitized_input") or state.get("user_text") or ""
         self._normalize_transaction_lifecycle(state)
 
         # Uma transação em coleta/confirmação não pode aprisionar a sessão. O
@@ -2077,7 +2679,6 @@ class AgentRuntimeMixin:
         # Não existe interpretação lexical de desistência no runtime: mudou a
         # intent, a transação anterior é encerrada e seus latches são limpos.
         active_before_interruption = self._active_transaction(state)
-        route_meta = (state.get("route_decision") or {}).get("metadata") or {}
         interruption = str(route_meta.get("transaction_interruption") or "").strip().lower()
         if active_before_interruption and interruption == "intent_shift":
             interrupted_tool = active_before_interruption.get("tool_name")
@@ -2088,6 +2689,8 @@ class AgentRuntimeMixin:
                 "tool_name": interrupted_tool,
             }
 
+        self._clear_active_interaction_context_on_route_shift(state)
+
         # Clarificação de resultado de tool tem precedência: reutiliza a mesma tool
         # e argumentos, alterando apenas o parâmetro escolhido pelo usuário.
         if state.get("pending_tool_clarification"):
@@ -2096,6 +2699,13 @@ class AgentRuntimeMixin:
 
         # Workflows conversacionais pausados têm precedência sobre novo roteamento/tool selection.
         # O domínio informa apenas workflow/execution_id; a retomada é uma capability genérica.
+        # Invalid enumerated replies remain owned by the paused workflow and are
+        # answered with a declarative reprompt; the resume tool is not called.
+        if route_meta.get("workflow_input_invalid") and state.get("pending_domain_workflow"):
+            state["workflow_input_reprompt"] = str(route_meta.get("workflow_reprompt") or "").strip()
+            state["transaction_status"] = "WORKFLOW_PAUSED"
+            return []
+        state["workflow_input_reprompt"] = None
         if state.get("pending_domain_workflow"):
             resumed = await self._resume_pending_domain_workflow(state, str(text))
             return [resumed] if resumed else []
@@ -2110,13 +2720,19 @@ class AgentRuntimeMixin:
                 missing_before = self._missing_required_arguments(policy, previous_args)
 
                 # Parâmetros TRANSACIONAIS são interpretados exclusivamente pelo
-                # extrator LLM genérico. Não existem regexes/nome de entidade
-                # hardcoded no framework. O extrator recebe apenas os parâmetros
-                # ainda pendentes da policy e pode consumir um ou vários no turno.
+                # extrator LLM genérico. Durante COLLECTING_PARAMETERS, a fala atual
+                # também pode CORRIGIR um required field já coletado em turno anterior
+                # (ex.: valor=19,99 e o cliente diz "desculpa, é 14,99" enquanto
+                # subject ainda está pendente). Por isso o contrato editável do turno
+                # é o conjunto completo de ``requires``; somente as chaves realmente
+                # extraídas pela LLM sobrescrevem ``previous_args``. Campos não citados
+                # permanecem intactos. Isso preserva parameter-before-intent-shift sem
+                # tornar valores antigos imutáveis por acidente.
+                editable_required = [str(name) for name in (policy.get("requires") or [])]
                 extracted = await self._extract_transaction_parameters(
                     state,
                     tool_name=tool_name,
-                    missing_parameters=missing_before,
+                    missing_parameters=editable_required,
                     known_arguments=previous_args,
                 )
                 arguments = {**previous_args, **extracted}
@@ -2168,7 +2784,13 @@ class AgentRuntimeMixin:
                 if pre_validation_result is not None:
                     return [pre_validation_result]
 
-                if policy.get("require_confirmation"):
+                tool_name, policy, force_confirmation = self._apply_prevalidated_transaction_decision(
+                    state, tool_name=tool_name, arguments=arguments, policy=policy
+                )
+                selected = {"tool_name": tool_name, "arguments": arguments}
+                state["selected_tool_call"] = selected
+
+                if policy.get("require_confirmation") or force_confirmation:
                     waiting_state = self._waiting_state_name(state)
                     state.update({
                         "pending_tool_call": selected,
@@ -2180,6 +2802,9 @@ class AgentRuntimeMixin:
                     })
                     self._set_active_transaction(
                         state, tool_name=tool_name, arguments=arguments, status="AWAITING_CONFIRMATION"
+                    )
+                    self._freeze_confirmation_snapshot(
+                        state, tool_name=tool_name, arguments=arguments
                     )
                     return [{
                         "ok": True,
@@ -2194,7 +2819,7 @@ class AgentRuntimeMixin:
                 result = await self._call_mcp_tool(tool_name, arguments, state)
                 self._capture_pending_domain_workflow(state, result)
                 self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
-                final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
+                final_status = ("BLOCKED" if self._terminal_tool_payload(result) else ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))))
                 if final_status in _TERMINAL_TRANSACTION_STATUSES:
                     self._finish_active_transaction(state, final_status, result=result)
                 else:
@@ -2211,9 +2836,13 @@ class AgentRuntimeMixin:
                 return [result]
 
         active_tx = self._active_transaction(state)
-        pending = (active_tx if isinstance(active_tx, dict) and active_tx.get("status") == "AWAITING_CONFIRMATION" else state.get("pending_tool_call")) or {}
+        frozen_confirmation = self._confirmation_snapshot(state)
+        pending = frozen_confirmation or (active_tx if isinstance(active_tx, dict) and active_tx.get("status") == "AWAITING_CONFIRMATION" else state.get("pending_tool_call")) or {}
         if pending:
-            decision = self._confirmation_decision(text)
+            route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+            routed_decision = str(route_meta.get("transaction_confirmation_decision") or "").strip().lower()
+            routed_consumed = bool(route_meta.get("transaction_turn_consumed"))
+            decision = routed_decision if routed_consumed and routed_decision in {"confirm", "reject"} else self._confirmation_decision(text)
             if decision == "reject":
                 state["tool_policy_result"] = {"action": "cancelled", "tool_name": pending.get("tool_name")}
                 self._finish_active_transaction(state, "CANCELLED")
@@ -2226,7 +2855,7 @@ class AgentRuntimeMixin:
                 result = await self._call_mcp_tool(tool_name, arguments, state)
                 self._capture_pending_domain_workflow(state, result)
                 self._capture_pending_tool_clarification(state, result, tool_name=tool_name, arguments=arguments)
-                final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
+                final_status = ("BLOCKED" if self._terminal_tool_payload(result) else ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))))
                 state["tool_policy_result"] = {"action": "executed_after_confirmation", "tool_name": tool_name}
                 if final_status in _TERMINAL_TRANSACTION_STATUSES:
                     self._finish_active_transaction(state, final_status, result=result)
@@ -2246,6 +2875,12 @@ class AgentRuntimeMixin:
             self._set_active_transaction(
                 state, tool_name=str(pending.get("tool_name") or ""), arguments=dict(pending.get("arguments") or {}), status="AWAITING_CONFIRMATION"
             )
+            if self._confirmation_snapshot(state) is None:
+                self._freeze_confirmation_snapshot(
+                    state,
+                    tool_name=str(pending.get("tool_name") or ""),
+                    arguments=dict(pending.get("arguments") or {}),
+                )
             return [{"ok": False, "tool_name": pending.get("tool_name"), "awaiting_confirmation": True, "transaction_status": "AWAITING_CONFIRMATION"}]
 
         read_only_tools = [
@@ -2268,6 +2903,16 @@ class AgentRuntimeMixin:
             self._capture_pending_domain_workflow(state, result)
             self._capture_pending_tool_clarification(state, result, tool_name=tool, arguments=args)
             results.append(result)
+            if self._terminal_tool_payload(result):
+                self._apply_terminal_tool_result(state, result)
+                if emit_events:
+                    await self._emit_ic(
+                        "IC.TOOL_CHAIN_TERMINATED",
+                        state,
+                        {"tool_name": tool, "reason": (self._terminal_tool_payload(result) or {}).get("reason")},
+                        component="agent_runtime.tool_policy",
+                    )
+                return results
             if emit_events:
                 await self._emit_ic(
                     "IC.TOOL_CALLED",
@@ -2371,7 +3016,13 @@ class AgentRuntimeMixin:
             results.append(pre_validation_result)
             return results
 
-        if policy.get("require_confirmation"):
+        selected_action, policy, force_confirmation = self._apply_prevalidated_transaction_decision(
+            state, tool_name=selected_action, arguments=action_args, policy=policy
+        )
+        selected = {"tool_name": selected_action, "arguments": action_args}
+        state["selected_tool_call"] = selected
+
+        if policy.get("require_confirmation") or force_confirmation:
             state.update({
                 "pending_tool_call": selected,
                 "transaction_status": "AWAITING_CONFIRMATION",
@@ -2380,6 +3031,9 @@ class AgentRuntimeMixin:
             })
             self._set_active_transaction(
                 state, tool_name=selected_action, arguments=action_args, status="AWAITING_CONFIRMATION"
+            )
+            self._freeze_confirmation_snapshot(
+                state, tool_name=selected_action, arguments=action_args
             )
             state["next_state"] = self._waiting_state_name(state)
             if emit_events:
@@ -2390,7 +3044,7 @@ class AgentRuntimeMixin:
         action_args["confirmed"] = True
         result = await self._call_mcp_tool(selected_action, action_args, state)
         self._capture_pending_domain_workflow(state, result)
-        final_status = ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED")))
+        final_status = ("BLOCKED" if self._terminal_tool_payload(result) else ("WORKFLOW_PAUSED" if state.get("pending_domain_workflow") else ("TOOL_RESULT_CLARIFICATION" if state.get("pending_tool_clarification") else ("COMPLETED" if result.get("ok") else "FAILED"))))
         if final_status in _TERMINAL_TRANSACTION_STATUSES:
             self._finish_active_transaction(state, final_status, result=result)
         else:
@@ -2573,9 +3227,21 @@ class AgentRuntimeMixin:
                 f"(persistidas pelo framework, não inferidas pela memória conversacional):\n{transaction_evidence}"
             )
         if rag_context is not None:
-            sections.append(f"Contexto RAG nativo do framework:\n{rag_context or '[sem contexto RAG]'}")
+            sections.append(f"Contexto de conhecimento (RAG):\n{rag_context or '[sem contexto RAG]'}")
         if rag_metadata is not None:
             sections.append(f"Metadados RAG:\n{rag_metadata}")
+            provider = str(rag_metadata.get("provider") or getattr(getattr(self, "settings", None), "RAG_PROVIDER", "standard"))
+            grounded_only = bool(getattr(getattr(self, "settings", None), "RAG_GROUNDED_ONLY", False))
+            if provider == "kbdb":
+                grounded_only = bool(getattr(getattr(self, "settings", None), "KBDB_GROUNDED_ONLY", True))
+            if grounded_only:
+                sections.append(
+                    "Política de grounding obrigatória:\n"
+                    "- Use como fatos somente evidências presentes nos resultados MCP, no contexto RAG e no business context fornecido.\n"
+                    "- Não complete lacunas usando conhecimento paramétrico do modelo, memória geral ou suposições.\n"
+                    "- Se a informação pedida não estiver sustentada pelas evidências disponíveis, diga explicitamente que não há informação suficiente na base consultada.\n"
+                    "- Se o RAG estiver vazio, bloqueado ou com erro, ainda é permitido responder apenas a partes comprovadas por MCP/business context; não invente a parte documental ausente."
+                )
         for title, value in (extra_sections or {}).items():
             sections.append(f"{title}:\n{value}")
         return MessageBuilder(state).system(system_prompt).user("\n\n".join(sections)).build()

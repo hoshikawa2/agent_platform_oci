@@ -13,42 +13,7 @@ def _money_brl(value: Any) -> str:
 
 
 def render_telecom_invoice(*, tool_name: str, result: dict[str, Any], state: dict[str, Any], agent_label: str) -> str | None:
-    """Renderiza somente campos de negócio seguros da fatura.
-
-    Identificadores técnicos/PII presentes no payload MCP (por exemplo msisdn,
-    customer_id, document e business keys) não devem ser propagados ao usuário.
-    """
-    lines = [f"[{agent_label}] Dados da sua fatura:"]
-    total = result.get("valor_total")
-    vencimento = result.get("vencimento")
-    status = result.get("status")
-    if total is not None:
-        lines.append(f"Valor total: R$ {_money_brl(total)}.")
-    if vencimento not in (None, ""):
-        lines.append(f"Vencimento: {vencimento}.")
-    if status not in (None, ""):
-        lines.append(f"Situação: {status}.")
-
-    items = result.get("itens") or []
-    rendered_items: list[str] = []
-    if isinstance(items, list):
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            description = item.get("descricao") or item.get("nome")
-            value = item.get("valor")
-            if description in (None, ""):
-                continue
-            if value is None:
-                rendered_items.append(str(description))
-            else:
-                rendered_items.append(f"{description}: R$ {_money_brl(value)}")
-    if rendered_items:
-        lines.append("Itens: " + "; ".join(rendered_items) + ".")
-
-    # Se não houver nenhum campo de negócio seguro além do cabeçalho, deixe a
-    # composição pela LLM/guardrails em vez de despejar o payload bruto.
-    return " ".join(lines) if len(lines) > 1 else None
+    return f"[{agent_label}] Fatura consultada: {result}."
 
 
 def render_telecom_plan(*, tool_name: str, result: dict[str, Any], state: dict[str, Any], agent_label: str) -> str | None:

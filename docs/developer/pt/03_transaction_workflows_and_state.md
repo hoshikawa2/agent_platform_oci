@@ -558,3 +558,136 @@ Os arquivos abaixo foram consolidados neste manual:
 ### Regra de manutenção
 
 Novas correções ou evoluções deste tema devem atualizar este documento consolidado. Release notes podem continuar existindo como histórico, mas não devem ser necessárias para compreender ou implementar a funcionalidade.
+
+
+## Resolução canônica e revalidação de domínio antes da execução
+
+Quando uma pré-validação resolve uma referência do usuário para uma entidade canônica, o framework **não deve simplesmente sobrescrever o parâmetro e executar a tool originalmente escolhida**. O contrato separa três valores:
+
+```text
+requested_subject = "youtube"
+resolved_subject  = "Youtube Premium"
+execution_subject = "Youtube Premium"
+```
+
+O validador de domínio pode devolver `transaction_decision` com:
+
+```json
+{
+  "resolved_arguments": {"subject": "Youtube Premium"},
+  "target_tool": "tratar_vas_estrategico",
+  "action_changed": true,
+  "requires_reconfirmation": true,
+  "confirmation_message": "Identifiquei o serviço Youtube Premium. Esse serviço possui tratamento específico. Você deseja prosseguir?"
+}
+```
+
+Responsabilidades:
+
+- **Framework:** preserva argumentos solicitados, aplica apenas os argumentos canônicos declarados pelo validador, atualiza a transação para a `target_tool`, respeita `requires_reconfirmation` e mantém a decisão na evidência de pré-validação.
+- **Agente/domínio:** decide classe, política e tool efetiva. O framework não conhece regras como “Youtube Premium é estratégico”.
+- **MCP/backend:** executa a operação final já decidida pelo domínio.
+
+Se a canonicalização não alterar a ação (`Tamboro` → `Tamboro Mensal`, por exemplo), a tool pode permanecer a mesma. Se a resolução alterar classe/política/tool, a decisão de domínio precisa ocorrer **antes da confirmação e da execução**. Em caso de ambiguidade ou baixa confiança, o validador deve pedir nova coleta/clarificação em vez de promover silenciosamente um candidato.
+
+### Troubleshooting: resolved_subject correto, mas tool recebe o texto original
+
+Sintoma: a pré-validação registra `resolved_subject="Youtube Premium"`, porém a execução ainda recebe `subject="youtube"`. Verifique se o validador retorna `transaction_decision.resolved_arguments` e se o runtime aplicou a decisão antes de congelar `pending_tool_call`/`confirmation_snapshot`.
+
+Sintoma: a entidade foi resolvida corretamente, mas a tool final continua inadequada. Verifique `transaction_decision.target_tool`; a reclassificação de domínio pertence ao agente/validador, não ao framework.
+
+Para domínios que possuem uma classificação autoritativa no detalhe do backend, a revalidação deve usar essa evidência antes de categorias agregadas. No Contas, por exemplo, `invoice_detail.parsed_content` preserva `classe=avulso|estrategico|bundle`; `billing_analysis` pode agrupar o mesmo item em seções mais amplas como `streaming` ou serviços de parceiros. A entidade canônica pode ser descoberta por qualquer evidência autorizada, mas a **decisão de negócio** deve priorizar a fonte que preserva a classificação de domínio. Se houver conflito de classificação, não troque a ação silenciosamente: mantenha a operação original ou peça esclarecimento conforme a política do agente.
+
+
+## Confirmação transacional semântica: SIM / NAO / CONTINUAR
+
+Transações em `AWAITING_CONFIRMATION` usam duas camadas, nesta ordem:
+
+1. **Parser determinístico** para confirmações/recusas explícitas (`sim`, `não`, `confirmo`, `pode fazer`, etc.). Esse caminho continua sendo o mais barato, rápido e seguro e **não chama LLM**.
+2. **Fallback semântico por LLM** somente quando o parser determinístico retorna inconclusivo. O fallback reutiliza o mesmo mecanismo declarativo de `expected_input.semantic_classifier` dos workflows pausados e injeta a pergunta pendente, o histórico recente relacionado ao mesmo tema e a fala atual.
+
+A configuração fica em `config/routing.yaml`, sob `router.transaction_confirmation.semantic_fallback`:
+
+```yaml
+router:
+  transaction_confirmation:
+    semantic_fallback:
+      enabled: true
+      allowed_values: [SIM, NAO, CONTINUAR]
+      confirm_values: [SIM]
+      reject_values: [NAO]
+      continue_values: [CONTINUAR]
+      include_relevant_context: true
+      profile_name: router
+      prompt: |
+        Classes permitidas: {{ allowed_values }}
+        Pergunta pendente:
+        {{ pending_prompt }}
+        Histórico relevante:
+        {{ relevant_conversation_context }}
+        Resposta atual:
+        {{ user_input }}
+```
+
+### Significado das classes
+
+- `SIM`: aceite inequívoco da ação pendente. Exemplos: `isso mesmo, pode confirmar`, `é isso`, `pode seguir`, quando o contexto torna o aceite claro.
+- `NAO`: recusa inequívoca da ação pendente. Exemplos: `melhor não`, `não quero mais`, `cancela isso`.
+- `CONTINUAR`: a fala não confirma nem rejeita de forma inequívoca. Exemplos: pergunta adicional, correção de parâmetro, informação nova, ambiguidade ou possível mudança de assunto. Nesse caso a tool não é executada por confirmação.
+
+### Exemplo
+
+Contexto:
+
+```text
+Cliente: quero cancelar o Tamboro Mensal
+Agente: Você confirma o cancelamento do serviço Tamboro Mensal?
+Cliente: isso mesmo, pode confirmar
+```
+
+O parser determinístico não precisa conhecer literalmente `isso mesmo, pode confirmar`. O fallback recebe:
+
+```text
+pending_prompt = "Você confirma o cancelamento do serviço Tamboro Mensal?"
+relevant_conversation_context = histórico recente do mesmo fluxo
+user_input = "isso mesmo, pode confirmar"
+```
+
+e deve retornar apenas:
+
+```text
+SIM
+```
+
+O router então publica em `route_decision.metadata`:
+
+```json
+{
+  "transaction_turn_consumed": true,
+  "transaction_confirmation_decision": "confirm",
+  "transaction_confirmation_source": "semantic"
+}
+```
+
+O `AgentRuntime` reutiliza essa decisão e **não tenta reclassificar a mesma fala com o parser determinístico**. Isso evita a regressão em que o router entende semanticamente a confirmação, mas o runtime volta a tratá-la como inconclusiva.
+
+### Precedência e compatibilidade
+
+A funcionalidade é aditiva. Entradas determinísticas já suportadas continuam com o mesmo comportamento e sem custo adicional de LLM. O fallback semântico só roda quando a primeira camada não consegue decidir. Assim, `sim` e `não` continuam tendo precedência absoluta sobre `intent_shift`. Uma saída `CONTINUAR` não confirma nem rejeita automaticamente a transação; o fluxo normal pode então avaliar continuação contextual ou mudança de intenção conforme as políticas existentes.
+
+### Observabilidade
+
+Para confirmações semânticas, o framework registra a geração como `transaction.confirmation.semantic_classifier` e acrescenta ao metadata do roteamento a fonte `semantic`, a classificação retornada e o contexto conversacional relevante utilizado. Para confirmações literais, a fonte permanece `deterministic`.
+
+### Compatibilidade de interrupts duráveis no pause/resume
+
+O runtime não usa `snapshot.next` isoladamente para decidir se um workflow está pausado. Um `next` pode representar trabalho auxiliar do LangGraph, inclusive nós sintéticos criados pelo framework como `__pause` e `__continue`.
+
+A pausa é reconhecida por um interrupt real. Dependendo da versão do LangGraph/checkpointer, esse interrupt pode aparecer em `task.interrupts` ou persistido em `snapshot.values["__interrupt__"]`. O runtime aceita ambas as formas e deduplica o payload quando as duas são expostas simultaneamente.
+
+Isso evita dois falsos diagnósticos:
+
+- considerar `snapshot.next` como `PAUSED` quando não existe interrupt real;
+- considerar um `next=("<node>__pause",)` como erro de trabalho pendente quando o interrupt está persistido em `__interrupt__`.
+
+Em workflows com `expected_input.semantic_classifier`, os tokens internos `SIM`, `NAO` e `CONTINUAR` continuam sendo valores de controle do resume e não devem ser confundidos com resposta final ao cliente.

@@ -58,6 +58,69 @@ Esta versão adiciona uma camada pragmática de guardrails ao `agent_framework`,
 - `RET_REL` — valida relevância de chunks de retrieval por score mínimo.
 - `TOOL_VAL` — valida ferramenta MCP/tool, argumentos obrigatórios, valores negativos e allowlist.
 
+### Contrato para protocolos autorizados em guardrails de saída
+
+Quando um workflow ou tool produz um **protocolo que deve ser exibido ao próprio cliente**, o código de integração do agente deve registrar esse valor no contexto de saída antes da execução dos guardrails:
+
+```python
+ctx["expected_protocols"] = [protocol_number]
+```
+
+Esse campo é um **contrato do framework**. Ele informa que aqueles valores específicos foram produzidos ou validados pelo fluxo atual e, portanto, podem ser usados pelos guardrails de saída como evidência de autorização.
+
+Fluxo esperado:
+
+```text
+workflow/tool gera protocolo
+        ↓
+agente registra em expected_protocols
+        ↓
+CMP valida que o protocolo exibido pertence aos valores esperados
+        ↓
+DLEX_OUT não bloqueia esse protocolo apenas por classificá-lo como identificador
+        ↓
+resposta pode informar o protocolo ao cliente
+```
+
+Regras importantes:
+
+- `expected_protocols` deve conter **somente protocolos realmente produzidos/esperados no turno ou transação atual**.
+- Não use `expected_protocols` para liberar tokens, credenciais, IDs internos arbitrários ou dados de terceiros.
+- A autorização vale somente para os valores listados; outro identificador continua sujeito às regras normais de `DLEX_OUT`.
+- O valor deve ser propagado **antes de `output_guardrails`**. Se o protocolo só for adicionado depois, a autorização não terá efeito.
+- Em respostas transacionais, mantenha a evidência do protocolo no resultado da tool/workflow para que `CMP`, `GND` e observabilidade consigam correlacionar o valor.
+
+Exemplo:
+
+```python
+result = await executar_workflow(...)
+protocol_number = result.get("protocol_number") or result.get("protocolo_id")
+if protocol_number:
+    ctx["expected_protocols"] = [str(protocol_number)]
+```
+
+#### Troubleshooting: workflow concluiu, mas a resposta foi substituída por mensagem de segurança
+
+Sintoma típico:
+
+```text
+workflow = COMPLETED
+CMP = allowed
+DLEX_OUT = blocked por "protocolo interno"
+resposta final = "Não consegui validar essa resposta com segurança..."
+```
+
+Verifique, nesta ordem:
+
+1. O protocolo gerado está presente no resultado/evidência da tool ou workflow?
+2. O agente propagou o mesmo valor em `ctx["expected_protocols"]`?
+3. `expected_protocols` foi preenchido antes de `output_guardrails`?
+4. O protocolo presente na resposta é exatamente um dos valores esperados?
+5. O `DLEX_OUT` está bloqueando por outro motivo real, como segredo, token ou dado de terceiro?
+
+Se `expected_protocols` estiver ausente, o framework não deve presumir que qualquer identificador textual é seguro para divulgação.
+
+
 ### Arquivos alterados
 
 - `agent_framework/src/agent_framework/guardrails/rails.py`

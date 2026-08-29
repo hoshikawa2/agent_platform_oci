@@ -15,6 +15,13 @@ class _SemanticLLM:
     async def ainvoke(self, messages, **kwargs):
         prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
         profile = kwargs.get("profile_name")
+        if kwargs.get("generation_name") == "transaction.confirmation.semantic_classifier":
+            low = prompt.lower()
+            if "isso mesmo" in low or "pode confirmar" in low:
+                return "SIM"
+            if "melhor não" in low or "melhor nao" in low:
+                return "NAO"
+            return "CONTINUAR"
         if profile == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
             marker = "user_message: "
             user = prompt.split(marker, 1)[1].split("\nFormato obrigatório:", 1)[0].strip() if marker in prompt else ""
@@ -293,14 +300,8 @@ intents:
     assert "transaction_interruption" not in decision.metadata
 
 @pytest.mark.asyncio
-async def test_incompatible_intent_shift_wins_even_when_turn_could_fill_pending_parameter(tmp_path):
-    """A value-like turn cannot shield an incompatible new goal from intent-shift.
-
-    Regression for the edge case where the active transaction is collecting a
-    field, but the same utterance clearly starts another transactional intent.
-    The framework must classify the goal first; parameter extraction is allowed
-    only after the classifier says CONTINUE.
-    """
+async def test_incompatible_intent_shift_runs_only_when_parameter_extractor_does_not_consume(tmp_path):
+    """A real new goal still shifts, but only after parameter extraction declines it."""
     routing = tmp_path / "routing.yaml"
     routing.write_text(
         """
@@ -332,9 +333,9 @@ intents:
             prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
             if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
                 self.extraction_calls += 1
-                # This demonstrates the dangerous overlap: if extraction ran
-                # first, it could consume a field from the same utterance.
-                return json.dumps({"reason": "cancelar pedido PED-2002"})
+                # The extractor must not convert a clearly new request into the
+                # pending field of the old transaction.
+                return json.dumps({"reason": None})
             self.shift_calls += 1
             return json.dumps({
                 "decision": "SHIFT",
@@ -374,12 +375,12 @@ intents:
     assert decision.agent == "orders_agent"
     assert decision.metadata["transaction_interruption"] == "intent_shift"
     assert llm.shift_calls == 1
-    assert llm.extraction_calls == 0
+    assert llm.extraction_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_semantic_shift_wins_before_parameter_extraction_when_no_keyword_matches(tmp_path):
-    """Semantic SHIFT must win even if extraction could return a pending field."""
+async def test_semantic_shift_without_keyword_runs_after_parameter_extractor_declines(tmp_path):
+    """Semantic SHIFT remains available when no pending parameter is consumed."""
     routing = tmp_path / "routing.yaml"
     routing.write_text(
         """
@@ -411,7 +412,7 @@ intents:
             prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
             if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
                 self.extraction_calls += 1
-                return json.dumps({"reason": "encerrar a compra"})
+                return json.dumps({"reason": None})
             self.shift_calls += 1
             return json.dumps({
                 "decision": "SHIFT",
@@ -452,4 +453,193 @@ intents:
     assert decision.metadata["transaction_interruption"] == "intent_shift"
     assert decision.metadata["interruption_source"] == "semantic_classifier"
     assert llm.shift_calls == 1
-    assert llm.extraction_calls == 0
+    assert llm.extraction_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_parameter_reference_from_recent_context_wins_before_semantic_shift(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: contestacao_agent
+  confidence_threshold: 0.70
+state_policies:
+  - state: COLLECTING_CONTESTACAO_PARAMETERS
+    agent: contestacao_agent
+intents:
+  - name: contas_vas_cancel
+    agent: contestacao_agent
+    priority: 145
+    keywords: [cancelar serviço]
+  - name: contas_contestation
+    agent: contestacao_agent
+    priority: 120
+    keywords: [contestar cobrança]
+""",
+        encoding="utf-8",
+    )
+
+    class _ContextAwareLLM:
+        def __init__(self):
+            self.extraction_calls = 0
+            self.shift_calls = 0
+
+        async def ainvoke(self, messages, **kwargs):
+            prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+            if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
+                self.extraction_calls += 1
+                assert "Tamboro Mensal" in prompt
+                assert "R$ 14,99" in prompt
+                return json.dumps({"subject": "Tamboro Mensal"}, ensure_ascii=False)
+            self.shift_calls += 1
+            return json.dumps({
+                "decision": "SHIFT",
+                "intent": "contas_contestation",
+                "agent": "contestacao_agent",
+                "confidence": 0.96,
+                "reason": "valor específico parece uma cobrança contestada",
+            }, ensure_ascii=False)
+
+    llm = _ContextAwareLLM()
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=True,
+        ENABLE_ROUTE_STICKINESS=False,
+    )
+    router = EnterpriseRouter(settings, llm=llm)
+    state = {
+        "user_text": "desculpa, é a de quatorze e noventa e nove",
+        "sanitized_input": "desculpa, é a de quatorze e noventa e nove",
+        "next_state": "COLLECTING_CONTESTACAO_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["subject"],
+        "active_agent": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "history": [
+            {"role": "assistant", "content": "Cobrança Tamboro Mensal no valor de R$ 14,99; TIM Fashion Mensal no valor de R$ 10,00."},
+            {"role": "assistant", "content": "Qual serviço você deseja cancelar?"},
+            {"role": "user", "content": "desculpa, é a de quatorze e noventa e nove"},
+        ],
+        "active_transaction": {
+            "tool_name": "cancelar_vas_avulso",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "contas_vas_cancel",
+            "parameter_schema": {
+                "subject": {
+                    "type": "string",
+                    "description": "Referência a um serviço concreto identificável no contexto recente.",
+                }
+            },
+            "tool_description": "Cancela um VAS avulso.",
+        },
+    }
+
+    decision = await router.route(state)
+
+    assert decision.agent == "contestacao_agent"
+    assert decision.intent == "state:COLLECTING_CONTESTACAO_PARAMETERS"
+    assert decision.metadata["transaction_turn_consumed"] is True
+    assert decision.metadata["transaction_parameter_values"] == {"subject": "Tamboro Mensal"}
+    assert "transaction_interruption" not in decision.metadata
+    assert llm.extraction_calls == 1
+    assert llm.shift_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_semantic_confirmation_fallback_consumes_equivalent_positive_reply(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: support_agent
+  confidence_threshold: 0.70
+  transaction_confirmation:
+    semantic_fallback:
+      enabled: true
+      allowed_values: [SIM, NAO, CONTINUAR]
+      confirm_values: [SIM]
+      reject_values: [NAO]
+      include_relevant_context: true
+      prompt: |
+        Classifique a resposta atual em {{ allowed_values }}.
+        Pergunta pendente: {{ pending_prompt }}
+        Contexto relevante: {{ relevant_conversation_context }}
+        Resposta: {{ user_input }}
+state_policies:
+  - state: WAITING_SUPPORT_CONFIRMATION
+    agent: support_agent
+intents: []
+""",
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=True,
+        ENABLE_ROUTE_STICKINESS=False,
+    )
+    router = EnterpriseRouter(settings, llm=_SemanticLLM())
+    state = {
+        "user_text": "isso mesmo, pode confirmar",
+        "sanitized_input": "isso mesmo, pode confirmar",
+        "next_state": "WAITING_SUPPORT_CONFIRMATION",
+        "transaction_status": "AWAITING_CONFIRMATION",
+        "active_agent": "support_agent",
+        "intent": "retail_support_exchange_return",
+        "active_transaction": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+            "status": "AWAITING_CONFIRMATION",
+            "started_from_intent": "retail_support_exchange_return",
+        },
+        "history": [
+            {"role": "user", "content": "quero devolver o pedido PED-1001", "metadata": {"intent": "retail_support_exchange_return"}},
+            {"role": "assistant", "content": "Você confirma a devolução do pedido PED-1001?", "metadata": {"intent": "retail_support_exchange_return"}},
+            {"role": "user", "content": "isso mesmo, pode confirmar"},
+        ],
+    }
+    decision = await router.route(state)
+    assert decision.agent == "support_agent"
+    assert decision.metadata["transaction_turn_consumed"] is True
+    assert decision.metadata["transaction_confirmation_decision"] == "confirm"
+    assert decision.metadata["transaction_confirmation_source"] == "semantic"
+    assert decision.metadata["transaction_confirmation_classifier_output"] == "SIM"
+    assert "Você confirma a devolução" in decision.metadata["relevant_conversation_context"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_confirmation_fallback_does_not_replace_deterministic_yes(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: support_agent
+  transaction_confirmation:
+    semantic_fallback:
+      enabled: true
+      allowed_values: [SIM, NAO, CONTINUAR]
+      confirm_values: [SIM]
+      reject_values: [NAO]
+      include_relevant_context: true
+      prompt: "Classifique {{ user_input }} em {{ allowed_values }}"
+state_policies:
+  - state: WAITING_SUPPORT_CONFIRMATION
+    agent: support_agent
+intents: []
+""", encoding="utf-8")
+    class _MustNotCallLLM:
+        async def ainvoke(self, *args, **kwargs):
+            raise AssertionError("LLM não deve ser chamada para confirmação determinística")
+    settings = SimpleNamespace(ROUTING_CONFIG_PATH=str(routing), ENABLE_LLM_ROUTER=True, ENABLE_ROUTE_STICKINESS=False)
+    router = EnterpriseRouter(settings, llm=_MustNotCallLLM())
+    state = {
+        "user_text": "sim", "sanitized_input": "sim",
+        "next_state": "WAITING_SUPPORT_CONFIRMATION",
+        "transaction_status": "AWAITING_CONFIRMATION",
+        "active_agent": "support_agent",
+        "active_transaction": {"tool_name": "solicitar_devolucao", "arguments": {}, "status": "AWAITING_CONFIRMATION"},
+    }
+    decision = await router.route(state)
+    assert decision.metadata["transaction_confirmation_decision"] == "confirm"
+    assert decision.metadata["transaction_confirmation_source"] == "deterministic"

@@ -557,3 +557,82 @@ The files below were consolidated into this manual:
 ### Maintenance rule
 
 New fixes or evolutions for this subject should update this consolidated document. Release notes may continue to exist as history, but they should not be required to understand or implement the feature.
+
+
+## Canonical resolution and domain revalidation before execution
+
+When pre-validation resolves a user reference to a canonical entity, the framework **must not blindly overwrite the parameter and execute the originally selected tool**. The contract keeps requested, resolved and execution values distinct.
+
+A domain validator may return `transaction_decision` with `resolved_arguments`, `target_tool`, `action_changed`, `requires_reconfirmation`, and an optional customer-facing `confirmation_message`.
+
+Responsibilities:
+
+- **Framework:** preserve the requested arguments, apply only canonical arguments declared by the validator, update the transaction to the effective `target_tool`, honor reconfirmation, and retain the decision in pre-validation evidence.
+- **Agent/domain:** decide business class, policy and effective tool. The framework must not know rules such as “Youtube Premium is strategic”.
+- **MCP/backend:** execute the final operation chosen by the domain.
+
+If canonicalization does not change the action, the current tool may remain valid. If entity resolution changes business class/policy/tool, domain revalidation must happen **before confirmation and execution**. Ambiguous or low-confidence resolution must request clarification instead of silently promoting a candidate.
+
+### Troubleshooting: resolved_subject is correct but execution receives the original text
+
+If pre-validation records `resolved_subject="Youtube Premium"` while execution still receives `subject="youtube"`, verify that the validator returns `transaction_decision.resolved_arguments` and that the runtime applies the decision before freezing `pending_tool_call` / `confirmation_snapshot`. If the canonical entity is correct but the final tool is wrong, inspect `transaction_decision.target_tool`; that business reclassification belongs to the domain validator, not to the framework.
+
+For domains that expose an authoritative business classification in backend detail, revalidation should use that evidence before aggregated categories. In Contas, for example, `invoice_detail.parsed_content` preserves `classe=avulso|estrategico|bundle`, while `billing_analysis` may group the same item into broader sections such as `streaming` or partner services. Canonical entity discovery may use any authorized evidence, but the **business decision** should prioritize the source that preserves the domain classification. If classification evidence conflicts, do not silently change the action; preserve the current operation or request clarification according to the agent policy.
+
+
+## Semantic transactional confirmation: SIM / NAO / CONTINUAR
+
+Transactions in `AWAITING_CONFIRMATION` use two layers, in this order:
+
+1. **Deterministic parser** for explicit confirmations/rejections (`sim`, `não`, `confirmo`, `pode fazer`, etc.). This remains the cheapest and safest path and **does not call an LLM**.
+2. **LLM semantic fallback** only when the deterministic parser is inconclusive. The fallback reuses the same declarative semantic-classifier engine used by paused workflow `expected_input`, injecting the pending prompt, recent context related to the same topic, and the current user utterance.
+
+Configuration lives in `config/routing.yaml` under `router.transaction_confirmation.semantic_fallback`:
+
+```yaml
+router:
+  transaction_confirmation:
+    semantic_fallback:
+      enabled: true
+      allowed_values: [SIM, NAO, CONTINUAR]
+      confirm_values: [SIM]
+      reject_values: [NAO]
+      continue_values: [CONTINUAR]
+      include_relevant_context: true
+      profile_name: router
+      prompt: |
+        Allowed classes: {{ allowed_values }}
+        Pending prompt:
+        {{ pending_prompt }}
+        Relevant context:
+        {{ relevant_conversation_context }}
+        Current user input:
+        {{ user_input }}
+```
+
+`SIM` means an unambiguous acceptance, `NAO` an unambiguous rejection, and `CONTINUAR` means the utterance does not safely confirm or reject the pending action. Example: after `Você confirma o cancelamento do serviço Tamboro Mensal?`, the reply `isso mesmo, pode confirmar` can be classified as `SIM` without hardcoding that exact sentence.
+
+When semantic confirmation succeeds, the router records:
+
+```json
+{
+  "transaction_turn_consumed": true,
+  "transaction_confirmation_decision": "confirm",
+  "transaction_confirmation_source": "semantic"
+}
+```
+
+`AgentRuntime` reuses this routed decision instead of re-running the deterministic parser. The change is additive: existing explicit yes/no inputs continue through the deterministic path with no extra LLM call. Semantic generations are named `transaction.confirmation.semantic_classifier` for observability.
+
+### Durable interrupt compatibility in pause/resume
+
+The runtime does not use `snapshot.next` alone to decide whether a workflow is paused. A truthy `next` may represent LangGraph helper work, including framework-generated synthetic nodes such as `__pause` and `__continue`.
+
+A pause is recognized only from a real interrupt. Depending on the LangGraph/checkpointer version, that interrupt may be exposed through `task.interrupts` or persisted in `snapshot.values["__interrupt__"]`. The runtime supports both shapes and deduplicates the payload when both are present.
+
+This prevents two false diagnoses:
+
+- treating `snapshot.next` as `PAUSED` when no real interrupt exists;
+- treating `next=("<node>__pause",)` as invalid pending work when the real interrupt is persisted under `__interrupt__`.
+
+For workflows using `expected_input.semantic_classifier`, internal tokens such as `SIM`, `NAO`, and `CONTINUAR` remain resume control values and must not be confused with customer-facing output.

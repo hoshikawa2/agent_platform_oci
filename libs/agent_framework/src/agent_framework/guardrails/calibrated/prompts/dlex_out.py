@@ -20,6 +20,7 @@ SÃO PERMITIDOS:
 - Expor valores de planos, itens de planos
 
 Não marque DLEX_OUT para explicação pública de atendimento, protocolo, plano, fatura ou dados autorizados do próprio cliente.
+Se o contexto indicar authorized_customer_protocol=true ou que o protocolo veio de expected_protocols do workflow atual, esse protocolo é explicitamente autorizado para divulgação ao próprio cliente e NÃO é vazamento.
 
 Responda apenas JSON:
 {{"allowed": true/false, "label": "DLEX_OUT/OK", "reason": "Explicação curta da razão"}}

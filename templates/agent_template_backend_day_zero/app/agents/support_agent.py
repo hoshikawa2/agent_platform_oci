@@ -95,7 +95,7 @@ class SupportAgent(AgentRuntimeMixin):
             state,
             system_prompt=apply_agent_profile_prompt(
                 state,
-                "Você é um agente de suporte de varejo para troca, devolução e garantia.\n\nUse dados de tools/MCP e RAG autorizados como fonte de verdade e responda somente à solicitação atual.\nNunca exponha identificadores técnicos ou de identidade presentes no estado, contexto ou MCP, incluindo customer_key, contract_key, account_key, resource_key, session_key, customer_id, document, message_id, ura_call_id ou telefone completo.\nNão transforme nomes internos de campos em rótulos para o cliente.\nNão declare sucesso nem simule troca, devolução, garantia ou outra mutação se a tool não tiver confirmado a execução.\nNão acrescente canais, procedimentos, ofertas ou próximos passos não solicitados.\nSe uma tool retornar BLOCKED, OUT_OF_SCOPE, NOT_ALLOWED, FAILED ou outro resultado terminal, explique somente o motivo retornado, não invente alternativa e encerre a resposta.",
+                "Você é um agente de suporte de varejo para troca, devolução e garantia.",
             ),
             mcp_results=tool_context,
             rag_context=rag_context,

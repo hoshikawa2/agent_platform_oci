@@ -95,6 +95,35 @@ A response created because of an input block is still agent output. Therefore it
 
 This allows `DLEX_OUT`, `PINJ`, `TOXOUT`, Output Supervisor, and other policies to remove or sanitize information that should not be exposed.
 
+## COER, `expected_input`, and `reprompt` in paused workflows
+
+When an active `expected_input.semantic_classifier` exists, the framework may delegate semantic interpretation to the workflow contract instead of immediately treating an ambiguous input as a generic `COER` block. In this mode, the guardrail may be recorded as allowed/delegated, for example with mechanism `expected_input_semantic_classifier`.
+
+The workflow remains responsible for distinguishing:
+
+```text
+valid, meaningful reply       -> valid class / option_action
+insufficient or meaningless   -> unmatched_value -> reprompt
+```
+
+Example:
+
+```yaml
+expected_input:
+  allowed_values: [SIM, NAO, CONTINUAR]
+  reprompt: "I did not understand. Did this explanation resolve your question? Please answer yes or no."
+  semantic_classifier:
+    enabled: true
+    unmatched_value: OUTRO
+    option_actions:
+      CONTINUAR:
+        action: contextual_reentry
+```
+
+Under this contract, `CONTINUAR` does not mean "anything other than SIM or NAO". It represents a **coherent, contextual** utterance that continues the topic. Input such as `ano`, which has insufficient meaning for the pending prompt, should return sentinel `OUTRO` and produce the `reprompt`, while keeping the same workflow paused.
+
+`OUTRO` must not be added to `allowed_values` or sent to the runtime as a resume value. See [03 — Transactional Workflows and State](./03_transaction_workflows_and_state.md#expected_inputsemantic_classifierunmatched_value-and-reprompt) for the full contract.
+
 ## Relationship with `agent_graph.py`
 
 This feature belongs to template orchestration because it defines precedence between graph nodes and blocked-turn state semantics.
@@ -151,6 +180,8 @@ input_guardrails blocked
 Cover at least:
 
 - `COER=false` asks for clarification instead of returning a generic security message;
+- with `expected_input.semantic_classifier.unmatched_value`, incoherent/insufficient input triggers `reprompt` and keeps the workflow `PAUSED`;
+- meaningful input outside literal SIM/NAO can still follow `CONTINUAR -> contextual_reentry` without being confused with incoherent input;
 - blocked branch does not retain previous-turn `mcp_results`/routing;
 - no transactional tool executes after an input block;
 - the public message passes through output guardrails;

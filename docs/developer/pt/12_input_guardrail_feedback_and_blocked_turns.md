@@ -95,6 +95,35 @@ Uma resposta criada em função de um bloqueio de entrada ainda é uma saída do
 
 Isso permite que `DLEX_OUT`, `PINJ`, `TOXOUT`, Output Supervisor e outras políticas removam ou sanitizem informação que não deva ser apresentada.
 
+## COER, `expected_input` e `reprompt` em workflows pausados
+
+Quando existe um `expected_input.semantic_classifier` ativo, o framework pode delegar a decisão semântica ao contrato do workflow em vez de tratar imediatamente uma entrada ambígua como bloqueio genérico de `COER`. Nesse modo, o guardrail pode aparecer como permitido/delegado, por exemplo com mecanismo `expected_input_semantic_classifier`.
+
+O workflow continua responsável por diferenciar:
+
+```text
+resposta válida e compreensível       -> classe válida / option_action
+resposta sem significado suficiente   -> unmatched_value -> reprompt
+```
+
+Exemplo de configuração:
+
+```yaml
+expected_input:
+  allowed_values: [SIM, NAO, CONTINUAR]
+  reprompt: "Não entendi. Essa explicação resolveu sua dúvida? Responda sim ou não."
+  semantic_classifier:
+    enabled: true
+    unmatched_value: OUTRO
+    option_actions:
+      CONTINUAR:
+        action: contextual_reentry
+```
+
+Nesse contrato, `CONTINUAR` não significa "qualquer coisa que não seja SIM ou NAO". Ele representa uma fala **coerente e contextual** que continua o assunto. Uma entrada como `ano`, sem significado suficiente para a pergunta pendente, deve retornar o sentinela `OUTRO` e produzir o `reprompt`, mantendo o mesmo workflow pausado.
+
+`OUTRO` não deve ser adicionado a `allowed_values` nem enviado ao runtime como valor de resume. A descrição completa do contrato está em [03 — Workflows Transacionais e Estado](./03_transaction_workflows_and_state.md#expected_inputsemantic_classifierunmatched_value-e-reprompt).
+
 ## Relação com `agent_graph.py`
 
 Esta feature é responsabilidade da orquestração do template, porque define a precedência entre nós do grafo e o estado do turno.
@@ -151,6 +180,8 @@ input_guardrails bloqueou
 Cubra pelo menos:
 
 - `COER=false` gera solicitação de esclarecimento, não mensagem genérica de segurança;
+- com `expected_input.semantic_classifier.unmatched_value`, entrada incoerente/sem significado suficiente aciona `reprompt` e mantém o workflow `PAUSED`;
+- uma entrada compreensível fora de SIM/NAO pode seguir `CONTINUAR -> contextual_reentry` sem ser confundida com uma entrada incoerente;
 - ramo bloqueado não conserva `mcp_results`/routing de turno anterior;
 - nenhuma tool transacional é executada depois de um bloqueio de input;
 - mensagem pública passa pelos guardrails de saída;

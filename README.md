@@ -11207,6 +11207,7 @@ O conteúdo desta pasta deve ser tratado como uma extensão adicional do framewo
 | Uma resposta que deveria preencher parâmetro é interpretada como novo intent | precedência transacional, parameter extraction | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) |
 | A transação fica pedindo o mesmo parâmetro | estado transacional, extractor, schema | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) e [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) |
 | A confirmação “sim/não” não continua o fluxo | confirmation state, transaction state | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) |
+| Uma fala inválida durante um `expected_input` vira `CONTINUAR` em vez de pedir esclarecimento | `semantic_classifier.unmatched_value`, `reprompt`, `contextual_reentry`, COER delegado | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) e [Feedback de Guardrails de Entrada](docs/developer/pt/12_input_guardrail_feedback_and_blocked_turns.md) |
 | Uma transação encerrada reaparece | checkpoint antigo versus estado transacional ativo | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) e [LTM/Checkpoint](docs/developer/pt/08_long_term_memory_and_checkpoint.md) |
 | O sistema diz que executou algo, mas não existe evidência | MCP result, estado `COMPLETED`, judges transacionais | [Workflows Transacionais](docs/developer/pt/03_transaction_workflows_and_state.md) e [Guardrails/Judges](docs/developer/pt/06_guardrails_judges_and_transaction_evaluation.md) |
 | Uma tool não aparece ou não é encontrada | `tools.yaml`, catálogo MCP, discovery | [MCP/Tools](docs/developer/pt/04_mcp_integration_tools_and_policies.md) |
@@ -11252,9 +11253,9 @@ O conteúdo desta pasta deve ser tratado como uma extensão adicional do framewo
 
 ### [03 — Workflows Transacionais e Estado](docs/developer/pt/03_transaction_workflows_and_state.md)
 
-**O que é:** ciclo transacional multi-turno, estados, confirmação, pausa/retomada e evidência operacional.
+**O que é:** ciclo transacional multi-turno, estados, confirmação, pausa/retomada, `expected_input`, `semantic_classifier`, `unmatched_value`/`reprompt` e evidência operacional.
 
-**Use quando:** há loops, confirmações incorretas, retomadas erradas ou operações críticas.
+**Use quando:** há loops, confirmações incorretas, retomadas erradas, `CONTINUAR`/`contextual_reentry` indevido, `reprompt` ausente ou operações críticas.
 
 ### [04 — MCP, Tools, Policies e Extração de Parâmetros](docs/developer/pt/04_mcp_integration_tools_and_policies.md)
 

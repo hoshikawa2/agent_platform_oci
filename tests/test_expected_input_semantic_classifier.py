@@ -102,6 +102,22 @@ async def test_semantic_classifier_reprompts_when_llm_returns_value_outside_allo
     assert decision.metadata["workflow_reprompt"] == "Escolha novamente."
 
 
+@pytest.mark.asyncio
+async def test_semantic_classifier_configured_unmatched_value_reprompts(tmp_path):
+    router = _router(tmp_path, ["OUTRO"])
+    state = _state("fala sem significado", ["SIM", "NAO", "CONTINUAR"], "Classifique {{ user_input }} em {{ allowed_values }}")
+    state["pending_domain_workflow"]["pause"]["expected_input"]["semantic_classifier"]["unmatched_value"] = "OUTRO"
+
+    decision = await router.route(state)
+
+    assert decision.mcp_tools == []
+    assert decision.metadata["workflow_input_invalid"] is True
+    assert decision.metadata["workflow_reprompt"] == "Escolha novamente."
+    assert decision.metadata["classifier_raw_output"] == "OUTRO"
+    system_prompt = router.llm.calls[0][0][0]["content"]
+    assert '"OUTRO"' in system_prompt
+
+
 def test_classifier_output_validator_uses_dynamic_allowlist():
     contract = {"allowed_values": ["A", "B", "C"], "normalize": "upper_strip"}
     assert match_semantic_classifier_output(" b ", contract) == "B"
@@ -278,7 +294,9 @@ def test_invoice_explanation_uses_continue_as_contextual_reentry_option():
     assert contract["allowed_values"] == ["SIM", "NAO", "CONTINUAR"]
     classifier = contract["semantic_classifier"]
     assert classifier["option_actions"]["CONTINUAR"]["action"] == "contextual_reentry"
+    assert classifier["unmatched_value"] == "OUTRO"
     prompt = classifier["prompt"]
     assert "R$ 275,00" in prompt and "CONTINUAR" in prompt
     assert "quatorze e noventa e nove" in prompt and "CONTINUAR" in prompt
     assert "Nunca trate" in prompt
+    assert "OUTRO" in prompt

@@ -22,6 +22,7 @@ Se algo não está funcionando, use **Buscar pelo problema** abaixo.
 | Uma resposta que deveria preencher parâmetro é interpretada como novo intent | precedência transacional, parameter extraction | [Workflows Transacionais](./03_transaction_workflows_and_state.md) |
 | A transação fica pedindo o mesmo parâmetro | estado transacional, extractor, schema | [Workflows Transacionais](./03_transaction_workflows_and_state.md) e [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
 | A confirmação “sim/não” não continua o fluxo | confirmation state, transaction state | [Workflows Transacionais](./03_transaction_workflows_and_state.md) |
+| Uma fala inválida durante um `expected_input` vira `CONTINUAR` em vez de pedir esclarecimento | `semantic_classifier.unmatched_value`, `reprompt`, `contextual_reentry`, COER delegado | [Workflows Transacionais](./03_transaction_workflows_and_state.md) e [Feedback de Guardrails de Entrada](./12_input_guardrail_feedback_and_blocked_turns.md) |
 | Uma transação encerrada reaparece | checkpoint antigo versus estado transacional ativo | [Workflows Transacionais](./03_transaction_workflows_and_state.md) e [LTM/Checkpoint](./08_long_term_memory_and_checkpoint.md) |
 | O sistema diz que executou algo, mas não existe evidência | MCP result, estado `COMPLETED`, judges transacionais | [Workflows Transacionais](./03_transaction_workflows_and_state.md) e [Guardrails/Judges](./06_guardrails_judges_and_transaction_evaluation.md) |
 | Uma tool não aparece ou não é encontrada | `tools.yaml`, catálogo MCP, discovery | [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
@@ -67,9 +68,9 @@ Se algo não está funcionando, use **Buscar pelo problema** abaixo.
 
 ### [03 — Workflows Transacionais e Estado](./03_transaction_workflows_and_state.md)
 
-**O que é:** ciclo transacional multi-turno, estados, confirmação, pausa/retomada e evidência operacional.
+**O que é:** ciclo transacional multi-turno, estados, confirmação, pausa/retomada, `expected_input`, `semantic_classifier`, `unmatched_value`/`reprompt` e evidência operacional.
 
-**Use quando:** há loops, confirmações incorretas, retomadas erradas ou operações críticas.
+**Use quando:** há loops, confirmações incorretas, retomadas erradas, `CONTINUAR`/`contextual_reentry` indevido, `reprompt` ausente ou operações críticas.
 
 ### [04 — MCP, Tools, Policies e Extração de Parâmetros](./04_mcp_integration_tools_and_policies.md)
 

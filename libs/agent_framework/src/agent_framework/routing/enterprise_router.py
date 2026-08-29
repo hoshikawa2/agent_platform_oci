@@ -207,9 +207,13 @@ class EnterpriseRouter:
             .replace("{{ relevant_conversation_context }}", str(relevant_conversation_context or ""))
             .replace("{{ user_input }}", str(text or ""))
         )
+        unmatched_value = str(classifier.get("unmatched_value") or "").strip()
+        protocol_options = list(allowed)
+        if unmatched_value:
+            protocol_options.append(unmatched_value)
         protocol = (
             "\n\nPROTOCOLO OBRIGATÓRIO DO FRAMEWORK: responda somente com UMA das "
-            f"opções permitidas, sem explicação adicional: {json.dumps(allowed, ensure_ascii=False)}."
+            f"opções permitidas, sem explicação adicional: {json.dumps(protocol_options, ensure_ascii=False)}."
         )
         try:
             answer = await self.llm.ainvoke(

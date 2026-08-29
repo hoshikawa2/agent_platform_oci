@@ -21,6 +21,7 @@ If something is not working, use **Search by problem** below.
 | An answer that should fill a parameter is interpreted as a new intent | transactional precedence, parameter extraction | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) |
 | The transaction keeps asking for the same parameter | transaction state, extractor, schema | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) and [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
 | “yes/no” confirmation does not continue the flow | confirmation state, transaction state | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) |
+| Invalid input during `expected_input` becomes `CONTINUAR` instead of asking for clarification | `semantic_classifier.unmatched_value`, `reprompt`, `contextual_reentry`, delegated COER | [Transactional Workflows](./03_transaction_workflows_and_state.md) and [Input Guardrail Feedback](./12_input_guardrail_feedback_and_blocked_turns.md) |
 | A completed transaction reappears | old checkpoint versus active transaction state | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) and [LTM/Checkpoint](docs/developer/en/08_long_term_memory_and_checkpoint.md) |
 | The system says it executed something, but there is no evidence | MCP result, `COMPLETED` state, transactional judges | [Transactional Workflows](docs/developer/en/03_transaction_workflows_and_state.md) and [Guardrails/Judges](docs/developer/en/06_guardrails_judges_and_transaction_evaluation.md) |
 | A tool does not appear or cannot be found | `tools.yaml`, MCP catalog, discovery | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
@@ -68,7 +69,7 @@ If something is not working, use **Search by problem** below.
 
 **What it is:** multi-turn transaction lifecycle, states, confirmation, pause/resume, and operational evidence.
 
-**Use when:** there are loops, incorrect confirmations, incorrect resumes, or critical operations.
+**Use when:** there are loops, incorrect confirmations/resumes, unintended `CONTINUAR`/`contextual_reentry`, missing `reprompt`, or critical operations.
 
 ### [04 — MCP, Tools, Policies, and Parameter Extraction](docs/developer/en/04_mcp_integration_tools_and_policies.md)
 

@@ -679,6 +679,74 @@ A funcionalidade é aditiva. Entradas determinísticas já suportadas continuam 
 
 Para confirmações semânticas, o framework registra a geração como `transaction.confirmation.semantic_classifier` e acrescenta ao metadata do roteamento a fonte `semantic`, a classificação retornada e o contexto conversacional relevante utilizado. Para confirmações literais, a fonte permanece `deterministic`.
 
+### `expected_input.semantic_classifier.unmatched_value` e `reprompt`
+
+Workflows pausados podem aceitar respostas literais e também interpretar respostas livres por semântica. Quando o `semantic_classifier` é habilitado, uma fala que **não representa com segurança nenhuma das classes válidas** não deve ser forçada para `SIM`, `NAO` ou `CONTINUAR`. Para esse caso, o workflow pode declarar um valor sentinela com `unmatched_value`.
+
+Exemplo:
+
+```yaml
+expected_input:
+  key: resposta_usuario
+  allowed_values:
+    - SIM
+    - NAO
+    - CONTINUAR
+  normalize: upper_strip
+  reprompt: >
+    Não entendi. Essa explicação resolveu sua dúvida?
+    Responda sim ou não.
+
+  semantic_classifier:
+    enabled: true
+    include_relevant_context: true
+    unmatched_value: OUTRO
+    prompt: |
+      Classifique a fala do cliente em exatamente uma das opções válidas quando houver
+      significado suficiente.
+
+      SIM: entendimento/aceite inequívoco.
+      NAO: negativa inequívoca.
+      CONTINUAR: fala compreensível que complementa ou continua a solicitação.
+      OUTRO: fala incompreensível, desconexa ou insuficiente para qualquer classe válida.
+
+      Retorne somente SIM, NAO, CONTINUAR ou OUTRO.
+
+    option_actions:
+      CONTINUAR:
+        action: contextual_reentry
+```
+
+O contrato é:
+
+```text
+SIM        -> resume com SIM
+NAO        -> resume com NAO
+CONTINUAR  -> executa a option_action configurada (por exemplo contextual_reentry)
+OUTRO      -> não é usado como valor de resume; devolve o reprompt e mantém o workflow pausado
+```
+
+Regras importantes:
+
+- `unmatched_value` é **sentinela do classificador**, não uma resposta de negócio;
+- não adicione o sentinela a `allowed_values`; `allowed_values` continua descrevendo apenas valores que podem ser consumidos pelo workflow;
+- `CONTINUAR` deve ser usado somente quando a fala é compreensível e realmente continua o assunto; uma fala sem significado contextual suficiente deve produzir `unmatched_value` e cair em `reprompt`;
+- o `reprompt` não encerra nem reinicia a execução: o mesmo workflow permanece `PAUSED`, aguardando nova resposta;
+- valores internos como `SIM`, `NAO`, `CONTINUAR` e o sentinela não devem vazar como resposta final do agente.
+
+Exemplo comportamental:
+
+```text
+Pergunta pendente: "Com essa explicação, sanei sua dúvida?"
+
+"sim"                              -> SIM
+"não resolveu"                     -> NAO
+"mas e a cobrança de R$ 14,99?"    -> CONTINUAR -> contextual_reentry
+"ano"                              -> OUTRO -> reprompt
+```
+
+A opção é **opt-in por workflow**. Workflows que não declaram `semantic_classifier.unmatched_value` preservam o contrato anterior. Isso evita que uma evolução específica de um fluxo altere silenciosamente os demais workflows/agentes.
+
 ### Compatibilidade de interrupts duráveis no pause/resume
 
 O runtime não usa `snapshot.next` isoladamente para decidir se um workflow está pausado. Um `next` pode representar trabalho auxiliar do LangGraph, inclusive nós sintéticos criados pelo framework como `__pause` e `__continue`.

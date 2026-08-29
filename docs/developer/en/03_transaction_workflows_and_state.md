@@ -624,6 +624,74 @@ When semantic confirmation succeeds, the router records:
 
 `AgentRuntime` reuses this routed decision instead of re-running the deterministic parser. The change is additive: existing explicit yes/no inputs continue through the deterministic path with no extra LLM call. Semantic generations are named `transaction.confirmation.semantic_classifier` for observability.
 
+### `expected_input.semantic_classifier.unmatched_value` and `reprompt`
+
+Paused workflows may accept literal replies and also classify free-text replies semantically. When `semantic_classifier` is enabled, an utterance that **cannot safely be mapped to any valid class** must not be forced into `SIM`, `NAO`, or `CONTINUAR`. For that case, the workflow may declare a classifier sentinel through `unmatched_value`.
+
+Example:
+
+```yaml
+expected_input:
+  key: resposta_usuario
+  allowed_values:
+    - SIM
+    - NAO
+    - CONTINUAR
+  normalize: upper_strip
+  reprompt: >
+    I did not understand. Did this explanation resolve your question?
+    Please answer yes or no.
+
+  semantic_classifier:
+    enabled: true
+    include_relevant_context: true
+    unmatched_value: OUTRO
+    prompt: |
+      Classify the customer's utterance into a valid option only when there is
+      enough meaning to do so safely.
+
+      SIM: unambiguous understanding/acceptance.
+      NAO: unambiguous negative answer.
+      CONTINUAR: a meaningful utterance that complements or continues the request.
+      OUTRO: incomprehensible, disconnected, or insufficient input for any valid class.
+
+      Return only SIM, NAO, CONTINUAR, or OUTRO.
+
+    option_actions:
+      CONTINUAR:
+        action: contextual_reentry
+```
+
+The contract is:
+
+```text
+SIM        -> resume with SIM
+NAO        -> resume with NAO
+CONTINUAR  -> execute the configured option_action (for example contextual_reentry)
+OUTRO      -> never resume with this value; return reprompt and keep the workflow paused
+```
+
+Important rules:
+
+- `unmatched_value` is a **classifier sentinel**, not a business response;
+- do not add the sentinel to `allowed_values`; `allowed_values` contains only values the workflow may consume;
+- `CONTINUAR` is valid only for a meaningful utterance that actually continues the topic; contextually meaningless input should return `unmatched_value` and trigger `reprompt`;
+- `reprompt` does not complete or restart the execution: the same workflow remains `PAUSED` and waits for another reply;
+- internal values such as `SIM`, `NAO`, `CONTINUAR`, and the sentinel must never leak as customer-facing output.
+
+Behavioral example:
+
+```text
+Pending prompt: "Did this explanation resolve your question?"
+
+"sim"                              -> SIM
+"não resolveu"                     -> NAO
+"mas e a cobrança de R$ 14,99?"    -> CONTINUAR -> contextual_reentry
+"ano"                              -> OUTRO -> reprompt
+```
+
+This option is **opt-in per workflow**. Workflows that do not declare `semantic_classifier.unmatched_value` keep the previous contract, preventing a change in one flow from silently changing other workflows or agents.
+
 ### Durable interrupt compatibility in pause/resume
 
 The runtime does not use `snapshot.next` alone to decide whether a workflow is paused. A truthy `next` may represent LangGraph helper work, including framework-generated synthetic nodes such as `__pause` and `__continue`.

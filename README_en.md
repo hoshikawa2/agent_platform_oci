@@ -2167,71 +2167,30 @@ trace_id
 
 #### 5.1.1.21.3. Automatic Langfuse instrumentation for the OpenAI client
 
-```python
-ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=true
-```
+The framework's official default is:
 
-enables automatic Langfuse instrumentation for the OpenAI client.
-
-When enabled, every request executed through the Langfuse-instrumented OpenAI client automatically generates detailed spans and generations within Langfuse.
-
-Benefits
-
-With automatic instrumentation enabled, Langfuse can automatically capture and display information such as:
-
-* OpenAI-generation
-* Prompt sent to the model
-* Model response
-* Model name used
-* Token consumption
-* Estimated costs
-* Request latency
-* Execution errors
-
-All of this information is linked to the main conversation trace, making troubleshooting, auditing, and performance analysis significantly easier.
-
-Behavior When Disabled
-
-When:
-
-```python
+```env
 ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=false
 ```
 
-or when the variable is not defined:
+The framework already instruments LLM calls through `Telemetry.generation(...)`, preserving `trace_id`, `session_id`, `user_id`, metadata, token usage, cost, latency, and the parent/child relationship inside the business trace. Therefore, OpenAI client auto-instrumentation is not required in the normal framework path.
 
-* LLM calls continue to function normally.
-* Custom framework spans are still emitted.
-* Langfuse no longer automatically creates OpenAI-generation entries.
-* Less detailed information is available for analyzing model interactions.
+When set to `false`:
 
-Recommended Usage
+* LLM calls continue to work normally;
+* prompts, responses, model, tokens, costs, and latency remain available through the framework's explicit telemetry;
+* generations remain correlated with the main request trace;
+* duplicate instrumentation and standalone `OpenAI-generation` root traces are avoided.
 
-It is recommended to enable this setting in:
+The `true` option exists only for compatibility or diagnostics for code that calls the OpenAI/OpenAI-compatible SDK directly outside the framework `Telemetry` layer. In such cases, the `langfuse.openai` wrapper can automatically capture those calls. In an application already using the framework's native instrumentation, keeping it enabled may create duplicate observations, duplicate token/cost accounting, or independent traces when no active Langfuse parent exists.
 
-* Development environments
-* Testing and staging environments
-* Production environments that require detailed LLM observability
-* Prompt engineering, troubleshooting, and cost analysis scenarios
+```env
+# Recommended default for every framework template and environment
+ENABLE_LANGFUSE=true
+ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=false
+```
 
-Important Note
-
-This setting only affects Langfuse automatic telemetry and observability.
-
-It does not change:
-
-* Agent behavior
-* Supervisor routing
-* Guardrails
-* Judges
-* MCP Tool Router
-* LangGraph workflows
-
-Its sole purpose is to enrich the observability of language model interactions and provide more detailed execution insights within Langfuse.
-
----
-
-### 5.1.1.22. Architecture recommendations
+Every `.env.example` distributed with the project explicitly keeps this option set to `false`. If an external component requires automatic capture, enable it only for that deployment and validate the trace tree in Langfuse.
 
 #### 5.1.1.22.1. For demos and development
 

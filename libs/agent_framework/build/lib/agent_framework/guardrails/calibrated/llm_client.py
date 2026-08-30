@@ -145,8 +145,17 @@ class GuardrailLLMClient:
         except RuntimeError:
             return asyncio.run(_call())
 
+        # ``ContextVar`` values do not cross ThreadPoolExecutor boundaries by
+        # default.  Preserve the framework request/trace/parent observation when
+        # this legacy sync bridge needs a worker thread; otherwise a provider
+        # created inside the worker sees no active correlation context and the
+        # optional langfuse.openai wrapper may emit a standalone OpenAI-generation
+        # trace.
+        from contextvars import copy_context
+
+        context = copy_context()
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="guardrail-compat") as executor:
-            return executor.submit(lambda: asyncio.run(_call())).result()
+            return executor.submit(context.run, lambda: asyncio.run(_call())).result()
 
     def classify(
         self,

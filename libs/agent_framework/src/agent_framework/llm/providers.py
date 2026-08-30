@@ -321,10 +321,27 @@ class OCICompatibleOpenAIProvider(LLMProvider):
             getattr(settings, "ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION", None)
             or os.getenv("ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION", "false")
         ).strip().lower() in {"1", "true", "yes", "on", "y"}
-        if self.telemetry is not None and use_langfuse_wrapper:
+
+        # The framework owns Langfuse correlation.  Even compatibility paths may
+        # instantiate a provider without passing ``Telemetry`` explicitly while a
+        # request is already active (for example GuardrailLLMClient running in its
+        # sync bridge).  In that situation langfuse.openai would auto-create an
+        # ``OpenAI-generation`` root trace instead of attaching to the business
+        # request.  Treat an active framework observability context exactly like
+        # an injected Telemetry instance and keep the standard OpenAI client.
+        active_framework_trace = False
+        try:
+            from agent_framework.observability.context import get_observability_context
+
+            obs_ctx = get_observability_context()
+            active_framework_trace = bool(obs_ctx.trace_id or obs_ctx.request_id)
+        except Exception:
+            active_framework_trace = False
+
+        if use_langfuse_wrapper and (self.telemetry is not None or active_framework_trace):
             logger.warning(
-                "ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=true ignorado porque o provider já recebeu "
-                "Telemetry do framework; instrumentação dupla pode criar observations fora do contrato de mapping."
+                "ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=true ignorado durante execução correlacionada "
+                "do framework; langfuse.openai pode criar OpenAI-generation como trace raiz separado."
             )
             use_langfuse_wrapper = False
         if getattr(settings, "ENABLE_LANGFUSE", False) and use_langfuse_wrapper:

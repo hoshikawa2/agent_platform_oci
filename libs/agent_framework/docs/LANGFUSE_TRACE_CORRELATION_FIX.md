@@ -47,13 +47,13 @@ internal steps = observations/spans/generations inside that trace
 
 - Langfuse OpenAI auto-instrumentation is now opt-in.
 - Default behavior uses the standard `openai.AsyncOpenAI` client and relies on the framework's own `Telemetry.generation(...)` to create correlated Langfuse generations.
-- To re-enable wrapper-based auto-instrumentation, set:
+- The supported framework default is:
 
 ```env
-ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=true
+ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=false
 ```
 
-For this framework, the recommended default is to keep it disabled.
+All `.env.example` files in the repository declare this value explicitly. Set it to `true` only for isolated compatibility/diagnostic deployments that intentionally need to capture OpenAI SDK calls outside the framework telemetry path.
 
 ## Expected result
 
@@ -86,7 +86,7 @@ framework_judges
 Run the backend and execute one request. Then verify:
 
 1. The `Traces` screen has one trace row for the request, not one row per node.
-2. `OpenAI-generation` no longer appears as a separate top-level trace unless `ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=true`.
+2. `OpenAI-generation` no longer appears as a separate top-level trace with the supported default `ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=false`.
 3. LangGraph node events and IC/NOC/GRL events appear under the same request trace.
 
 

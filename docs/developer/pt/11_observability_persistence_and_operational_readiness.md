@@ -201,6 +201,19 @@ request_id → tenant_id → agent_id → session_id → user_id → channel →
 
 O contexto usa `ContextVar`, portanto funciona em chamadas assíncronas, FastAPI, LangGraph e providers LLM.
 
+### Política de auto-instrumentação OpenAI no Langfuse
+
+A configuração oficial dos templates do framework é:
+
+```env
+ENABLE_LANGFUSE=true
+ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=false
+```
+
+O `false` é intencional. O framework já registra as chamadas ao modelo usando `Telemetry.generation(...)` e mantém a generation dentro do trace da requisição. Habilitar simultaneamente `langfuse.openai` cria uma segunda camada de instrumentação e pode resultar em `OpenAI-generation` como trace raiz, observations duplicadas e dupla contabilização de tokens/custos.
+
+Use `true` somente para capturar chamadas diretas ao SDK OpenAI/OpenAI-compatible que ocorram fora da telemetria do framework. Esse é um modo de compatibilidade/diagnóstico, não o padrão operacional. Todos os `.env.example` do repositório devem permanecer explicitamente com o valor `false`.
+
 ### Langfuse
 
 Ative no `.env`:

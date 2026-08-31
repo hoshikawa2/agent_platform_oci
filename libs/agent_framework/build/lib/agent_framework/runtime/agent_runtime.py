@@ -879,6 +879,17 @@ class AgentRuntimeMixin:
                     "terminal": False,
                     "result": result,
                 }
+                # A recoverable validator may provide a user-facing explanation
+                # for why the parameter must be collected again. Preserve that
+                # message for exactly the next clarification response instead of
+                # falling back immediately to the generic parameter prompt.
+                # This does not change routing/intent-shift precedence; it only
+                # transports validator output to the existing clarification step.
+                parameter_message = str(payload.get("parameter_message") or "").strip()
+                if parameter_message:
+                    state["transaction_parameter_message_override"] = parameter_message
+                else:
+                    state.pop("transaction_parameter_message_override", None)
                 if emit_events:
                     await self._emit_ic(
                         "IC.TRANSACTION_PREVALIDATION_PARAMETER_REJECTED",
@@ -2012,6 +2023,7 @@ class AgentRuntimeMixin:
         state["next_state"] = None
         state["transaction_status"] = status
         state.pop("transaction_confirmation_message_override", None)
+        state.pop("transaction_parameter_message_override", None)
 
     def _normalize_transaction_lifecycle(self, state: dict[str, Any]) -> None:
         """Ensure closed transactions cannot leak into a later user turn."""
@@ -2039,6 +2051,7 @@ class AgentRuntimeMixin:
             state["confirmation_received"] = False
             state["next_state"] = None
             state.pop("transaction_confirmation_message_override", None)
+            state.pop("transaction_parameter_message_override", None)
             return
         if self._transaction_is_active(state):
             self._active_transaction(state)
@@ -2117,6 +2130,7 @@ class AgentRuntimeMixin:
             "business_workflows_executed", "active_transaction", "last_transaction", "confirmation_snapshot",
             "transaction_evidence", "last_transaction_evidence", "relevant_transaction_evidence",
             "transaction_pre_validation", "tool_terminal_result", "transaction_confirmation_message_override",
+            "transaction_parameter_message_override",
         )
         return {key: state.get(key) for key in keys if key in state}
 
@@ -2135,6 +2149,11 @@ class AgentRuntimeMixin:
             return question + (("\n" + "\n".join(rendered)) if rendered else "")
         if state.get("transaction_status") != "COLLECTING_PARAMETERS":
             return None
+        parameter_override = str(
+            state.pop("transaction_parameter_message_override", "") or ""
+        ).strip()
+        if parameter_override:
+            return parameter_override
         missing = list(state.get("missing_parameters") or [])
         if not missing:
             return None

@@ -1228,3 +1228,58 @@ async def test_runtime_reuses_semantic_confirmation_decision_from_router_metadat
     assert runtime.calls[-1][0] == "solicitar_devolucao"
     assert runtime.calls[-1][1]["confirmed"] is True
     assert result[-1]["ok"] is True
+
+class _RecoverablePreValidationMessageRuntime(_PreValidationRuntime):
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append((tool_name, dict(arguments)))
+        if tool_name == "validar_contestacao":
+            return {
+                "ok": True,
+                "tool_name": tool_name,
+                "result": {
+                    "eligible": False,
+                    "status": "NEEDS_PARAMETER",
+                    "parameter": "valor",
+                    "reason": "CVAL",
+                    "recoverable_reason": "amount_not_supported_by_invoice",
+                    "parameter_message": (
+                        "O valor encontrado na fatura para Tamboro Mensal é R$ 19,99. "
+                        "O valor informado (R$ 29,98) não corresponde a essa cobrança. "
+                        "Informe o valor da cobrança que deseja contestar."
+                    ),
+                },
+            }
+        return {"ok": True, "tool_name": tool_name, "result": {"status": "OPENED"}}
+
+
+@pytest.mark.asyncio
+async def test_prevalidation_parameter_message_is_used_once_without_changing_transaction_precedence():
+    runtime = _RecoverablePreValidationMessageRuntime(eligible=False)
+    state = {
+        "user_text": "R$ 29,98",
+        "sanitized_input": "R$ 29,98",
+        "route": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "selected_tool_call": {
+            "tool_name": "contestar_cobranca",
+            "arguments": {"subject": "Tamboro Mensal", "valor": 29.98},
+        },
+        "context": {},
+    }
+
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+    assert result[-1]["pre_validation"] is True
+    assert state["missing_parameters"] == ["valor"]
+    assert state["selected_tool_call"]["arguments"]["subject"] == "Tamboro Mensal"
+    assert "valor" not in state["selected_tool_call"]["arguments"]
+
+    expected = (
+        "O valor encontrado na fatura para Tamboro Mensal é R$ 19,99. "
+        "O valor informado (R$ 29,98) não corresponde a essa cobrança. "
+        "Informe o valor da cobrança que deseja contestar."
+    )
+    assert runtime.transaction_clarification_message(state) == expected
+    # One-shot: subsequent clarification falls back to the normal prompt.
+    assert runtime.transaction_clarification_message(state) != expected
+    assert "transaction_parameter_message_override" not in state

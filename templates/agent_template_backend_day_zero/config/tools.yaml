@@ -4,8 +4,16 @@ tools:
     mcp_server: telecom
     enabled: true
     args_schema:
-      msisdn: string
-      invoice_id: string
+      msisdn:
+        type: string
+        label: o número da linha
+        description: Número da linha do cliente (MSISDN) usado para consultar informações de telecom.
+        user_prompt: Informe o número da linha que deseja consultar.
+      invoice_id:
+        type: string
+        label: o identificador da fatura
+        description: Identificador da fatura que o cliente deseja consultar.
+        user_prompt: Informe o identificador da fatura que deseja consultar.
     selection_keywords:
     - fatura
     - conta
@@ -15,7 +23,11 @@ tools:
     mcp_server: telecom
     enabled: true
     args_schema:
-      msisdn: string
+      msisdn:
+        type: string
+        label: o número da linha
+        description: Número da linha do cliente (MSISDN) usado para consultar informações de telecom.
+        user_prompt: Informe o número da linha que deseja consultar.
     selection_keywords:
     - pagamento
     - pagamentos
@@ -24,8 +36,16 @@ tools:
     mcp_server: telecom
     enabled: true
     args_schema:
-      msisdn: string
-      asset_id: string
+      msisdn:
+        type: string
+        label: o número da linha
+        description: Número da linha do cliente (MSISDN) usado para consultar informações de telecom.
+        user_prompt: Informe o número da linha que deseja consultar.
+      asset_id:
+        type: string
+        label: o identificador do plano ou ativo
+        description: Identificador do plano ou ativo comercial associado ao cliente.
+        user_prompt: Informe o identificador do plano ou ativo que deseja consultar.
     selection_keywords:
     - plano
   listar_servicos:
@@ -33,7 +53,11 @@ tools:
     mcp_server: telecom
     enabled: true
     args_schema:
-      msisdn: string
+      msisdn:
+        type: string
+        label: o número da linha
+        description: Número da linha do cliente (MSISDN) usado para consultar informações de telecom.
+        user_prompt: Informe o número da linha que deseja consultar.
     selection_keywords:
     - serviços
     - servicos
@@ -43,8 +67,16 @@ tools:
     mcp_server: retail
     enabled: true
     args_schema:
-      order_id: string
-      customer_id: string
+      order_id:
+        type: string
+        label: o número do pedido
+        description: Identificador do pedido que o cliente deseja consultar.
+        user_prompt: Informe o número do pedido que deseja consultar.
+      customer_id:
+        type: string
+        label: a identificação do cliente
+        description: Identificador do cliente associado ao pedido de varejo.
+        user_prompt: Informe a identificação do cliente.
     selection_keywords:
     - consultar pedido
     - status do pedido
@@ -54,7 +86,11 @@ tools:
     mcp_server: retail
     enabled: true
     args_schema:
-      order_id: string
+      order_id:
+        type: string
+        label: o número do pedido
+        description: Identificador do pedido cuja entrega ou rastreamento será consultado.
+        user_prompt: Informe o número do pedido que deseja rastrear.
     selection_keywords:
     - entrega
     - rastreio
@@ -69,8 +105,16 @@ tools:
     confirmation_required: false
     requires: [order_id]
     args_schema:
-      order_id: string
-      target_tool: string
+      order_id:
+        type: string
+        label: o número do pedido
+        description: Identificador do pedido a ser pre-validado para cancelamento.
+        user_prompt: Informe o número do pedido que deseja cancelar.
+      target_tool:
+        type: string
+        label: a operação de destino
+        description: Nome interno da operação transacional que será pre-validada; normalmente preenchido pelo runtime e 
+          não solicitado ao usuário.
     selection_keywords: []
 
   cancelar_pedido:
@@ -82,7 +126,11 @@ tools:
     - order_id
     confirmation_required: true
     args_schema:
-      order_id: string
+      order_id:
+        type: string
+        label: o número do pedido
+        description: Identificador do pedido que o cliente deseja cancelar.
+        user_prompt: Informe o número do pedido que deseja cancelar.
     selection_keywords:
     - cancelar pedido
     - cancelamento do pedido
@@ -100,8 +148,16 @@ tools:
     - reason
     confirmation_required: true
     args_schema:
-      order_id: string
-      reason: string
+      order_id:
+        type: string
+        label: o número do pedido
+        description: Identificador do pedido para o qual o cliente deseja solicitar troca.
+        user_prompt: Informe o número do pedido que deseja trocar.
+      reason:
+        type: string
+        label: o motivo da troca
+        description: Motivo informado pelo cliente para solicitar a troca do pedido.
+        user_prompt: Qual é o motivo da troca?
     selection_keywords:
     - solicitar troca
     - trocar
@@ -118,8 +174,16 @@ tools:
     - reason
     confirmation_required: true
     args_schema:
-      order_id: string
-      reason: string
+      order_id:
+        type: string
+        label: o número do pedido
+        description: Identificador do pedido para o qual o cliente deseja solicitar devolução.
+        user_prompt: Informe o número do pedido que deseja devolver.
+      reason:
+        type: string
+        label: o motivo da devolução
+        description: Motivo informado pelo cliente para solicitar a devolução do pedido.
+        user_prompt: Qual é o motivo da devolução?
     selection_keywords:
     - solicitar devolução
     - solicitar devolucao

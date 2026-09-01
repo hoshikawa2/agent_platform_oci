@@ -13,10 +13,20 @@ logger = logging.getLogger("agent_framework.idempotency")
 class IdempotencyStore:
     """Namespace idempotente apoiado no storage genérico do framework."""
 
-    def __init__(self, backend: Any, *, namespace: str = "idempotency", ttl_seconds: int | None = None):
+    def __init__(
+        self,
+        backend: Any,
+        *,
+        namespace: str = "idempotency",
+        ttl_seconds: int | None = None,
+        fallback_backend: Any | None = None,
+        fail_open: bool = False,
+    ):
         self.backend = backend
         self.namespace = namespace
         self.ttl_seconds = ttl_seconds
+        self.fallback_backend = fallback_backend
+        self.fail_open = bool(fail_open)
 
     @staticmethod
     def canonical_key(*parts: Any) -> str:
@@ -27,13 +37,58 @@ class IdempotencyStore:
         return f"{self.namespace}:{key}"
 
     async def get(self, key: str) -> Any | None:
-        return await self.backend.get(self._key(key))
+        scoped = self._key(key)
+        try:
+            value = await self.backend.get(scoped)
+            if value is not None:
+                return value
+        except Exception as exc:
+            if not self.fail_open or self.fallback_backend is None:
+                raise
+            logger.warning("Falha no backend primário de idempotência em get(%s); usando fallback em memória: %s", scoped, exc)
+        if self.fallback_backend is not None:
+            try:
+                return await self.fallback_backend.get(scoped)
+            except Exception as exc:
+                logger.warning("Falha no fallback de idempotência em get(%s): %s", scoped, exc)
+        return None
 
     async def set(self, key: str, value: Any, *, ttl_seconds: int | None = None) -> None:
-        await self.backend.set(self._key(key), value, ttl_seconds if ttl_seconds is not None else self.ttl_seconds)
+        scoped = self._key(key)
+        ttl = ttl_seconds if ttl_seconds is not None else self.ttl_seconds
+        primary_ok = False
+        try:
+            await self.backend.set(scoped, value, ttl)
+            primary_ok = True
+        except Exception as exc:
+            if not self.fail_open or self.fallback_backend is None:
+                raise
+            logger.warning("Falha no backend primário de idempotência em set(%s); usando fallback em memória: %s", scoped, exc)
+        if self.fallback_backend is not None:
+            try:
+                await self.fallback_backend.set(scoped, value, ttl)
+            except Exception as exc:
+                logger.warning("Falha no fallback de idempotência em set(%s): %s", scoped, exc)
+                if not primary_ok and not self.fail_open:
+                    raise
 
     async def delete(self, key: str) -> None:
-        await self.backend.delete(self._key(key))
+        scoped = self._key(key)
+        primary_error = None
+        try:
+            await self.backend.delete(scoped)
+        except Exception as exc:
+            primary_error = exc
+            if not self.fail_open or self.fallback_backend is None:
+                raise
+            logger.warning("Falha no backend primário de idempotência em delete(%s); limpando fallback: %s", scoped, exc)
+        if self.fallback_backend is not None:
+            try:
+                await self.fallback_backend.delete(scoped)
+            except Exception as exc:
+                logger.warning("Falha no fallback de idempotência em delete(%s): %s", scoped, exc)
+                if primary_error is not None and not self.fail_open:
+                    raise
 
 
 class InMemoryIdempotencyStore(IdempotencyStore):
@@ -81,4 +136,12 @@ def create_idempotency_store(settings, *, namespace: str = "idempotency", requir
             raise RuntimeError(f"Provider de idempotência durável não suportado: {provider}")
         logger.warning("Provider de idempotência %s não suportado; usando memória", provider)
         backend = InMemoryCache()
-    return IdempotencyStore(backend, namespace=namespace, ttl_seconds=ttl)
+    fail_open = bool(getattr(settings, "IDEMPOTENCY_FAIL_OPEN", not durable_required))
+    fallback_backend = InMemoryCache() if fail_open and not isinstance(backend, InMemoryCache) else None
+    return IdempotencyStore(
+        backend,
+        namespace=namespace,
+        ttl_seconds=ttl,
+        fallback_backend=fallback_backend,
+        fail_open=fail_open,
+    )

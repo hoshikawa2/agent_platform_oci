@@ -569,6 +569,32 @@ class OCICompatibleOpenAIProvider(LLMProvider):
                 )
                 raise
 
+    async def aclose(self) -> None:
+        """Close all cached OpenAI-compatible clients inside their owning event loop.
+
+        Temporary providers are created by legacy guardrail compatibility bridges.
+        Explicitly closing them before ``asyncio.run`` returns prevents the OpenAI/httpx
+        client finalizer from trying to close transports after the loop is already gone.
+        Persistent application-owned providers can call the same method at shutdown.
+        """
+        clients = list(self._clients.values())
+        self._clients.clear()
+        self.client = None
+        for client in clients:
+            close = getattr(client, "close", None)
+            aclose = getattr(client, "aclose", None)
+            try:
+                if callable(aclose):
+                    result = aclose()
+                    if hasattr(result, "__await__"):
+                        await result
+                elif callable(close):
+                    result = close()
+                    if hasattr(result, "__await__"):
+                        await result
+            except Exception:
+                logger.exception("Erro ao fechar cliente OpenAI-compatible")
+
     def _using_langfuse_openai(self) -> bool:
         if self.client is None:
             return False

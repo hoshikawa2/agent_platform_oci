@@ -649,6 +649,12 @@ class WorkflowRuntime:
             state = await graph.ainvoke(Command(resume=resume_value), config=config)
             phase = "aget_state_resume"
             snapshot = await graph.aget_state(config)
+            # Some LangGraph/checkpointer combinations keep exposing a durable
+            # interrupt from the previous pause after resume. Once execution has
+            # advanced to a node whose active edge is END, terminal state is
+            # authoritative and that interrupt is stale.
+            if self._is_structurally_terminal(definition, state):
+                return self._result_from_state(definition, execution_id, state)
             interrupts = self._snapshot_interrupts(snapshot)
             if interrupts:
                 pause = interrupts[-1]
@@ -662,8 +668,6 @@ class WorkflowRuntime:
                     pause=pause if isinstance(pause, dict) else {"value": pause},
                     trace=list(state.get("trace") or []),
                 )
-            if self._is_structurally_terminal(definition, state):
-                return self._result_from_state(definition, execution_id, state)
             if getattr(snapshot, "next", None):
                 raise RuntimeError(
                     "LangGraph retornou trabalho pendente sem interrupt real em estado não terminal; "

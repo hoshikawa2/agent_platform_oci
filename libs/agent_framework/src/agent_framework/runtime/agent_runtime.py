@@ -1923,7 +1923,15 @@ class AgentRuntimeMixin:
         transaction_id: str | None = None,
     ) -> dict[str, Any]:
         current = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
-        txid = transaction_id or current.get("transaction_id") or str(uuid.uuid4())
+        current_is_active = self._transaction_is_active(state) and bool(current.get("transaction_id"))
+        txid = transaction_id or (current.get("transaction_id") if current_is_active else None) or str(uuid.uuid4())
+        normalized_arguments = dict(arguments or {})
+        if not current_is_active and transaction_id is None:
+            # workflow_execution_id is transaction-scoped.  A value left by a
+            # completed/failed transaction must never seed a new one in the same
+            # session.  A paused workflow is resumed through pending_domain_workflow
+            # / retomar_workflow, not by opening a new transaction with this field.
+            normalized_arguments.pop("workflow_execution_id", None)
         if str(current.get("tool_name") or "") != str(tool_name):
             pre_validation = state.get("transaction_pre_validation")
             pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
@@ -1951,7 +1959,7 @@ class AgentRuntimeMixin:
         tx = {
             "transaction_id": txid,
             "tool_name": tool_name,
-            "arguments": dict(arguments or {}),
+            "arguments": normalized_arguments,
             "status": status,
             "started_from_intent": current.get("started_from_intent") or state.get("intent"),
             "requires": list(policy.get("requires") or getattr(cfg, "requires", []) or []),
@@ -1962,7 +1970,14 @@ class AgentRuntimeMixin:
             "parameter_conversational_context": parameter_context or "",
             "user_claims_are_evidence": False if parameter_context else current.get("user_claims_are_evidence", False),
         }
+        # Invariant: the operational transaction and the scalar lifecycle status
+        # must always describe the same interaction.  A previous terminal status
+        # (for example COMPLETED) must not survive after a new transaction is
+        # installed, otherwise the next input-boundary normalization may clear the
+        # newly created confirmation/parameter latches as if they belonged to the
+        # previous transaction.
         state["active_transaction"] = tx
+        state["transaction_status"] = status
         return tx
 
     @staticmethod
@@ -3313,6 +3328,119 @@ class AgentRuntimeMixin:
         return sections
 
     # ------------------------------------------------------------------
+    # LLM context compaction
+    # ------------------------------------------------------------------
+    _LLM_CONTEXT_DROP_KEYS = {
+        # Runtime/checkpoint internals are useful for audit/debug, but must not be
+        # recursively injected into an answering prompt. They frequently contain
+        # copies of the original request, session and previous workflow outputs.
+        "state", "vars", "session", "session_metadata", "original_context",
+        "agent_profile", "business_events", "trace", "nodes", "input",
+        # Provider / transport diagnostics do not add business grounding.
+        "raw_llm_answer", "headers", "request_kwargs", "response_headers",
+    }
+
+    def _compact_llm_value(
+        self,
+        value: Any,
+        *,
+        max_chars: int = 16000,
+        max_depth: int = 6,
+        max_items: int = 24,
+    ) -> str:
+        """Render structured context for an LLM without checkpoint explosions.
+
+        The operational state may intentionally retain complete workflow/MCP evidence
+        for auditability. Prompt context has a different contract: it contains the
+        business facts needed for the current answer, not recursive runtime objects.
+        This renderer therefore drops framework-internal recursive keys, bounds list
+        sizes/depth and finally enforces a hard character budget.
+        """
+        truncated = False
+
+        def compact(item: Any, depth: int = 0) -> Any:
+            nonlocal truncated
+            if depth >= max_depth:
+                if isinstance(item, (dict, list, tuple, set)):
+                    truncated = True
+                    return "[conteúdo aninhado omitido]"
+                return item
+            if isinstance(item, dict):
+                out: dict[str, Any] = {}
+                for idx, (key, raw) in enumerate(item.items()):
+                    if idx >= max_items:
+                        truncated = True
+                        out["_omitted_fields"] = max(0, len(item) - max_items)
+                        break
+                    key_s = str(key)
+                    if key_s.lower() in self._LLM_CONTEXT_DROP_KEYS:
+                        truncated = True
+                        continue
+                    out[key_s] = compact(raw, depth + 1)
+                return out
+            if isinstance(item, (list, tuple, set)):
+                seq = list(item)
+                if len(seq) > max_items:
+                    truncated = True
+                out = [compact(child, depth + 1) for child in seq[:max_items]]
+                if len(seq) > max_items:
+                    out.append(f"[+{len(seq) - max_items} itens omitidos]")
+                return out
+            if isinstance(item, str) and len(item) > 4000:
+                truncated = True
+                return item[:4000] + "…[texto truncado]"
+            return item
+
+        try:
+            rendered = json.dumps(compact(value), ensure_ascii=False, default=str, separators=(",", ":"))
+        except Exception:
+            rendered = str(value)
+        if len(rendered) > max_chars:
+            truncated = True
+            rendered = rendered[:max_chars] + "…[contexto truncado pelo framework]"
+        if truncated:
+            return rendered + "\n[observação: payload técnico/duplicado foi compactado; fatos preservados dentro do orçamento]"
+        return rendered
+
+    @staticmethod
+    def _is_context_length_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "maximum context length",
+            "max context length",
+            "context_length_exceeded",
+            "input length",
+            "too many tokens",
+        )
+        return any(marker in text for marker in markers)
+
+    def _compact_messages_for_retry(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_total_chars: int = 60000,
+    ) -> list[dict[str, str]]:
+        """Emergency second-pass budget used only after provider rejection."""
+        if not messages:
+            return messages
+        system_budget = min(20000, max_total_chars // 3)
+        remaining = max_total_chars - system_budget
+        compacted: list[dict[str, str]] = []
+        for index, message in enumerate(messages):
+            content = str(message.get("content") or "")
+            role = str(message.get("role") or "user")
+            if role == "system":
+                budget = system_budget
+            else:
+                non_system_left = max(1, sum(1 for m in messages[index:] if str(m.get("role") or "") != "system"))
+                budget = max(4000, remaining // non_system_left)
+                remaining = max(0, remaining - budget)
+            if len(content) > budget:
+                content = content[:budget] + "…[mensagem compactada após limite de contexto]"
+            compacted.append({"role": role, "content": content})
+        return compacted
+
+    # ------------------------------------------------------------------
     # Messages / LLM / cache
     # ------------------------------------------------------------------
     def build_messages(
@@ -3337,19 +3465,26 @@ class AgentRuntimeMixin:
             f"Intent/rota escolhidos pelo framework:\nintent={state.get('intent')} route={state.get('route')}",
         ])
         if include_business_context:
-            sections.append(f"BusinessContext canônico:\n{runtime.business_context or '[sem business_context]'}")
+            sections.append(
+                "BusinessContext canônico:\n"
+                + self._compact_llm_value(runtime.business_context or "[sem business_context]", max_chars=6000)
+            )
         if mcp_results is not None:
-            sections.append(f"Resultados MCP normalizados pelo framework:\n{mcp_results}")
+            sections.append(
+                "Resultados MCP normalizados pelo framework:\n"
+                + self._compact_llm_value(mcp_results, max_chars=18000)
+            )
         transaction_evidence = self.transaction_evidence_for_turn(state, mcp_results)
         if transaction_evidence:
             sections.append(
                 "Evidências operacionais de transações anteriores relevantes ao recurso atual "
-                f"(persistidas pelo framework, não inferidas pela memória conversacional):\n{transaction_evidence}"
+                "(persistidas pelo framework, não inferidas pela memória conversacional):\n"
+                + self._compact_llm_value(transaction_evidence, max_chars=12000)
             )
         if rag_context is not None:
             sections.append(f"Contexto de conhecimento (RAG):\n{rag_context or '[sem contexto RAG]'}")
         if rag_metadata is not None:
-            sections.append(f"Metadados RAG:\n{rag_metadata}")
+            sections.append("Metadados RAG:\n" + self._compact_llm_value(rag_metadata, max_chars=6000))
             provider = str(rag_metadata.get("provider") or getattr(getattr(self, "settings", None), "RAG_PROVIDER", "standard"))
             grounded_only = bool(getattr(getattr(self, "settings", None), "RAG_GROUNDED_ONLY", False))
             if provider == "kbdb":
@@ -3363,7 +3498,7 @@ class AgentRuntimeMixin:
                     "- Se o RAG estiver vazio, bloqueado ou com erro, ainda é permitido responder apenas a partes comprovadas por MCP/business context; não invente a parte documental ausente."
                 )
         for title, value in (extra_sections or {}).items():
-            sections.append(f"{title}:\n{value}")
+            sections.append(f"{title}:\n" + self._compact_llm_value(value, max_chars=10000))
         return MessageBuilder(state).system(system_prompt).user("\n\n".join(sections)).build()
 
     async def _cache_get(self, key: str):
@@ -3425,7 +3560,33 @@ class AgentRuntimeMixin:
             return cached
         if telemetry:
             await telemetry.event("cache.llm.miss", {"agent": agent_name, "key": key}, kind="cache")
-        answer = await self.llm.ainvoke(messages, profile_name=agent_name, component_name=agent_name, generation_name=f"llm.{agent_name}")
+        try:
+            answer = await self.llm.ainvoke(
+                messages,
+                profile_name=agent_name,
+                component_name=agent_name,
+                generation_name=f"llm.{agent_name}",
+            )
+        except Exception as exc:
+            if not self._is_context_length_error(exc):
+                raise
+            retry_messages = self._compact_messages_for_retry(messages)
+            if telemetry:
+                await telemetry.event(
+                    "llm.context.compacted_retry",
+                    {
+                        "agent": agent_name,
+                        "original_chars": sum(len(str(m.get("content") or "")) for m in messages),
+                        "retry_chars": sum(len(str(m.get("content") or "")) for m in retry_messages),
+                    },
+                    kind="llm",
+                )
+            answer = await self.llm.ainvoke(
+                retry_messages,
+                profile_name=agent_name,
+                component_name=agent_name,
+                generation_name=f"llm.{agent_name}.context_retry",
+            )
         await self._cache_set(key, answer, ttl)
         return answer
 

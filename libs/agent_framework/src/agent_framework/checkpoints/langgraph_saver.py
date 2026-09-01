@@ -570,18 +570,42 @@ class RepositoryCheckpointSaver(BaseCheckpointSaver):
 
     async def aput_writes(self, config: dict[str, Any], writes: list[tuple[str, Any]], task_id: str, task_path: str = ""):
         thread_id = _thread_id(config)
+        requested_cfg = _durable_config(config)
+        requested_configurable = requested_cfg.get("configurable") if isinstance(requested_cfg.get("configurable"), dict) else {}
+        requested_checkpoint_id = str(requested_configurable.get("checkpoint_id") or "").strip()
         try:
-            latest = await self.repository.get_latest(thread_id) or {"thread_id": thread_id, "config": _durable_config(config), "checkpoint": {}, "metadata": {}}
-        except:
+            latest = await self.repository.get_latest(thread_id) or {"thread_id": thread_id, "config": requested_cfg, "checkpoint": {}, "metadata": {}}
+        except Exception:
             latest = {
                 "thread_id": thread_id,
-                "config": _durable_config(config),
+                "config": requested_cfg,
                 "checkpoint": {},
                 "metadata": {},
                 "pending_writes": [],
             }
 
         if isinstance(latest, dict):
+            # LangGraph may finish aput_writes() for an older super-step after a
+            # newer aput() has already persisted the next checkpoint.  The
+            # repository is append-only, so blindly re-putting that older full
+            # payload would make the stale checkpoint the newest row and the next
+            # user turn would appear to "go back in time".  Pending writes belong
+            # only to the checkpoint identified by config.checkpoint_id.  If the
+            # durable latest checkpoint has already advanced, never append the
+            # stale payload as a new latest record.
+            latest_checkpoint = latest.get("checkpoint") if isinstance(latest.get("checkpoint"), dict) else {}
+            latest_checkpoint_id = str(
+                latest.get("checkpoint_id")
+                or latest_checkpoint.get("id")
+                or ((latest.get("config") or {}).get("configurable") or {}).get("checkpoint_id")
+                or ""
+            ).strip()
+            if (
+                requested_checkpoint_id
+                and latest_checkpoint_id
+                and requested_checkpoint_id != latest_checkpoint_id
+            ):
+                return
             # Do not keep extending a persisted RunnableConfig across super-steps.
             # Rebuild the same canonical config that aget_tuple() will expose.
             latest["config"] = _canonical_checkpoint_config(latest, config)

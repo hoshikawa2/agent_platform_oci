@@ -295,3 +295,31 @@ def test_json_pending_writes_remain_plain_json() -> None:
 
     persisted = repo.saved[1]
     assert persisted["pending_writes"][0]["value"] == {"ok": True}
+
+
+def test_stale_pending_write_cannot_replace_newer_checkpoint() -> None:
+    """A delayed write for cp1 must never make cp1 latest after cp2 exists."""
+    repo = _Repo()
+    saver = RepositoryCheckpointSaver(SimpleNamespace(), repository=repo)
+
+    cfg0 = {"configurable": {"thread_id": "tx-thread"}}
+    cp1_cfg = asyncio.run(saver.aput(cfg0, {"id": "cp1", "v": 1, "channel_values": {"transaction_status": "COMPLETED"}}, {}, {}))
+    cp2_cfg = asyncio.run(saver.aput(cp1_cfg, {"id": "cp2", "v": 1, "channel_values": {"transaction_status": "AWAITING_CONFIRMATION", "confirmation_required": True}}, {}, {}))
+
+    # Simulates aput_writes from the older cp1 finishing after cp2 was persisted.
+    asyncio.run(saver.aput_writes(cp1_cfg, [("result", {"old": True})], "late-task"))
+
+    assert repo.saved is not None
+    latest = repo.saved[1]
+    assert latest["checkpoint_id"] == "cp2"
+    assert latest["checkpoint"]["channel_values"]["transaction_status"] == "AWAITING_CONFIRMATION"
+    assert "pending_writes" not in latest or not any(
+        isinstance(item, dict) and item.get("task_id") == "late-task"
+        for item in latest.get("pending_writes", [])
+    )
+
+    # A write for the actual latest checkpoint is still accepted.
+    asyncio.run(saver.aput_writes(cp2_cfg, [("result", {"new": True})], "current-task"))
+    latest = repo.saved[1]
+    assert latest["checkpoint_id"] == "cp2"
+    assert any(item.get("task_id") == "current-task" for item in latest.get("pending_writes", []))

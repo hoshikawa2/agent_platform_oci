@@ -396,6 +396,7 @@ async def classify_with_framework_llm(
     cliente LLM paralelo fora da arquitetura do framework.
     """
     selected_profile = _selected_profile_for_task(task, profile_name)
+    owned_llm = llm is None
     llm = _ensure_framework_llm(llm)
 
     # USE_MOCK_LLM remains useful for local development, but it must not hide an
@@ -420,27 +421,39 @@ async def classify_with_framework_llm(
         if task in _BINARY_TASKS
         else "Responda apenas JSON válido, sem markdown."
     )
-    raw = await llm.ainvoke(
-        [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": prompt},
-        ],
-        profile_name=selected_profile,
-        component_name=selected_component,
-        generation_name=selected_generation,
-    )
-    output = _extract_text(raw)
-    if task == "TOXOUT":
-        return {"text": output}
-    if not output:
-        return {"allowed": True, "label": "EMPTY", "reason": ""}
-    if task in _BINARY_TASKS:
-        block_digit = _BINARY_BLOCK_DIGIT.get(task, "0")
-        digits = [ch for ch in output if ch in "01"]
-        allowed = digits[-1] != block_digit if digits else True
-        return {
-            "allowed": allowed,
-            "label": "OK" if allowed else task,
-            "reason": "" if allowed else _BINARY_TASKS[task],
-        }
-    return _parse_json(output)
+    try:
+        raw = await llm.ainvoke(
+            [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt},
+            ],
+            profile_name=selected_profile,
+            component_name=selected_component,
+            generation_name=selected_generation,
+        )
+        output = _extract_text(raw)
+        if task == "TOXOUT":
+            return {"text": output}
+        if not output:
+            return {"allowed": True, "label": "EMPTY", "reason": ""}
+        if task in _BINARY_TASKS:
+            block_digit = _BINARY_BLOCK_DIGIT.get(task, "0")
+            digits = [ch for ch in output if ch in "01"]
+            allowed = digits[-1] != block_digit if digits else True
+            return {
+                "allowed": allowed,
+                "label": "OK" if allowed else task,
+                "reason": "" if allowed else _BINARY_TASKS[task],
+            }
+        return _parse_json(output)
+    finally:
+        if owned_llm and llm is not None:
+            close = getattr(llm, "aclose", None)
+            if callable(close):
+                try:
+                    result = close()
+                    if hasattr(result, "__await__"):
+                        await result
+                except Exception:
+                    # Guardrail classification result must not be replaced by a cleanup failure.
+                    pass

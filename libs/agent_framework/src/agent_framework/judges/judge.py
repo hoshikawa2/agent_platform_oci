@@ -490,7 +490,10 @@ class JudgePipeline:
     async def evaluate_all(self, question, answer, context):
         if not self.enabled or not self.judges:
             return []
-        ctx = context or {}
+        # Judges must evaluate business evidence, not the full operational/checkpoint
+        # object. External judges receive the same bounded context contract as native
+        # judges so recursive workflow/session payloads cannot overflow the model.
+        ctx = _compact_judge_context(context or {})
         transactional = self._is_transactional_context(ctx)
 
         # Transactional turns take precedence over sampling. Sampling is only
@@ -600,6 +603,81 @@ def _normalize_judge_specs(config: dict[str, Any]) -> list[dict[str, Any]]:
             specs.append(dict({'code': code}, **value))
     return specs
 
+
+
+_JUDGE_CONTEXT_DROP_KEYS = {
+    'state', 'vars', 'session', 'session_metadata', 'original_context',
+    'agent_profile', 'business_events', 'trace', 'nodes', 'input',
+    'raw_llm_answer', 'headers', 'request_kwargs', 'response_headers',
+}
+
+def _compact_judge_context(
+    context: dict[str, Any],
+    *,
+    max_total_chars: int = 36000,
+    max_field_chars: int = 12000,
+    max_depth: int = 6,
+    max_items: int = 24,
+) -> dict[str, Any]:
+    """Return a bounded, business-focused judge context.
+
+    The full workflow/checkpoint remains available for telemetry and audit. Judges
+    receive only a compact projection so native and external implementations share
+    the same safety contract.
+    """
+    def compact(value: Any, depth: int = 0) -> Any:
+        if depth >= max_depth:
+            return '[conteúdo aninhado omitido]' if isinstance(value, (dict, list, tuple, set)) else value
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            for idx, (key, raw) in enumerate(value.items()):
+                if idx >= max_items:
+                    out['_omitted_fields'] = max(0, len(value) - max_items)
+                    break
+                key_s = str(key)
+                if key_s.lower() in _JUDGE_CONTEXT_DROP_KEYS:
+                    continue
+                out[key_s] = compact(raw, depth + 1)
+            return out
+        if isinstance(value, (list, tuple, set)):
+            seq = list(value)
+            out = [compact(item, depth + 1) for item in seq[:max_items]]
+            if len(seq) > max_items:
+                out.append(f'[+{len(seq)-max_items} itens omitidos]')
+            return out
+        if isinstance(value, str) and len(value) > max_field_chars:
+            return value[:max_field_chars] + '…[texto truncado]'
+        return value
+
+    compacted = compact(context)
+    if not isinstance(compacted, dict):
+        compacted = {'context': compacted}
+
+    # Enforce a final aggregate budget without discarding the top-level transaction
+    # signals used by sampling/always-run decisions.
+    try:
+        rendered = json.dumps(compacted, ensure_ascii=False, default=str)
+    except Exception:
+        rendered = str(compacted)
+    if len(rendered) <= max_total_chars:
+        return compacted
+
+    priority = (
+        'transaction_status', 'confirmation_required', 'confirmation_received',
+        'route', 'intent', 'transactional_tools', 'tool_policy_result',
+        'selected_tool_call', 'pending_tool_call',
+    )
+    bounded: dict[str, Any] = {k: compacted.get(k) for k in priority if k in compacted}
+    for key in ('mcp_results', 'transaction_evidence', 'evidence'):
+        if key not in compacted:
+            continue
+        value = compacted[key]
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = str(value)
+        bounded[key] = text[:max_field_chars] + ('…[contexto do judge truncado]' if len(text) > max_field_chars else '')
+    return bounded
 
 def _extract_evidence(context: dict[str, Any]) -> str:
     if not context:

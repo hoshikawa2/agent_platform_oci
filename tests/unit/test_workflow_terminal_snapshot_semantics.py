@@ -188,3 +188,31 @@ def test_snapshot_interrupts_deduplicates_task_and_persisted_shapes(tmp_path: Pa
     )
 
     assert runtime._snapshot_interrupts(snapshot) == [payload]
+
+@pytest.mark.asyncio
+async def test_aresume_ignores_stale_interrupt_after_advancing_to_terminal_node(tmp_path: Path, monkeypatch):
+    _write_workflow(tmp_path)
+    runtime = WorkflowRuntime(FileWorkflowRepository(tmp_path), actions=WorkflowActionRegistry())
+    state = _terminal_state("exec-stale")
+    # Shape observed after resuming invoice_explanation: the durable snapshot can
+    # still expose the interrupt from the old pause although current_node has
+    # already advanced to the terminal handoff/finalization node.
+    stale = SimpleNamespace(value={"node": "old_pause", "prompt": "old prompt"})
+    task = SimpleNamespace(interrupts=(stale,))
+    snapshot = SimpleNamespace(next=("finish__continue",), tasks=(task,), values=state)
+    monkeypatch.setattr(runtime, "_compile", lambda definition: _FakeGraph(state, snapshot))
+
+    langgraph_module = ModuleType("langgraph")
+    types_module = ModuleType("langgraph.types")
+    class _Command:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+    types_module.Command = _Command
+    monkeypatch.setitem(sys.modules, "langgraph", langgraph_module)
+    monkeypatch.setitem(sys.modules, "langgraph.types", types_module)
+
+    result = await runtime.aresume("terminal", "exec-stale", "nao")
+
+    assert result.status == "COMPLETED"
+    assert result.pause is None
+    assert result.state["current_node"] == "finish"

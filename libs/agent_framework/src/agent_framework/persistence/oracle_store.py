@@ -412,6 +412,22 @@ class OracleStore:
                 out.append({"id": row[0], "session_id": row[1], "event_name": row[2], "payload": _json_loads(v.read() if hasattr(v,"read") else v, {}), "created_at": row[4]})
             return out
 
+    @staticmethod
+    def _normalize_datetime_for_compare(value):
+        """Normaliza timestamps Oracle/Python para comparação segura em UTC.
+
+        Oracle DATE/TIMESTAMP pode retornar datetime sem tzinfo, enquanto o clock do
+        framework é timezone-aware. Para TTL/cache, datetime naive é interpretado
+        como UTC, que é o padrão usado pelo framework ao persistir expirações.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, datetime):
+            return value
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
     async def cache_get(self, key: str):
         return await asyncio.to_thread(self._cache_get, key)
 
@@ -421,8 +437,9 @@ class OracleStore:
             cur.execute(f"select VALUE_JSON, EXPIRES_AT from {self.t('CACHE_ENTRY')} where CACHE_KEY=:1", [key])
             row=cur.fetchone()
             if not row: return None
-            expires=row[1]
-            if expires and expires < self.now():
+            expires = self._normalize_datetime_for_compare(row[1])
+            now = self._normalize_datetime_for_compare(self.now())
+            if expires and expires < now:
                 cur.execute(f"delete from {self.t('CACHE_ENTRY')} where CACHE_KEY=:1", [key])
                 return None
             v=row[0]

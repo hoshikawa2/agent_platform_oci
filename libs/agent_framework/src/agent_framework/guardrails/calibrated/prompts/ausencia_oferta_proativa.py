@@ -62,6 +62,19 @@ Decida na ordem, PARE no primeiro match:
    mesmo alvo, a fala do agente que apenas pede CONFIRMACAO da transacao e
    allowed=true. A confirmacao NAO precisa repetir a justificativa do cliente
    ("nao reconheco", "esta caro" etc.); o pedido transacional anterior basta.
+   CONTINUIDADE POR CANAL ALTERNATIVO: se a acao transacional foi explicitamente
+   pedida pelo cliente para o mesmo alvo e a execucao por este canal falhou, ficou
+   indisponivel ou nao pode ser concluida, orientar o cliente sobre COMO concluir
+   ESSA MESMA acao em outro canal oficial e allowed=true. Isso nao cria uma nova
+   oferta: apenas informa o caminho operacional para cumprir o pedido ja existente.
+   Bloqueie somente se a orientacao introduzir outra acao, outro alvo ou ampliar o
+   escopo alem do que o cliente pediu.
+   EVIDENCIA ESTRUTURADA: quando o contexto operacional trouxer alvo solicitado/
+   resolvido e resultado da execucao (sucesso, falha parcial, item nao encontrado),
+   trate esses campos como evidencia autoritativa do pedido atual. Se a resposta
+   orientar outro canal para o MESMO alvo cuja execucao falhou, allowed=true, mesmo
+   que a ultima mensagem do cliente seja apenas uma confirmacao como "sim".
+
    Vale tambem trocar uma variante transacional por outra DA MESMA FAMILIA sobre
    o MESMO escopo, sempre limitada ao valor JA COBRADO no item (ressarcimento <->
    devolucao <-> reembolso <-> cancelamento <-> credito em fatura): negar o dobro e

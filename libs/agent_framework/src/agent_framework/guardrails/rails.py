@@ -338,9 +338,44 @@ class LoopRail(Guardrail):
     code = "VLOOP"
     stage = "input"
 
+    @staticmethod
+    def _transaction_status(ctx: dict[str, Any]) -> str:
+        status = str(ctx.get("transaction_status") or "").strip().upper()
+        if status:
+            return status
+        active_transaction = ctx.get("active_transaction")
+        if isinstance(active_transaction, dict):
+            return str(active_transaction.get("status") or "").strip().upper()
+        return ""
+
     async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
+        ctx = _ctx(context)
+        transaction_status = self._transaction_status(ctx)
+
+        # A short confirmation (for example ``sim``/``não``) may legitimately
+        # appear several times in the same session because each transaction has
+        # its own confirmation boundary. VLOOP protects against conversational
+        # repetition; it must not consume the input that belongs to an active
+        # transaction awaiting confirmation. The transaction runtime/classifier
+        # remains responsible for deciding whether the utterance is actually a
+        # valid confirm/reject response.
+        if transaction_status == "AWAITING_CONFIRMATION":
+            return RailDecision(
+                code=self.code,
+                allowed=True,
+                reason="continuidade_transacional:AWAITING_CONFIRMATION",
+                sanitized_text=text,
+                metadata={
+                    "history_window": len(list(ctx.get("history_texts") or [])[-6:]),
+                    "repeated": False,
+                    "mechanism": "deterministic_transaction_bypass",
+                    "transaction_status": transaction_status,
+                    "calibrated": True,
+                },
+            )
+
         normalized = _lower(text).strip()
-        history = [_lower(h).strip() for h in _ctx(context).get("history_texts", [])[-6:]]
+        history = [_lower(h).strip() for h in ctx.get("history_texts", [])[-6:]]
         repeated = history.count(normalized) >= 2 if normalized else False
         return RailDecision(
             code=self.code,

@@ -323,10 +323,28 @@ class CoherenceRail(Guardrail):
                     "data": out,
                 },
             )
-        out = await classify_with_framework_llm(
-            _llm(ctx), "COER", {"text": text or "", "context": ctx},
-            profile_name="guardrail", component_name="guardrail.coer", generation_name="guardrail.coer",
-        )
+        try:
+            out = await classify_with_framework_llm(
+                _llm(ctx), "COER", {"text": text or "", "context": ctx},
+                profile_name="guardrail", component_name="guardrail.coer", generation_name="guardrail.coer",
+            )
+        except Exception as exc:
+            # COER is a conversational-coherence rail, not a security boundary.
+            # If its semantic classifier/provider is unavailable, the graph must
+            # continue and let the normal router/workflow clarification logic own
+            # the turn instead of surfacing an infrastructure exception.
+            return RailDecision(
+                code=self.code,
+                allowed=True,
+                reason="Classificador de coerência indisponível; continuidade delegada ao runtime",
+                sanitized_text=text,
+                metadata={
+                    "mechanism": "infrastructure_fail_open",
+                    "calibrated": True,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                },
+            )
         return RailDecision(
             code=self.code, allowed=bool(out.get("allowed", True)),
             reason=str(out.get("reason") or out.get("label") or "COER avaliado"),

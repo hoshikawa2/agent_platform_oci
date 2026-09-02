@@ -69,69 +69,77 @@ def parse_transaction_confirmation(text: str) -> str | None:
     return None
 
 
-async def extract_transaction_parameters(
+async def reconcile_transaction_parameters(
     llm: Any,
     *,
     text: str,
     tool_name: str,
-    missing_parameters: list[str],
+    parameter_names: list[str],
     known_arguments: Mapping[str, Any] | None = None,
     parameter_schema: Mapping[str, Any] | None = None,
     tool_description: str | None = None,
     conversational_context: str | None = None,
 ) -> dict[str, Any]:
-    """Extract values for pending transactional parameters using the LLM only.
+    """Rebuild a coherent parameter set from text, newest to oldest.
 
-    This component intentionally contains no domain/entity regexes and no
-    knowledge of parameter names such as ``order_id`` or ``reason``.  The
-    transaction runtime supplies the pending parameter names and optional schema;
-    the LLM only interprets the current user turn.  State/control-flow decisions
-    remain deterministic outside this function.
+    The framework is intentionally field/domain neutral.  Meaning comes from the
+    declarative tool schema (normally tools.yaml) plus the conversation text.
+    The LLM may resolve a field, preserve a previously known value, explicitly
+    clear a stale value whose context was superseded, or leave a field unresolved.
+    Returned provenance is interpretive metadata only; authoritative business
+    validation still belongs to the configured pre-validation/tool layer.
     """
-    pending = [str(name) for name in (missing_parameters or []) if str(name).strip()]
+    names = [str(name) for name in (parameter_names or []) if str(name).strip()]
     message = str(text or "").strip()
-    if not pending or not message or llm is None:
-        return {}
+    if not names or not message or llm is None:
+        return {"values": {}, "decisions": {}, "provenance": {}, "clear_fields": []}
 
     schema = dict(parameter_schema or {})
     known = {
         str(key): value
         for key, value in dict(known_arguments or {}).items()
-        if value not in _EMPTY_VALUES and str(key) not in pending
+        if value not in _EMPTY_VALUES
     }
     field_spec = {
         name: {
             "type": schema.get(name, "string") if not isinstance(schema.get(name), dict) else schema.get(name, {}).get("type", "string"),
             "description": None if not isinstance(schema.get(name), dict) else schema.get(name, {}).get("description"),
         }
-        for name in pending
+        for name in names
     }
-    output_shape = {name: None for name in pending}
+    output_shape = {
+        "fields": {
+            name: {"decision": "resolved|preserve|clear|unresolved", "value": None, "source": "current|history:N|state"}
+            for name in names
+        }
+    }
     prompt = (
-        "Você extrai parâmetros PENDENTES de uma transação ativa. "
-        "Sua única tarefa é interpretar a mensagem atual e devolver valores para os parâmetros pendentes. "
-        "Não decida roteamento, intenção, confirmação ou execução da transação.\n\n"
-        "REGRAS OBRIGATÓRIAS:\n"
-        "1. Extraia SOMENTE parâmetros listados em pending_parameters.\n"
-        "2. Não invente valores e não transforme uma nova solicitação/intenção do usuário em valor de parâmetro.\n"
-        "3. Se nenhum parâmetro pendente foi realmente informado, devolva null para todos.\n"
-        "4. Se houver apenas um parâmetro pendente, uma resposta contendo apenas um valor pode ser associada a ele quando isso for semanticamente inequívoco.\n"
-        "5. Se houver vários parâmetros pendentes, extraia todos os que estiverem presentes no mesmo turno.\n"
-        "6. O nome do parâmetro não precisa aparecer literalmente na fala. Associe semanticamente o valor usando o nome da transação e os metadados disponíveis para cada campo.\n"
-        "7. Para cada parâmetro, considere o nome técnico, o tipo quando disponível e principalmente a descrição semântica quando disponível. A ausência de tipo ou descrição NÃO impede a extração.\n"
-        "8. Se a mensagem deixar clara a correspondência entre um trecho e um parâmetro, preencha-o mesmo que o usuário não cite o nome técnico do campo.\n"
-        "9. Não use conhecimento externo para completar valores ausentes e não transforme aproximações ou suposições em fatos.\n"
-        "10. conversational_context, quando presente, serve SOMENTE para resolver referências da mensagem atual (por exemplo: 'a de 14,99' apontando para um item citado imediatamente antes). Não trate texto do contexto como uma nova afirmação do cliente nem como evidência de negócio.\n"
-        "11. Quando a mensagem atual identifica um valor OU nome e o contexto imediatamente anterior contém uma única entidade compatível, você pode preencher essa entidade e os atributos pendentes inequivocamente associados a ela como CANDIDATOS. Exemplo genérico: se a fala identifica uma entidade e o contexto associa unicamente essa entidade a um valor requerido, o valor pode ser retornado como candidato. A validação autoritativa ocorrerá depois; não invente se houver ambiguidade.\n"
-        "12. Em caso de dúvida razoável sobre a correspondência ou o valor, prefira null.\n"
-        "13. Responda SOMENTE JSON válido, sem markdown, sem explicação e sem chaves extras.\n\n"
+        "Você é o conciliador temporal de parâmetros de uma transação ativa. "
+        "Reconstrua UM CONJUNTO COERENTE de parâmetros; não extraia cada campo de forma isolada. "
+        "Não decida roteamento, confirmação nem execução.\n\n"
+        "CONTRATO OBRIGATÓRIO:\n"
+        "1. O significado de cada campo vem EXCLUSIVAMENTE de parameter_schema e transaction_description, considerando principalmente a descrição semântica quando disponível. O framework não conhece conceitos de domínio por nome de campo.\n"
+        "2. A ausência de tipo ou descrição NÃO impede a extração quando o restante do contrato e o texto forem semanticamente suficientes.\n"
+        "3. A busca textual é temporal, em ordem decrescente: user_message é a fonte mais nova; depois conversational_context já vem do texto mais novo para o mais antigo.\n"
+        "3. Textos do usuário e textos explicativos do assistente podem ser usados para interpretar referências e relações entre campos. Não trate texto do contexto como uma nova afirmação do cliente; eles são contexto, não evidência autoritativa de negócio.\n"
+        "4. Para cada campo escolha: resolved = um texto determina novo valor; preserve = nenhum texto mais novo invalida o valor conhecido; clear = existe mudança textual mais nova que torna o valor conhecido incompatível/sem vínculo seguro com o novo contexto e ainda não há substituto; unresolved = não há valor conhecido nem candidato textual seguro.\n"
+        "5. Se uma fonte mais nova muda uma entidade, objeto, escopo ou outro contexto que dava sentido a campos extraídos anteriormente, REAVALIE os demais campos como conjunto. Não combine automaticamente um atributo antigo com um contexto novo só porque ambos existem.\n"
+        "6. Um valor de texto anterior pode continuar válido após uma mudança somente quando os textos, considerados em conjunto, sustentarem de forma inequívoca que ele ainda pertence ao contexto mais recente. Caso contrário use clear para o campo dependente.\n"
+        "7. Se a nova menção é inválida no mundo real, NÃO volte silenciosamente ao valor antigo. Ainda assim devolva o candidato textual mais recente como resolved; a pre-validation autoritativa é responsável por rejeitá-lo.\n"
+        "8. known_arguments é fallback de estado. Use preserve somente quando nenhum texto mais novo o contradiz ou rompe sua associação contextual.\n"
+        "9. Uma expressão só pode preencher um campo se satisfizer semanticamente type/description desse campo. Não transfira um trecho para outro campo apenas por proximidade lexical.\n"
+        "10. Se um texto recente corrige explicitamente informação anterior, a correção prevalece para os campos que o schema permite inferir; os demais devem ser reavaliados quanto à coerência com a correção.\n"
+        "11. Em ambiguidade razoável, prefira clear/unresolved a inventar uma associação. Em caso de dúvida razoável sobre a correspondência ou o valor, prefira null.\n"
+        "12. Responda SOMENTE JSON válido no formato pedido, sem markdown e sem chaves extras.\n\n"
         f"transaction_tool: {tool_name}\n"
         f"transaction_description: {tool_description or ''}\n"
-        f"pending_parameters: {json.dumps(pending, ensure_ascii=False)}\n"
+        f"parameter_names: {json.dumps(names, ensure_ascii=False)}\n"
+        f"pending_parameters: {json.dumps(names, ensure_ascii=False)}\n"
         f"parameter_schema: {json.dumps(field_spec, ensure_ascii=False, default=str)}\n"
         f"known_arguments: {json.dumps(known, ensure_ascii=False, default=str)}\n"
-        f"conversational_context: {str(conversational_context or '').strip()}\n"
+        "conversation_sources_newest_to_oldest:\n"
         f"user_message: {message}\n"
+        f"conversational_context: {str(conversational_context or '').strip()}\n"
         f"Formato obrigatório: {json.dumps(output_shape, ensure_ascii=False)}"
     )
 
@@ -144,44 +152,98 @@ async def extract_transaction_parameters(
             temperature=0.0,
         )
     except TypeError:
-        # Compatibilidade com doubles/testes e providers mínimos que aceitam
-        # apenas messages.
         response = await llm.ainvoke([{"role": "user", "content": prompt}])
     except Exception as exc:
-        logger.warning(
-            "transaction.parameter.llm_extract_failed tool=%s pending=%s error=%s",
-            tool_name,
-            pending,
-            exc,
-        )
-        return {}
+        logger.warning("transaction.parameter.reconcile_failed tool=%s fields=%s error=%s", tool_name, names, exc)
+        return {"values": {}, "decisions": {}, "provenance": {}, "clear_fields": []}
 
     raw = _response_text(response).strip()
     try:
         payload = parse_json_object(raw)
     except (TypeError, ValueError):
-        logger.warning(
-            "transaction.parameter.llm_invalid_structured_output tool=%s pending=%s raw=%r",
-            tool_name,
-            pending,
-            raw[:240],
-        )
-        return {}
+        logger.warning("transaction.parameter.reconcile_invalid_output tool=%s raw=%r", tool_name, raw[:240])
+        return {"values": {}, "decisions": {}, "provenance": {}, "clear_fields": []}
     if not isinstance(payload, dict):
-        return {}
+        return {"values": {}, "decisions": {}, "provenance": {}, "clear_fields": []}
 
-    extracted: dict[str, Any] = {}
-    for name in pending:
-        value = payload.get(name)
+    # Backward compatibility with existing providers/test doubles that return a
+    # flat {field: value} object. Non-null flat values mean ``resolved``.
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else None
+    if fields is None:
+        fields = {}
+        for name in names:
+            flat_value = payload.get(name)
+            if flat_value in _EMPTY_VALUES:
+                decision = "preserve" if name in known else "unresolved"
+                source = "state" if decision == "preserve" else ""
+            else:
+                decision = "resolved"
+                source = "current"
+            fields[name] = {"decision": decision, "value": flat_value, "source": source}
+
+    values: dict[str, Any] = {}
+    decisions: dict[str, str] = {}
+    provenance: dict[str, str] = {}
+    clear_fields: list[str] = []
+    for name in names:
+        item = fields.get(name) if isinstance(fields, dict) else None
+        if not isinstance(item, dict):
+            item = {"decision": "unresolved", "value": None, "source": ""}
+        decision = str(item.get("decision") or "unresolved").strip().lower()
+        if decision not in {"resolved", "preserve", "clear", "unresolved"}:
+            decision = "unresolved"
+        decisions[name] = decision
+        source = str(item.get("source") or "").strip()
+        if source:
+            provenance[name] = source
+        if decision == "clear":
+            clear_fields.append(name)
+            continue
+        if decision == "preserve":
+            if name in known:
+                values[name] = known[name]
+            continue
+        if decision != "resolved":
+            continue
         declared = field_spec.get(name, {}).get("type", "string")
-        coerced = _coerce(value, declared)
+        coerced = _coerce(item.get("value"), declared)
         if coerced not in _EMPTY_VALUES:
-            extracted[name] = coerced
+            values[name] = coerced
+        else:
+            decisions[name] = "unresolved"
 
     logger.info(
-        "transaction.parameter.llm_extracted tool=%s pending=%s consumed=%s",
-        tool_name,
-        pending,
-        sorted(extracted),
+        "transaction.parameter.reconciled tool=%s decisions=%s resolved=%s clear=%s provenance=%s",
+        tool_name, decisions, sorted(values), clear_fields, provenance,
     )
-    return extracted
+    return {"values": values, "decisions": decisions, "provenance": provenance, "clear_fields": clear_fields}
+
+
+async def extract_transaction_parameters(
+    llm: Any,
+    *,
+    text: str,
+    tool_name: str,
+    missing_parameters: list[str],
+    known_arguments: Mapping[str, Any] | None = None,
+    parameter_schema: Mapping[str, Any] | None = None,
+    tool_description: str | None = None,
+    conversational_context: str | None = None,
+) -> dict[str, Any]:
+    """Compatibility facade returning only resolved candidates.
+
+    New runtime code should use :func:`reconcile_transaction_parameters` when it
+    needs preserve/clear/provenance decisions.  Keeping this facade avoids
+    breaking routers and existing extensions that only need candidate extraction.
+    """
+    result = await reconcile_transaction_parameters(
+        llm,
+        text=text,
+        tool_name=tool_name,
+        parameter_names=missing_parameters,
+        known_arguments=known_arguments,
+        parameter_schema=parameter_schema,
+        tool_description=tool_description,
+        conversational_context=conversational_context,
+    )
+    return dict(result.get("values") or {})

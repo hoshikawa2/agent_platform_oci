@@ -880,12 +880,13 @@ class EnterpriseRouter:
         text: str,
         state_decision: RouteDecision,
     ) -> RouteDecision | None:
-        """Detecta semanticamente mudança de intenção durante uma transação.
+        """Detecta abandono explícito da transação seguido (ou não) de nova intenção.
 
-        Não existe lista de palavras para desistência ou mudança de assunto. Uma
-        interrupção nasce de uma intent diferente resolvida por uma keyword
-        configurada no ``routing.yaml`` ou, na ausência dela, por uma decisão
-        semântica do LLM com o contexto da transação pendente.
+        Durante COLLECTING_PARAMETERS/AWAITING_CONFIRMATION, uma classificação
+        genérica de outra intent nunca basta para interromper a transação. A saída
+        só é permitida quando o turno expressa semanticamente abandono explícito
+        do objetivo atual (por exemplo, desistir/deixar para lá) ou handoff tratado
+        por sua regra própria. Não há blacklist/keyword hardcoded de abandono.
         """
         active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
         started_intent = str(active_tx.get("started_from_intent") or "").strip()
@@ -910,15 +911,10 @@ class EnterpriseRouter:
             # both failure modes: parameter extraction cannot hide a real new goal,
             # and a broad keyword cannot steal a legitimate parameter turn.
             if not (self.enable_llm_router and self.llm is not None):
-                configured_candidate.metadata = {
-                    **(configured_candidate.metadata or {}),
-                    "transaction_interruption": "intent_shift",
-                    "interrupted_state": state_decision.next_state,
-                    "interrupted_agent": state_decision.agent,
-                    "interrupted_intent": started_intent or previous_intent,
-                    "interruption_source": "configured_routing",
-                }
-                return configured_candidate
+                # Sem classificador semântico não há evidência suficiente para
+                # distinguir uma nova meta explícita de uma expressão pertencente
+                # à própria transação (ex.: "isso mesmo, pode cancelar").
+                return None
 
         if not (self.enable_llm_router and self.llm is not None):
             return None
@@ -951,11 +947,11 @@ class EnterpriseRouter:
             ),
         }
         system = (
-            "Você decide apenas se o turno atual continua a transação ativa ou muda de intenção. "
-            "Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
-            "A extração dos parâmetros pendentes já foi tentada antes desta etapa e não consumiu o turno. "
-            "Se ainda assim a mensagem for apenas uma resposta referencial/valor/nome ao dado pendente, retorne CONTINUE. "
-            "Se o usuário passou claramente a perseguir outro objetivo, retorne SHIFT e a nova intent permitida. "
+            "Você decide somente se o usuário ABANDONA EXPLICITAMENTE a transação ativa. "
+            "Uma nova intent semanticamente plausível NÃO basta. Use o significado completo da mensagem e o contexto transacional; nunca use uma palavra isolada como regra. "
+            "Retorne CONTINUE quando a fala puder ser confirmação, correção, parâmetro, referência ou instrução ligada à operação ativa, inclusive expressões como 'pode cancelar' quando cancelar pode ser a própria ação em andamento. "
+            "Retorne ABANDON somente quando houver evidência explícita de desistência/abandono da operação atual; se a mesma fala também trouxer um novo objetivo, informe a nova intent/agent permitidos. "
+            "Exemplo semântico: 'esquece isso, quero ver minha fatura' = ABANDON + nova intent. "
             "Retorne somente JSON válido com decision, intent, agent, confidence, reason."
         )
         user = {
@@ -981,7 +977,7 @@ class EnterpriseRouter:
             logger.warning("Falha ao avaliar mudança semântica de intent transacional via LLM: %s", exc)
             return None
 
-        if str(data.get("decision") or "").strip().upper() != "SHIFT":
+        if str(data.get("decision") or "").strip().upper() != "ABANDON":
             return None
         confidence = float(data.get("confidence") or 0.0)
         if confidence < self.intent_shift_threshold:
@@ -1002,11 +998,11 @@ class EnterpriseRouter:
             reason=str(data.get("reason") or "Mudança semântica de intenção durante transação."),
             method="llm",
             metadata={
-                "transaction_interruption": "intent_shift",
+                "transaction_interruption": "explicit_abandonment",
                 "interrupted_state": state_decision.next_state,
                 "interrupted_agent": state_decision.agent,
                 "interrupted_intent": started_intent or previous_intent,
-                "interruption_source": "semantic_classifier",
+                "interruption_source": "semantic_abandonment_classifier",
                 "configured_routing_hint": (
                     configured_candidate.intent if configured_candidate is not None else None
                 ),

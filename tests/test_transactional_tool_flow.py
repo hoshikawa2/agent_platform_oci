@@ -1058,11 +1058,12 @@ class _CorrectionDuringCollectingLLM:
         prompt = messages[-1]["content"]
         self.prompts.append(prompt)
         if kwargs.get("profile_name") == "transaction_parameter_extraction":
+            # Current-only extraction now exposes the requested keys through the
+            # declarative schema/format rather than the legacy pending_parameters label.
+            if "current_user_message: desculpa, é a de quatorze e noventa e nove" in prompt:
+                return {"content": json.dumps({"subject": None, "valor": 14.99}, ensure_ascii=False)}
             pending = json.loads(prompt.split("pending_parameters: ", 1)[1].split("\n", 1)[0])
             out = {name: None for name in pending}
-            # O router já resolveu subject a partir do contexto. O runtime ainda
-            # precisa permitir que a mensagem atual corrija um valor previamente
-            # coletado, mesmo que valor não esteja em missing_parameters.
             if "valor" in out:
                 out["valor"] = 14.99
             return {"content": json.dumps(out, ensure_ascii=False)}
@@ -1283,3 +1284,152 @@ async def test_prevalidation_parameter_message_is_used_once_without_changing_tra
     # One-shot: subsequent clarification falls back to the normal prompt.
     assert runtime.transaction_clarification_message(state) != expected
     assert "transaction_parameter_message_override" not in state
+
+class _TemporalFallbackRuntime(AgentRuntimeMixin):
+    def __init__(self):
+        from types import SimpleNamespace
+        self.calls = []
+        self.llm = None
+        self.tool_router = SimpleNamespace(
+            registry=SimpleNamespace(
+                get_tool=lambda name: SimpleNamespace(
+                    requires=["subject"],
+                    args_schema={"subject": {"type": "string", "description": "Nome do serviço ou VAS alvo do cancelamento."}},
+                    description="Cancela o serviço VAS selecionado pelo cliente.",
+                    confirmation_required=True,
+                    tool_type="transactional",
+                )
+            ),
+            resolve_execution_policy=lambda name, arguments=None: {
+                "operation_type": "transactional",
+                "require_confirmation": True,
+                "requires": ["subject"],
+                "pre_validation": {"enabled": True, "tool": "validar_vas_subject", "fail_open": False},
+            },
+        )
+
+    async def _extract_transaction_parameters_current_only(self, state, *, tool_name, missing_parameters, known_arguments=None):
+        # Simula o collector tradicional interpretando literalmente a fala atual.
+        return {"subject": "dezenove e noventa e nove"}
+
+    async def _reconcile_transaction_parameters(self, state, *, tool_name, parameter_names, known_arguments=None):
+        # Simula o reconciliador temporal usando tools.yaml + contexto newest->oldest.
+        return {
+            "values": {"subject": "Tamboro Mensal"},
+            "decisions": {"subject": "resolved"},
+            "provenance": {"subject": "history:2"},
+            "clear_fields": [],
+        }
+
+    async def _call_mcp_tool(self, tool_name, arguments, state):
+        self.calls.append((tool_name, dict(arguments)))
+        if tool_name == "validar_vas_subject":
+            subject = arguments.get("subject")
+            if subject == "Tamboro Mensal":
+                return {"ok": True, "tool_name": tool_name, "result": {"eligible": True, "status": "ELIGIBLE"}}
+            return {"ok": True, "tool_name": tool_name, "result": {
+                "eligible": False,
+                "status": "NEEDS_PARAMETER",
+                "parameter": "subject",
+                "reason": "subject_not_resolved",
+            }}
+        return {"ok": True, "tool_name": tool_name, "result": {"status": "OK"}}
+
+
+@pytest.mark.asyncio
+async def test_temporal_reconciler_is_fallback_after_traditional_candidate_fails_prevalidation():
+    runtime = _TemporalFallbackRuntime()
+    state = {
+        "user_text": "é a de dezenove e noventa e nove",
+        "sanitized_input": "é a de dezenove e noventa e nove",
+        "route": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "selected_tool_call": {"tool_name": "cancelar_vas_avulso", "arguments": {}},
+        "active_transaction": {
+            "transaction_id": "tx-1",
+            "tool_name": "cancelar_vas_avulso",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "contas_vas_cancel",
+            "requires": ["subject"],
+            "parameter_schema": {"subject": {"type": "string", "description": "Nome do serviço ou VAS alvo do cancelamento."}},
+            "tool_description": "Cancela o serviço VAS selecionado pelo cliente.",
+            "parameter_conversational_context": (
+                "user: não reconheço esse Tamboro Mensal na minha fatura\n"
+                "assistant: identifiquei Tamboro Mensal por R$ 14,99 e R$ 19,99"
+            ),
+        },
+        "context": {},
+    }
+
+    result = await runtime.execute_tools_for_intent(state, tools=[])
+
+    validations = [(name, args.get("subject")) for name, args in runtime.calls if name == "validar_vas_subject"]
+    assert validations == [
+        ("validar_vas_subject", "dezenove e noventa e nove"),
+        ("validar_vas_subject", "Tamboro Mensal"),
+    ]
+    assert state["transaction_parameter_collection"]["mode"] == "current_turn"
+    assert state["transaction_parameter_reconciliation"]["trigger"] == "prevalidation_needs_parameter"
+    assert state["pending_tool_call"]["arguments"]["subject"] == "Tamboro Mensal"
+    assert state["transaction_status"] == "AWAITING_CONFIRMATION"
+    assert result[-1]["awaiting_confirmation"] is True
+
+@pytest.mark.asyncio
+async def test_collecting_parameters_materializes_router_cache_before_current_only_t6_regression():
+    """T6 regression: router-resolved subject must enter active arguments.
+
+    The router already consumed the pending subject in the same turn. A subsequent
+    current-only extraction over the literal message "sim" must not be required to
+    rediscover it, and temporal reconciliation must not leave it only as metadata.
+    """
+    runtime = _ContestRuntime()
+    state = {
+        "user_text": "sim",
+        "sanitized_input": "sim",
+        "route": "contestacao_agent",
+        "active_agent": "contestacao_agent",
+        "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+        "route_decision": {
+            "route": "contestacao_agent",
+            "agent": "contestacao_agent",
+            "intent": "state:COLLECTING_CONTESTACAO_PARAMETERS",
+            "metadata": {
+                "transaction_turn_consumed": True,
+                "transaction_parameter_values": {"subject": "Tamboro Mensal"},
+                "transaction_parameter_source": "llm",
+                "transaction_parameter_missing_before": ["subject"],
+            },
+        },
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["subject"],
+        "active_transaction": {
+            "transaction_id": "tx-t6-router-cache",
+            "tool_name": "contestar_cobranca",
+            "arguments": {"valor": 19.99},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "contas_contestation",
+            "requires": ["subject", "valor"],
+            "parameter_schema": {
+                "subject": {"type": "string", "description": "item concreto da fatura"},
+                "valor": {"type": "number", "description": "valor da cobrança"},
+            },
+            "tool_description": "Contesta cobrança validada",
+        },
+        "selected_tool_call": {
+            "tool_name": "contestar_cobranca",
+            "arguments": {"valor": 19.99},
+        },
+    }
+
+    results = await runtime.execute_tools_for_intent(state, tools=[])
+
+    assert results[-1]["transaction_status"] == "AWAITING_CONFIRMATION"
+    assert state["pending_tool_call"]["arguments"]["subject"] == "Tamboro Mensal"
+    assert state["pending_tool_call"]["arguments"]["valor"] == 19.99
+    assert state["active_transaction"]["arguments"]["subject"] == "Tamboro Mensal"
+    assert state["missing_parameters"] == []
+    collection = state["transaction_parameter_collection"]
+    assert collection["router_resolved_fields"] == ["subject"]
+    assert runtime.calls == []

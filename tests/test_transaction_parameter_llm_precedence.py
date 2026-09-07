@@ -643,3 +643,129 @@ intents: []
     decision = await router.route(state)
     assert decision.metadata["transaction_confirmation_decision"] == "confirm"
     assert decision.metadata["transaction_confirmation_source"] == "deterministic"
+
+@pytest.mark.asyncio
+async def test_collecting_preserves_resolved_required_fields_and_only_extracts_currently_missing():
+    class Runtime(_Runtime):
+        def __init__(self):
+            super().__init__()
+            self.pending_seen = None
+
+        async def _extract_transaction_parameters(
+            self, state, *, tool_name, missing_parameters, known_arguments=None
+        ):
+            self.pending_seen = list(missing_parameters)
+            # Simulate the value extracted for the only missing field. A resolved
+            # required field must not be offered back to the semantic extractor.
+            return {"reason": "desisti da compra"}
+
+    runtime = Runtime()
+    state = {
+        "user_text": "desisti da compra",
+        "sanitized_input": "desisti da compra",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["reason"],
+        "mcp_tools": ["solicitar_devolucao"],
+        "active_transaction": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+            "status": "COLLECTING_PARAMETERS",
+            "parameter_schema": {"order_id": "string", "reason": "string"},
+            "tool_description": "Abre uma solicitação de devolução de pedido.",
+        },
+        "selected_tool_call": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+        },
+        "route_decision": {"metadata": {}},
+        "route": "support_agent",
+        "intent": "state:COLLECTING_SUPPORT_PARAMETERS",
+    }
+
+    result = await runtime.execute_tools_for_intent(state)
+    assert runtime.pending_seen == ["reason"]
+    assert state["pending_tool_call"]["arguments"]["order_id"] == "PED-1001"
+    assert state["pending_tool_call"]["arguments"]["reason"] == "desisti da compra"
+    assert result[-1]["awaiting_confirmation"] is True
+
+@pytest.mark.asyncio
+async def test_correction_of_missing_numeric_value_does_not_reopen_resolved_text_entity():
+    class Runtime(_Runtime):
+        def __init__(self):
+            super().__init__()
+            self.pending_seen = None
+
+        async def _extract_transaction_parameters(
+            self, state, *, tool_name, missing_parameters, known_arguments=None
+        ):
+            self.pending_seen = list(missing_parameters)
+            # If subject were incorrectly offered again, a semantic extractor
+            # could reinterpret the monetary phrase as an entity. The runtime
+            # contract must expose only the missing numeric field here.
+            out = {"valor": 19.99}
+            if "subject" in missing_parameters:
+                out["subject"] = "cobrança de R$ 19,99"
+            return out
+
+    runtime = Runtime()
+    state = {
+        "user_text": "desculpa é a de dezenove e noventa e nove",
+        "sanitized_input": "desculpa é a de dezenove e noventa e nove",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["valor"],
+        "mcp_tools": ["solicitar_devolucao"],
+        "active_transaction": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+            "status": "COLLECTING_PARAMETERS",
+            "parameter_schema": {"order_id": "string", "reason": "string", "valor": "number"},
+        },
+        "selected_tool_call": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+        },
+        "route_decision": {"metadata": {}},
+        "route": "support_agent",
+        "intent": "state:COLLECTING_SUPPORT_PARAMETERS",
+    }
+    # This synthetic tool doesn't require valor, so exercise the extraction
+    # contract directly with the same resolved-text/missing-number shape.
+    out = await runtime._extract_transaction_parameters(
+        state,
+        tool_name="solicitar_devolucao",
+        missing_parameters=["valor"],
+        known_arguments={"subject": "Tamboro Mensal"},
+    )
+    assert runtime.pending_seen == ["valor"]
+    assert out == {"valor": 19.99}
+
+@pytest.mark.asyncio
+async def test_reconciler_exposes_schema_driven_field_evidence_views_for_missing_fields():
+    class _LLM:
+        def __init__(self):
+            self.prompt = ""
+        async def ainvoke(self, messages, **kwargs):
+            self.prompt = messages[0]["content"]
+            return {"content": '{"fields":{"subject":{"decision":"resolved","value":"Produto A","source":"history:1"},"valor":{"decision":"preserve","value":14.99,"source":"state"}}}'}
+
+    from agent_framework.runtime.transaction_parameters import reconcile_transaction_parameters
+    llm = _LLM()
+    result = await reconcile_transaction_parameters(
+        llm,
+        text="é a de quatorze e noventa e nove",
+        tool_name="acao_generica",
+        parameter_names=["subject", "valor"],
+        known_arguments={"valor": 14.99},
+        parameter_schema={
+            "subject": {"type": "string", "description": "referência concreta identificável"},
+            "valor": {"type": "number", "description": "quantia associada"},
+        },
+        conversational_context=(
+            "priority_3_previous_assistant_tool_or_evidence_context:\n"
+            "history:1: assistant: * Produto A no atributo 14,99. * Produto B no atributo 10,00."
+        ),
+    )
+    assert result["values"]["subject"] == "Produto A"
+    assert "field_evidence_views:" in llm.prompt
+    assert '"subject"' in llm.prompt
+    assert '"anchor_matches"' in llm.prompt

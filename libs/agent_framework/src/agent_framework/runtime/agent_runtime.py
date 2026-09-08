@@ -3008,48 +3008,38 @@ class AgentRuntimeMixin:
                 policy = self._resolve_tool_execution_policy(tool_name, previous_args)
                 missing_before = self._missing_required_arguments(policy, previous_args)
 
-                # Primeira tentativa: coleta tradicional usando SOMENTE a fala
-                # atual. O histórico não deve participar enquanto a mensagem corrente
-                # conseguir preencher o contrato normalmente.
+                # Uma única fonte de verdade para parâmetros: o extractor recebe
+                # todos os required fields, valores já conhecidos e o contexto
+                # bounded da própria transação. Assim ele pode resolver referências
+                # e correções explícitas sem uma segunda máquina de reconciliação.
                 arguments = dict(previous_args)
-                extracted_current = await self._extract_transaction_parameters_current_only(
+                required_fields = [str(name) for name in (policy.get("requires") or [])]
+                collector_override = getattr(type(self), "_extract_transaction_parameters", None)
+                collector_fields = (
+                    list(missing_before)
+                    if collector_override is not None and collector_override is not AgentRuntimeMixin._extract_transaction_parameters
+                    else required_fields
+                )
+                extracted_current = await self._extract_transaction_parameters(
                     state,
                     tool_name=tool_name,
-                    missing_parameters=missing_before,
+                    missing_parameters=collector_fields,
                     known_arguments=previous_args,
                 )
                 arguments.update(dict(extracted_current or {}))
+                route_meta_collection = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+                router_values = route_meta_collection.get("transaction_parameter_values")
+                router_fields = sorted(
+                    str(k) for k, v in (router_values.items() if isinstance(router_values, dict) else [])
+                    if v not in _EMPTY_VALUES
+                )
                 state["transaction_parameter_collection"] = {
                     "tool_name": tool_name,
-                    "mode": "current_turn",
+                    "mode": "single_extractor",
                     "resolved_fields": sorted(str(k) for k in (extracted_current or {}).keys()),
+                    "router_resolved_fields": router_fields,
                 }
-
-                # Segunda opção: somente se a coleta tradicional ainda deixar
-                # required fields em aberto, reconcilie temporalmente usando o
-                # schema/descrições declarados em tools.yaml e o contexto bounded
-                # newest->oldest preservado na transação.
-                missing_after_current = self._missing_required_arguments(policy, arguments)
-                if missing_after_current:
-                    required_fields = [str(name) for name in (policy.get("requires") or [])]
-                    reconciliation = await self._reconcile_transaction_parameters(
-                        state,
-                        tool_name=tool_name,
-                        parameter_names=required_fields,
-                        known_arguments=arguments,
-                    )
-                    for field in reconciliation.get("clear_fields") or []:
-                        arguments.pop(str(field), None)
-                    arguments.update(dict(reconciliation.get("values") or {}))
-                    state["transaction_parameter_reconciliation"] = {
-                        "tool_name": tool_name,
-                        "trigger": "traditional_collection_unresolved",
-                        "decisions": dict(reconciliation.get("decisions") or {}),
-                        "provenance": dict(reconciliation.get("provenance") or {}),
-                        "clear_fields": list(reconciliation.get("clear_fields") or []),
-                    }
-                else:
-                    state.pop("transaction_parameter_reconciliation", None)
+                state.pop("transaction_parameter_reconciliation", None)
 
                 # Argumentos estruturados já presentes no contexto são aceitos de
                 # forma genérica (não são parsing textual). Para required fields,
@@ -3096,65 +3086,11 @@ class AgentRuntimeMixin:
                     state, tool_name=tool_name, arguments=arguments, policy=policy, emit_events=emit_events
                 )
                 if pre_validation_result is not None:
-                    # A pre-validation é a fronteira autoritativa da coleta
-                    # tradicional. Se ela rejeitar um candidato de forma recuperável
-                    # (NEEDS_PARAMETER), ainda não repromptamos o usuário: fazemos UMA
-                    # tentativa de reconciliação temporal com o histórico bounded e
-                    # com a semântica declarada em tools.yaml. Isso cobre referências
-                    # como "é a de R$ 19,99" sem tornar o reconciliador o caminho
-                    # primário de COLLECTING_PARAMETERS.
-                    pre_meta = state.get("transaction_pre_validation")
-                    pre_meta = pre_meta if isinstance(pre_meta, dict) else {}
-                    retry_parameter = str(pre_meta.get("parameter") or "").strip()
-                    recoverable = (
-                        str(pre_meta.get("status") or "").upper() == "NEEDS_PARAMETER"
-                        and bool(retry_parameter)
-                        and state.get("transaction_status") == "COLLECTING_PARAMETERS"
-                    )
-                    if recoverable:
-                        recovered_selected = dict(self._active_transaction(state) or state.get("selected_tool_call") or {})
-                        recovered_arguments = dict(recovered_selected.get("arguments") or {})
-                        required_fields = [str(name) for name in (policy.get("requires") or [])]
-                        reconciliation = await self._reconcile_transaction_parameters(
-                            state,
-                            tool_name=tool_name,
-                            parameter_names=required_fields,
-                            known_arguments=recovered_arguments,
-                        )
-                        for field in reconciliation.get("clear_fields") or []:
-                            recovered_arguments.pop(str(field), None)
-                        recovered_arguments.update(dict(reconciliation.get("values") or {}))
-                        state["transaction_parameter_reconciliation"] = {
-                            "tool_name": tool_name,
-                            "trigger": "prevalidation_needs_parameter",
-                            "rejected_parameter": retry_parameter,
-                            "decisions": dict(reconciliation.get("decisions") or {}),
-                            "provenance": dict(reconciliation.get("provenance") or {}),
-                            "clear_fields": list(reconciliation.get("clear_fields") or []),
-                        }
-                        retry_policy = self._resolve_tool_execution_policy(tool_name, recovered_arguments)
-                        retry_missing = self._missing_required_arguments(retry_policy, recovered_arguments)
-                        if retry_parameter not in retry_missing:
-                            state["selected_tool_call"] = {"tool_name": tool_name, "arguments": recovered_arguments}
-                            self._set_active_transaction(
-                                state, tool_name=tool_name, arguments=recovered_arguments, status="COLLECTING_PARAMETERS"
-                            )
-                            state["missing_parameters"] = retry_missing
-                            pre_validation_retry = await self._run_transaction_pre_validation(
-                                state,
-                                tool_name=tool_name,
-                                arguments=recovered_arguments,
-                                policy=retry_policy,
-                                emit_events=emit_events,
-                            )
-                            if pre_validation_retry is None:
-                                arguments = recovered_arguments
-                                policy = retry_policy
-                                pre_validation_result = None
-                            else:
-                                return [pre_validation_retry]
-                    if pre_validation_result is not None:
-                        return [pre_validation_result]
+                    # A pre-validation é a fronteira autoritativa. Se pedir um
+                    # parâmetro novamente, o estado produzido por ela é preservado
+                    # e o próximo turno volta ao mesmo extractor. Não existe uma
+                    # segunda tentativa escondida de reconciliação no mesmo turno.
+                    return [pre_validation_result]
 
                 tool_name, policy, force_confirmation = self._apply_prevalidated_transaction_decision(
                     state, tool_name=tool_name, arguments=arguments, policy=policy

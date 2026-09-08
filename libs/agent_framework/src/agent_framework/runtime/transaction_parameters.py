@@ -230,20 +230,88 @@ async def extract_transaction_parameters(
     tool_description: str | None = None,
     conversational_context: str | None = None,
 ) -> dict[str, Any]:
-    """Compatibility facade returning only resolved candidates.
+    """Extract transaction parameter values with one simple source of truth.
 
-    New runtime code should use :func:`reconcile_transaction_parameters` when it
-    needs preserve/clear/provenance decisions.  Keeping this facade avoids
-    breaking routers and existing extensions that only need candidate extraction.
+    The current utterance is authoritative for new values/corrections. A bounded
+    conversation context may only be used to resolve references made by the
+    current utterance (for example, "the 14.99 one"). Known arguments are state
+    defaults: if a field is not returned it is preserved by the caller.
+
+    The extractor does not decide preserve/clear/unresolved, routing, confirmation
+    or execution. Business validity remains the responsibility of pre-validation.
     """
-    result = await reconcile_transaction_parameters(
-        llm,
-        text=text,
-        tool_name=tool_name,
-        parameter_names=missing_parameters,
-        known_arguments=known_arguments,
-        parameter_schema=parameter_schema,
-        tool_description=tool_description,
-        conversational_context=conversational_context,
+    names = [str(name) for name in (missing_parameters or []) if str(name).strip()]
+    message = str(text or "").strip()
+    if not names or not message or llm is None:
+        return {}
+
+    schema = dict(parameter_schema or {})
+    known = {
+        str(key): value
+        for key, value in dict(known_arguments or {}).items()
+        if value not in _EMPTY_VALUES
+    }
+    field_spec = {
+        name: {
+            "type": schema.get(name, "string") if not isinstance(schema.get(name), dict) else schema.get(name, {}).get("type", "string"),
+            "description": None if not isinstance(schema.get(name), dict) else schema.get(name, {}).get("description"),
+        }
+        for name in names
+    }
+    output_shape = {name: None for name in names}
+    prompt = (
+        "Você extrai parâmetros de uma transação ativa. Não faça roteamento, confirmação, execução ou validação de negócio.\n\n"
+        "REGRAS:\n"
+        "1. O significado de cada campo vem exclusivamente de parameter_schema e transaction_description, considerando principalmente a descrição semântica quando disponível.\n"
+        "2. A ausência de tipo ou descrição NÃO impede a extração quando o restante do contrato e o texto forem semanticamente suficientes.\n3. A fala atual é a fonte principal. Retorne um campo quando a fala atual o informa, corrige ou referencia de forma suficientemente clara.\n"
+        "4. conversational_context é apenas contexto recente para resolver referências da fala atual, como 'esse', 'a de 14,99', 'o primeiro'. Não trate texto do contexto como uma nova afirmação do cliente; use-o somente para interpretar a referência atual.\n"
+        "5. known_arguments contém valores já conhecidos. Não os repita por obrigação. Se a fala atual não os altera, omita o campo ou retorne null; o runtime os preservará.\n"
+        "6. Se a fala atual corrigir explicitamente um valor conhecido, retorne o novo valor. A fala atual tem precedência temporal para esse campo.\n"
+        "7. Você pode retornar mais de um campo quando a combinação da fala atual com o contexto recente determinar a relação de forma clara.\n"
+        "8. Não valide se o valor existe no backend nem se a combinação é permitida. Retorne o candidato textual; a pre-validation fará a validação autoritativa.\n"
+        "9. Em caso de dúvida razoável sobre a correspondência ou o valor, prefira null. Não invente associações.\n"
+        "10. Responda somente JSON válido, sem markdown e sem chaves extras.\n\n"
+        f"transaction_tool: {tool_name}\n"
+        f"transaction_description: {tool_description or ''}\n"
+        f"parameter_names: {json.dumps(names, ensure_ascii=False)}\n"
+        f"pending_parameters: {json.dumps(names, ensure_ascii=False)}\n"
+        f"parameter_schema: {json.dumps(field_spec, ensure_ascii=False, default=str)}\n"
+        f"known_arguments: {json.dumps(known, ensure_ascii=False, default=str)}\n"
+        f"user_message: {message}\n"
+        f"conversational_context: {str(conversational_context or '').strip()}\n"
+        f"Formato obrigatório: {json.dumps(output_shape, ensure_ascii=False)}"
     )
-    return dict(result.get("values") or {})
+
+    try:
+        response = await llm.ainvoke(
+            [{"role": "user", "content": prompt}],
+            profile_name="transaction_parameter_extraction",
+            component_name="transaction_parameter_extraction",
+            generation_name="llm.transaction_parameter_extraction",
+            temperature=0.0,
+        )
+    except TypeError:
+        response = await llm.ainvoke([{"role": "user", "content": prompt}])
+    except Exception as exc:
+        logger.warning("transaction.parameter.extract_failed tool=%s fields=%s error=%s", tool_name, names, exc)
+        return {}
+
+    raw = _response_text(response).strip()
+    try:
+        payload = parse_json_object(raw)
+    except (TypeError, ValueError):
+        logger.warning("transaction.parameter.extract_invalid_output tool=%s raw=%r", tool_name, raw[:240])
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    values: dict[str, Any] = {}
+    for name in names:
+        value = payload.get(name)
+        if value in _EMPTY_VALUES:
+            continue
+        declared = field_spec.get(name, {}).get("type", "string")
+        coerced = _coerce(value, declared)
+        if coerced not in _EMPTY_VALUES:
+            values[name] = coerced
+    return values

@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping
 
 
 from agent_framework.memory.summary_memory import MemoryContext, render_recent_messages
-from agent_framework.runtime.transaction_parameters import extract_current_transaction_parameters, extract_transaction_parameters, reconcile_transaction_parameters, parse_transaction_confirmation
+from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, reconcile_transaction_parameters, parse_transaction_confirmation
 from agent_framework.workflows.input_contract import match_expected_input
 
 
@@ -859,17 +859,6 @@ class AgentRuntimeMixin:
             if parameter:
                 recovered_arguments = dict(arguments or {})
                 recovered_arguments.pop(parameter, None)
-                # Domain validators may declare derived fields that became invalid
-                # together with the rejected parameter. The framework does not
-                # interpret field names; it simply honors the generic clear_fields
-                # contract. This prevents stale derived values from contaminating
-                # later collection turns.
-                validator_clear_fields = [
-                    str(name) for name in (payload.get("clear_fields") or [])
-                    if str(name).strip()
-                ]
-                for field in validator_clear_fields:
-                    recovered_arguments.pop(field, None)
                 recovered_policy = self._resolve_tool_execution_policy(tool_name, recovered_arguments)
                 missing = self._missing_required_arguments(recovered_policy, recovered_arguments)
                 if parameter not in missing:
@@ -888,7 +877,6 @@ class AgentRuntimeMixin:
                     "status": status,
                     "parameter": parameter,
                     "terminal": False,
-                    "validator_clear_fields": validator_clear_fields,
                     "result": result,
                 }
                 # A recoverable validator may provide a user-facing explanation
@@ -1509,100 +1497,6 @@ class AgentRuntimeMixin:
         newest = list(reversed(blocks))
         return "\n".join(f"history:{i+1}: {block}" for i, block in enumerate(newest))
 
-    @staticmethod
-    def _transaction_context_priority_view(context: Any) -> str:
-        """Group bounded history by reconciliation priority without losing recency.
-
-        The temporal reconciler is a fallback, so current-turn values and validated
-        transaction state are supplied separately.  Within historical conversation,
-        assistant explanations are intentionally considered before older user turns:
-        they frequently carry grounded relationships produced from tool/evidence
-        results (for example item -> amount).  They remain interpretive candidates
-        only and must still pass the configured authoritative pre-validation.
-        """
-        ordered = AgentRuntimeMixin._transaction_context_newest_first(context)
-        if not ordered:
-            return ""
-        assistant: list[str] = []
-        user: list[str] = []
-        other: list[str] = []
-        for line in ordered.splitlines():
-            payload = line.split(": ", 1)[1] if ": " in line else line
-            low = payload.lower().lstrip()
-            if low.startswith(("assistant:", "agente:")):
-                assistant.append(line)
-            elif low.startswith(("user:", "cliente:")):
-                user.append(line)
-            else:
-                other.append(line)
-
-        sections: list[str] = []
-        if assistant:
-            sections.append(
-                "priority_3_previous_assistant_tool_or_evidence_context:\n" + "\n".join(assistant)
-            )
-        if user:
-            sections.append("priority_4_previous_user_utterances:\n" + "\n".join(user))
-        if other:
-            sections.append("priority_5_other_conversational_context:\n" + "\n".join(other))
-        return "\n".join(sections)
-
-    @staticmethod
-    def _apply_transaction_reconciliation(
-        arguments: dict[str, Any],
-        reconciliation: dict[str, Any] | None,
-        *,
-        protected_current_fields: set[str] | None = None,
-    ) -> tuple[dict[str, Any], list[str]]:
-        """Apply temporal reconciliation without erasing current-turn candidates.
-
-        Current-turn extraction is the first source of truth for *what the user
-        just said*. Reconciliation may canonicalize that candidate, and business
-        pre-validation may reject it, but temporal history must not make it
-        disappear before the validator sees it.
-        """
-        out = dict(arguments or {})
-        rec = dict(reconciliation or {})
-        protected = {str(name) for name in (protected_current_fields or set())}
-        ignored_clears: list[str] = []
-        for field in rec.get("clear_fields") or []:
-            name = str(field)
-            if name in protected:
-                ignored_clears.append(name)
-                continue
-            out.pop(name, None)
-        # Canonicalized values are still allowed; this is not a hard field lock.
-        out.update(dict(rec.get("values") or {}))
-        return out, ignored_clears
-
-    @staticmethod
-    def _apply_prevalidated_structural_candidates(
-        arguments: dict[str, Any],
-        reconciliation: dict[str, Any] | None,
-        policy: dict[str, Any] | None,
-    ) -> tuple[dict[str, Any], dict[str, str]]:
-        """Apply structural *candidates* only behind authoritative pre-validation.
-
-        Candidates are not resolved parameters. They may be raw local evidence
-        fragments and exist solely so a configured domain validator can
-        canonicalize/reject them. Without enabled pre-validation they are ignored.
-        """
-        out = dict(arguments or {})
-        cfg = (policy or {}).get("pre_validation") if isinstance(policy, dict) else None
-        if not isinstance(cfg, dict) or not cfg.get("enabled") or not str(cfg.get("tool") or "").strip():
-            return out, {}
-        rec = dict(reconciliation or {})
-        candidates = dict(rec.get("candidates") or {})
-        provenance = dict(rec.get("candidate_provenance") or {})
-        applied: dict[str, str] = {}
-        for field, value in candidates.items():
-            name = str(field)
-            if out.get(name) not in _EMPTY_VALUES or value in _EMPTY_VALUES:
-                continue
-            out[name] = value
-            applied[name] = str(provenance.get(name) or "structural_candidate")
-        return out, applied
-
     async def _reconcile_transaction_parameters(
         self,
         state: dict[str, Any],
@@ -1649,7 +1543,7 @@ class AgentRuntimeMixin:
             suffix = "\n\nCONTINUAÇÃO ATUAL DO CLIENTE:\n"
             if prefix in effective and suffix in effective:
                 conversational_context = effective.split(prefix, 1)[1].split(suffix, 1)[0].strip()
-        ordered_context = self._transaction_context_priority_view(conversational_context)
+        ordered_context = self._transaction_context_newest_first(conversational_context)
         cached = route_meta.get("transaction_parameter_values")
         effective_known = dict(known_arguments or {})
         if isinstance(cached, dict):
@@ -1708,7 +1602,7 @@ class AgentRuntimeMixin:
         route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
         text = route_meta.get("original_input") if route_meta.get("contextual_reentry") else None
         text = text or state.get("sanitized_input") or state.get("user_text") or ""
-        return await extract_current_transaction_parameters(
+        return await extract_transaction_parameters(
             getattr(self, "llm", None),
             text=str(text),
             tool_name=tool_name,
@@ -1716,6 +1610,7 @@ class AgentRuntimeMixin:
             known_arguments=dict(known_arguments or {}),
             parameter_schema=schema,
             tool_description=description,
+            conversational_context="",
         )
 
     async def _extract_transaction_parameters(
@@ -3074,12 +2969,12 @@ class AgentRuntimeMixin:
         # intent, a transação anterior é encerrada e seus latches são limpos.
         active_before_interruption = self._active_transaction(state)
         interruption = str(route_meta.get("transaction_interruption") or "").strip().lower()
-        if active_before_interruption and interruption == "explicit_abandonment":
+        if active_before_interruption and interruption == "intent_shift":
             interrupted_tool = active_before_interruption.get("tool_name")
             self._finish_active_transaction(state, "CANCELLED")
             state["transaction_pre_validation"] = None
             state["tool_policy_result"] = {
-                "action": "cancelled_by_explicit_abandonment",
+                "action": "cancelled_by_intent_shift",
                 "tool_name": interrupted_tool,
             }
 
@@ -3113,59 +3008,21 @@ class AgentRuntimeMixin:
                 policy = self._resolve_tool_execution_policy(tool_name, previous_args)
                 missing_before = self._missing_required_arguments(policy, previous_args)
 
-                # O EnterpriseRouter pode já ter consumido parâmetros pendentes
-                # neste MESMO turno para garantir precedência da transação sobre
-                # intent shift. Esses valores não são apenas telemetria: precisam
-                # ser materializados no estado transacional antes de qualquer nova
-                # extração. Eles continuam sendo candidatos e passam normalmente
-                # pela pre-validation autoritativa antes de confirmação/execução.
+                # Primeira tentativa: coleta tradicional usando SOMENTE a fala
+                # atual. O histórico não deve participar enquanto a mensagem corrente
+                # conseguir preencher o contrato normalmente.
                 arguments = dict(previous_args)
-                cached_route_values: dict[str, Any] = {}
-                cached = route_meta.get("transaction_parameter_values")
-                missing_before_set = {str(name) for name in missing_before}
-                if isinstance(cached, dict):
-                    cached_route_values = {
-                        str(key): value
-                        for key, value in cached.items()
-                        if str(key) in missing_before_set and value not in _EMPTY_VALUES
-                    }
-                    arguments.update(cached_route_values)
-
-                # A fala atual pode tanto preencher um campo faltante quanto corrigir
-                # explicitamente um campo já coletado. Por isso o extrator current-only
-                # examina TODOS os parâmetros requeridos, nunca apenas missing_parameters.
-                # Ele continua estritamente local à mensagem atual e só devolve campos
-                # explicitamente presentes; portanto não compete com a reconciliação
-                # temporal e não apaga estado quando o usuário não mencionou o campo.
-                required_fields = [str(name) for name in (policy.get("requires") or [])]
-                # Legacy/domain overrides historically receive only pending fields.
-                # Keep that extension contract intact; the base framework extractor
-                # is the one allowed to inspect every required field so an explicit
-                # current-turn correction can replace an already collected value.
-                legacy_override = getattr(type(self), "_extract_transaction_parameters", None)
-                has_legacy_override = (
-                    legacy_override is not None
-                    and legacy_override is not AgentRuntimeMixin._extract_transaction_parameters
-                )
-                current_fields = (
-                    self._missing_required_arguments(policy, arguments)
-                    if has_legacy_override else required_fields
-                )
                 extracted_current = await self._extract_transaction_parameters_current_only(
                     state,
                     tool_name=tool_name,
-                    missing_parameters=current_fields,
-                    known_arguments=arguments,
+                    missing_parameters=missing_before,
+                    known_arguments=previous_args,
                 )
                 arguments.update(dict(extracted_current or {}))
                 state["transaction_parameter_collection"] = {
                     "tool_name": tool_name,
                     "mode": "current_turn",
-                    "router_resolved_fields": sorted(cached_route_values.keys()),
-                    "current_turn_resolved_fields": sorted(str(k) for k in (extracted_current or {}).keys()),
-                    "resolved_fields": sorted(
-                        set(cached_route_values.keys()) | {str(k) for k in (extracted_current or {}).keys()}
-                    ),
+                    "resolved_fields": sorted(str(k) for k in (extracted_current or {}).keys()),
                 }
 
                 # Segunda opção: somente se a coleta tradicional ainda deixar
@@ -3181,23 +3038,15 @@ class AgentRuntimeMixin:
                         parameter_names=required_fields,
                         known_arguments=arguments,
                     )
-                    protected_current_fields = {
-                        str(k)
-                        for k, v in dict(extracted_current or {}).items()
-                        if v not in _EMPTY_VALUES
-                    }
-                    arguments, ignored_clears = self._apply_transaction_reconciliation(
-                        arguments, reconciliation, protected_current_fields=protected_current_fields
-                    )
+                    for field in reconciliation.get("clear_fields") or []:
+                        arguments.pop(str(field), None)
+                    arguments.update(dict(reconciliation.get("values") or {}))
                     state["transaction_parameter_reconciliation"] = {
                         "tool_name": tool_name,
                         "trigger": "traditional_collection_unresolved",
                         "decisions": dict(reconciliation.get("decisions") or {}),
                         "provenance": dict(reconciliation.get("provenance") or {}),
                         "clear_fields": list(reconciliation.get("clear_fields") or []),
-                        "values": dict(reconciliation.get("values") or {}),
-                        "protected_current_fields": sorted(protected_current_fields),
-                        "ignored_clear_fields": sorted(ignored_clears),
                     }
                 else:
                     state.pop("transaction_parameter_reconciliation", None)
@@ -3222,12 +3071,6 @@ class AgentRuntimeMixin:
                     tool_name, arguments, state, exclude_fields=policy.get("requires") or []
                 )
                 policy = self._resolve_tool_execution_policy(tool_name, arguments)
-                arguments, applied_candidates = self._apply_prevalidated_structural_candidates(
-                    arguments, locals().get("reconciliation"), policy
-                )
-                if applied_candidates:
-                    state.setdefault("transaction_parameter_reconciliation", {})["applied_structural_candidates"] = applied_candidates
-                    policy = self._resolve_tool_execution_policy(tool_name, arguments)
                 missing = self._missing_required_arguments(policy, arguments)
                 if missing:
                     self._set_collecting_parameters(
@@ -3478,53 +3321,21 @@ class AgentRuntimeMixin:
         policy = self._resolve_tool_execution_policy(selected_action, action_args)
         required = [str(name) for name in (policy.get("requires") or [])]
 
-        # Primeiro turno transacional segue a mesma regra de COLLECTING_PARAMETERS:
-        # 1) coleta tradicional SOMENTE da fala atual; 2) reconciliação temporal
-        # apenas como fallback se ainda houver required fields faltando.
-        # Isso evita que histórico altere o happy path e, ao mesmo tempo, permite
-        # resolver referências contextuais quando a fala atual é incompleta.
+        # Valores já estruturados no contexto podem satisfazer requirements sem
+        # parsing textual. Para qualquer required field ainda ausente, a fala do
+        # usuário é interpretada exclusivamente pelo extrator LLM transacional.
         missing_initial = self._missing_required_arguments(policy, action_args)
-        extracted_initial = await self._extract_transaction_parameters_current_only(
+        # No primeiro turno, a fala atual pode fornecer/corrigir qualquer required
+        # field, inclusive um valor que exista no contexto estruturado mas pertença
+        # a uma transação anterior. O extrator continua restrito ao contrato
+        # ``requires`` e só sobrescreve quando a LLM realmente extrai um valor.
+        extracted_initial = await self._extract_transaction_parameters(
             state,
             tool_name=selected_action,
             missing_parameters=required,
             known_arguments={k: v for k, v in action_args.items() if k not in set(required)},
         )
         action_args.update(extracted_initial)
-        state["transaction_parameter_collection"] = {
-            "tool_name": selected_action,
-            "mode": "current_turn",
-            "resolved_fields": sorted(str(k) for k in (extracted_initial or {}).keys()),
-        }
-
-        missing_after_current = self._missing_required_arguments(policy, action_args)
-        if missing_after_current:
-            reconciliation = await self._reconcile_transaction_parameters(
-                state,
-                tool_name=selected_action,
-                parameter_names=required,
-                known_arguments=action_args,
-            )
-            protected_current_fields = {
-                str(k)
-                for k, v in dict(extracted_initial or {}).items()
-                if str(k) in set(missing_initial) and v not in _EMPTY_VALUES
-            }
-            action_args, ignored_clears = self._apply_transaction_reconciliation(
-                action_args, reconciliation, protected_current_fields=protected_current_fields
-            )
-            state["transaction_parameter_reconciliation"] = {
-                "tool_name": selected_action,
-                "trigger": "initial_traditional_collection_unresolved",
-                "decisions": dict(reconciliation.get("decisions") or {}),
-                "provenance": dict(reconciliation.get("provenance") or {}),
-                "clear_fields": list(reconciliation.get("clear_fields") or []),
-                "values": dict(reconciliation.get("values") or {}),
-                "protected_current_fields": sorted(protected_current_fields),
-                "ignored_clear_fields": sorted(ignored_clears),
-            }
-        else:
-            state.pop("transaction_parameter_reconciliation", None)
 
         # O mapper MCP continua responsável somente por parâmetros auxiliares que
         # não pertencem ao contrato transacional.
@@ -3542,18 +3353,6 @@ class AgentRuntimeMixin:
             state, tool_name=selected_action, arguments=action_args, status="COLLECTING_PARAMETERS"
         )
         state["tool_policy_result"] = {**policy, "tool_name": selected_action}
-
-        action_args, applied_candidates = self._apply_prevalidated_structural_candidates(
-            action_args, locals().get("reconciliation"), policy
-        )
-        if applied_candidates:
-            state.setdefault("transaction_parameter_reconciliation", {})["applied_structural_candidates"] = applied_candidates
-            selected = {"tool_name": selected_action, "arguments": action_args}
-            state["selected_tool_call"] = selected
-            self._set_active_transaction(
-                state, tool_name=selected_action, arguments=action_args, status="COLLECTING_PARAMETERS"
-            )
-            policy = self._resolve_tool_execution_policy(selected_action, action_args)
 
         missing = self._missing_required_arguments(policy, action_args)
         if missing:

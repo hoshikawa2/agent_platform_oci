@@ -7862,6 +7862,15 @@ Windows PowerShell:
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+### 17.2.1 Deploy a local Langfuse structure
+
+It's possible to deploy a local Langfuse through Docker (docker-compose).
+
+Once enabled, the `agent_template_backend` integration can record execution traces, workflow spans, inputs and outputs, LLM calls, latency, token usage, routing, tool usage, and information useful for investigating guardrails, judges, and failures. The exact content depends on the trace mode and the components used by each request.
+
+Follow the section [31.1. Local Langfuse with agent_template_backend](#311-local-langfuse-with-agent_template_backend) for more details.
+
+
 ### 17.3. Immediate Validations
 
 Check health:
@@ -10661,6 +10670,289 @@ Test gateway     → validates the actual end-to-end flow.
 
 Following this model, new agents can be created with simpler standardization, scalability, traceability, and maintenance.
 
+---
+
+### 31.1. Local Langfuse with `agent_template_backend`
+
+This guide explains how to start the local Langfuse environment supplied with `agent_framework_oci`, connect it to `agent_template_backend`, and validate trace ingestion. The environment is defined in:
+
+```text
+agent_framework_oci/libs/agent_framework/Infrastructure_Langfuse/docker-compose.yml
+```
+
+This version of the Compose stack starts Langfuse v3 and its dependencies: `langfuse-web`, `langfuse-worker`, PostgreSQL, ClickHouse, Redis, and MinIO. It also starts MongoDB for local framework memory features.
+
+#### What Langfuse helps you observe
+
+Once enabled, the `agent_template_backend` integration can record execution traces, workflow spans, inputs and outputs, LLM calls, latency, token usage, routing, tool usage, and information useful for investigating guardrails, judges, and failures. The exact content depends on the trace mode and the components used by each request.
+
+#### Prerequisites
+
+- A recent Docker Desktop installation with Docker Compose v2 (`docker compose`).
+- Docker Desktop running before the environment is started.
+- On Windows with WSL 2, enable your Linux distribution under **Docker Desktop > Settings > Resources > WSL Integration**.
+- Available local ports: `3005`, `9090`, `27017`, and, on `127.0.0.1`, `5433`, `6379`, `8124`, `9002`, and `9091`.
+- Enough memory for several containers. At least 8 GB allocated to Docker is recommended for development.
+- A local copy of the `agent_framework_oci` project.
+- The Python environment and `agent_template_backend` dependencies already installed.
+
+Validate Docker and Compose:
+
+```bash
+docker --version
+docker compose version
+docker info
+```
+
+If `docker info` fails, start Docker Desktop. In WSL, if `docker` is missing or cannot reach the daemon, review Docker Desktop's WSL integration and reopen the terminal.
+
+#### Ports used by the environment
+
+| Component | Host address | Purpose |
+| --- | --- | --- |
+| Langfuse Web/API | `http://localhost:3005` | UI and trace ingestion |
+| MinIO S3 | `http://localhost:9090` | Event and media storage |
+| MinIO Console | `http://127.0.0.1:9091` | Local MinIO administration |
+| MongoDB | `localhost:27017` | Framework local memory |
+| PostgreSQL | `127.0.0.1:5433` | Langfuse transactional database |
+| Redis | `127.0.0.1:6379` | Langfuse queues/cache |
+| ClickHouse HTTP | `127.0.0.1:8124` | Analytics database |
+| ClickHouse native | `127.0.0.1:9002` | ClickHouse native protocol |
+
+If a port is already in use, change only the left side of its `ports:` mapping and update host-facing URLs where applicable. Keep Langfuse on port `3005` to use the template configuration unchanged.
+
+#### Start Langfuse
+
+From the project root:
+
+```bash
+cd agent_framework_oci/libs/agent_framework/Infrastructure_Langfuse
+docker compose pull
+docker compose up -d
+```
+
+On the first run, downloading images and applying migrations may take a few minutes. Monitor the stack:
+
+```bash
+docker compose ps
+docker compose logs -f langfuse-web langfuse-worker
+```
+
+Stop `docker compose logs -f` with `Ctrl+C`; this does not stop the containers.
+
+Wait for the services to run and for dependencies with health checks to become healthy. Validate the UI:
+
+```bash
+curl -I http://localhost:3005
+```
+
+Then open [http://localhost:3005](http://localhost:3005) in a browser.
+
+#### First login and API key creation
+
+1. Open `http://localhost:3005`.
+2. Create the first local user and sign in.
+3. Create an organization if prompted.
+4. Create a project such as `agent-template-backend-local`.
+5. In the project, open **Settings > API Keys** and create a key pair.
+6. Save the **Public Key** (`pk-lf-...`) and **Secret Key** (`sk-lf-...`).
+
+Both keys must belong to the same project where you will inspect traces. Do not use illustrative or stale keys found in example files.
+
+#### Configure `agent_template_backend`
+
+Enter the template directory and create `.env` if it does not exist:
+
+```bash
+cd agent_framework_oci/templates/agent_template_backend
+cp .env.example .env
+```
+
+Windows PowerShell equivalent:
+
+```powershell
+Set-Location agent_framework_oci/templates/agent_template_backend
+Copy-Item .env.example .env
+```
+
+Edit the observability section in `.env`:
+
+```env
+ENABLE_LANGFUSE=true
+LANGFUSE_TRACE_MODE=verbose
+LANGFUSE_ROOT_SPAN_NAME=agent.gateway_message
+LANGFUSE_LEGACY_IO_FALLBACK=true
+LANGFUSE_PUBLIC_KEY=pk-lf-REPLACE_WITH_PROJECT_PUBLIC_KEY
+LANGFUSE_SECRET_KEY=sk-lf-REPLACE_WITH_PROJECT_SECRET_KEY
+LANGFUSE_HOST=http://localhost:3005
+ENABLE_LANGFUSE_OPENAI_AUTO_INSTRUMENTATION=true
+
+# Keep disabled unless an OTEL collector has been configured.
+ENABLE_OTEL=false
+OTEL_EXPORTER_OTLP_ENDPOINT=
+OTEL_SERVICE_NAME=ai-agent-template
+```
+
+`LANGFUSE_TRACE_MODE=verbose` provides the most detail during development. Use `compact` when you want to reduce volume and detail.
+
+If the backend also runs inside a container, `localhost` points to that container, not to the host. Connect it to the same Compose network and use the service name, normally `http://langfuse-web:3000`, or use `http://host.docker.internal:3005` where that hostname is supported.
+
+#### Start `agent_template_backend`
+
+From `agent_framework_oci/templates/agent_template_backend`, activate the virtual environment and start the API:
+
+```bash
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+On Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Validate the backend from another terminal:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/agents
+curl http://localhost:8000/debug/env
+```
+
+In `/debug/env`, confirm that Langfuse is enabled and the effective host is `http://localhost:3005`. The endpoint must not expose the secret key value.
+
+#### Generate a test trace
+
+Send a real request to the template:
+
+```bash
+curl -X POST http://localhost:8000/gateway/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "web",
+    "tenant_id": "default",
+    "payload": {
+      "text": "My payment has not been posted yet",
+      "session_id": "langfuse-test-001",
+      "user_id": "user-001",
+      "customer_id": "12345",
+      "contract_id": "ABC-999",
+      "message_id": "msg-langfuse-001"
+    }
+  }'
+```
+
+A backend response confirms message processing, but full validation requires checking the trace in Langfuse:
+
+1. Open `http://localhost:3005`.
+2. Enter the project associated with the keys in `.env`.
+3. Open **Tracing/Traces**.
+4. Find the latest execution, normally using `agent.gateway_message` as its root span.
+5. Confirm timestamp, input, output, duration, and child spans.
+6. If available, filter or search for `langfuse-test-001`, `user-001`, or the trace name.
+
+For a stronger observability test, send messages that activate different paths: routing, an MCP tool, a guardrail, a judge, RAG, and a second message with the same `session_id`. This lets you compare the span tree and verify session continuity.
+
+#### Validation checklist
+
+- [ ] `docker compose ps` shows `langfuse-web` and `langfuse-worker` running.
+- [ ] PostgreSQL, ClickHouse, Redis, and MinIO are healthy.
+- [ ] `http://localhost:3005` opens in a browser.
+- [ ] A project and API keys were created in local Langfuse.
+- [ ] The template `.env` uses the keys from that same project.
+- [ ] `ENABLE_LANGFUSE=true` and `LANGFUSE_HOST=http://localhost:3005`.
+- [ ] `curl http://localhost:8000/health` reports a healthy backend.
+- [ ] A `/gateway/message` request returns a response.
+- [ ] The trace appears in the correct Langfuse project.
+- [ ] The trace contains the expected root and child spans.
+
+#### Useful operational commands
+
+Check status:
+
+```bash
+cd agent_framework_oci/libs/agent_framework/Infrastructure_Langfuse
+docker compose ps
+```
+
+View recent logs from all services:
+
+```bash
+docker compose logs --tail=200
+```
+
+View only Langfuse logs:
+
+```bash
+docker compose logs --tail=200 langfuse-web langfuse-worker
+```
+
+Restart:
+
+```bash
+docker compose restart
+```
+
+Stop without deleting data:
+
+```bash
+docker compose stop
+```
+
+Start again:
+
+```bash
+docker compose start
+```
+
+Stop and remove containers and the network while preserving volumes:
+
+```bash
+docker compose down
+```
+
+Update images:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+#### Completely delete local data
+
+The command below also removes volumes, including users, projects, keys, traces, analytics data, and stored objects. Use it only when you intend to recreate the environment from scratch:
+
+```bash
+cd agent_framework_oci/libs/agent_framework/Infrastructure_Langfuse
+docker compose down -v
+```
+
+This operation cannot be undone unless the volumes have been backed up.
+
+#### Troubleshooting
+
+| Symptom | Check and resolution |
+| --- | --- |
+| `docker: command not found` in WSL | Install/start Docker Desktop, enable WSL 2 and distribution integration, then reopen the terminal. |
+| Cannot access `localhost:3005` | Run `docker compose ps` and inspect `docker compose logs langfuse-web`. Confirm port 3005 is available. |
+| Containers keep restarting | Inspect service and dependency logs. Confirm that Docker has enough memory and disk space. |
+| Langfuse opens but receives no traces | Confirm `ENABLE_LANGFUSE`, host, and the key pair. Restart the backend after changing `.env`. |
+| `401 Unauthorized` while sending to Langfuse | The public and secret keys do not belong to the same project, are incorrect, or were revoked. Create a new pair in the local project. |
+| The trace appears in another project | The backend is using another API key pair. Check the `.env` loaded by the process. |
+| A trace exists but spans/details are missing | Use `LANGFUSE_TRACE_MODE=verbose`, enable auto-instrumentation, and run a flow that actually invokes LLMs/tools/guardrails. |
+| A containerized backend cannot reach Langfuse | Do not use `localhost:3005` inside the container. Use the Compose network and service name or `host.docker.internal`, depending on the topology. |
+| A port is already in use | Identify the process or change the host-side Compose port. If port 3005 changes, update `LANGFUSE_HOST` and `NEXTAUTH_URL`. |
+| Traces take time to appear | Wait a few seconds, inspect `langfuse-worker`, and look for queue, Redis, ClickHouse, or authentication errors. |
+
+#### Security notes
+
+The supplied Compose file contains simple credentials and secrets intended for local development. Do not expose it directly to the internet or use it in production without replacing passwords, secrets, encryption keys, access controls, TLS, backups, and network policies.
+
+Do not commit `.env` with real API keys. Even local-instance keys allow access to data in the corresponding project.
+
+---
 
 ## 32. Final delivery with Agent Gateway
 

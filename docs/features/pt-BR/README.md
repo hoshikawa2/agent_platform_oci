@@ -17,3 +17,4 @@ Documentação das principais features do `agent_framework_oci`.
 - [Estados Transacionais Dinâmicos](13_dynamic_transaction_states.md)
 - [Replay Após Finalização](14_post_finalization_replay.md)
 - [Guardrails de Retrieval e Tools](15_retrieval_tool_guardrails.md)
+- [Planejamento Multi-Intent](16_multi_intent_planning.md)

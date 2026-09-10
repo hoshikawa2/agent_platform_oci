@@ -33,3 +33,10 @@ def load_state_policies(path: str) -> list[RouterStatePolicy]:
 def load_router_defaults(path: str) -> dict[str, Any]:
     data = load_routing_config(path)
     return data.get("router", {})
+
+
+def load_multi_intent_config(path: str) -> dict[str, Any]:
+    """Backward-compatible technical limits; no section is required."""
+    data = load_routing_config(path)
+    value = data.get("multi_intent", {})
+    return value if isinstance(value, dict) else {}

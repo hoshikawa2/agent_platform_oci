@@ -6,10 +6,12 @@ import re
 import unicodedata
 from typing import Any
 
-from .config_loader import load_intents, load_router_defaults, load_state_policies
+from .config_loader import load_intents, load_multi_intent_config, load_router_defaults, load_state_policies
+from .multi_intent import MultiIntentPlanner
 from .continuity import SemanticRouteContinuity
 from .models import IntentDefinition, RouteDecision, RouterStatePolicy
 from agent_framework.llm.structured_output import parse_json_object
+from agent_framework.mcp.tool_policy import ToolPolicyRegistry
 from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
 from agent_framework.workflows.input_contract import (
     expected_input_reprompt,
@@ -44,6 +46,16 @@ class EnterpriseRouter:
         self.intents: list[IntentDefinition] = load_intents(self.config_path)
         self.state_policies: list[RouterStatePolicy] = load_state_policies(self.config_path)
         self.defaults = load_router_defaults(self.config_path)
+        tool_policies = ToolPolicyRegistry(getattr(settings, "TOOL_POLICIES_PATH", None))
+        transactional_tools = {
+            name for name, policy in tool_policies.policies.items()
+            if policy.operation_type == "transactional" or policy.require_confirmation
+        }
+        self.multi_intent_planner = MultiIntentPlanner(
+            self.intents,
+            load_multi_intent_config(self.config_path),
+            transactional_tools=transactional_tools,
+        )
         self.fallback_agent = self.defaults.get("fallback_agent", "billing_agent")
         self.intent_shift_threshold = float(self.defaults.get("confidence_threshold", 0.7))
         self.transaction_confirmation = dict(self.defaults.get("transaction_confirmation") or {})
@@ -727,6 +739,27 @@ class EnterpriseRouter:
         # intent/agente ativos devem prevalecer sobre a route stickiness. Isso
         # evita manter um fluxo read-only (por exemplo, tracking) quando o usuário
         # muda para uma ação transacional (por exemplo, devolução).
+        planner = getattr(self, "multi_intent_planner", None)
+        multi_intent_plan = planner.plan(str(text)) if planner is not None else None
+        if multi_intent_plan is not None:
+            primary = multi_intent_plan.operations[0]
+            decision = RouteDecision(
+                route=primary.agent,
+                agent=primary.agent,
+                intent=primary.intent,
+                confidence=1.0,
+                reason="Plano multi-intent validado a partir de intents configuradas.",
+                method="keyword",
+                metadata={
+                    "multi_intent": True,
+                    "multi_intent_plan": multi_intent_plan.model_dump(mode="json"),
+                },
+                domain=primary.domain,
+                mcp_tools=primary.tools,
+            )
+            await self._emit(decision, state)
+            return decision
+
         keyword_candidate = self._route_by_keyword(text)
         active_agent = str(state.get("active_agent") or "").strip()
         previous = state.get("route_decision") or {}
@@ -799,7 +832,13 @@ class EnterpriseRouter:
         """
         tx_status = str(state.get("transaction_status") or "").strip().upper()
         if tx_status == "AWAITING_CONFIRMATION":
-            confirmation = parse_transaction_confirmation(text)
+            active = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+            previous = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+            owner_intent = str(active.get("started_from_intent") or previous.get("intent") or state.get("intent") or "")
+            compound_plan = self.multi_intent_planner.plan_confirmation_secondary(
+                text, primary_intent=owner_intent, primary_agent=state_decision.agent
+            )
+            confirmation = "confirm" if compound_plan is not None else parse_transaction_confirmation(text)
             source = "deterministic"
             classifier_output = None
             raw_classifier = None
@@ -828,6 +867,12 @@ class EnterpriseRouter:
                 "transaction_confirmation_decision": confirmation,
                 "transaction_confirmation_source": source,
             }
+            if compound_plan is not None:
+                state_decision.metadata.update({
+                    "multi_intent": True,
+                    "multi_intent_confirmation": True,
+                    "multi_intent_plan": compound_plan.model_dump(mode="json"),
+                })
             if source == "semantic":
                 state_decision.metadata.update({
                     "transaction_confirmation_classifier_output": classifier_output,
@@ -1129,7 +1174,12 @@ class EnterpriseRouter:
                 kw_normalized = kw.casefold()
                 strategy = None
                 # Exato primeiro para preservar o comportamento existente.
-                if kw_normalized in normalized:
+                keyword_tokens = self._keyword_tokens(kw)
+                text_tokens = self._keyword_tokens(text)
+                if (
+                    (len(keyword_tokens) == 1 and keyword_tokens[0] in text_tokens)
+                    or (len(keyword_tokens) > 1 and kw_normalized in normalized)
+                ):
                     strategy = "exact"
                 elif self._ordered_keyword_match(kw, text):
                     strategy = "ordered_tokens"

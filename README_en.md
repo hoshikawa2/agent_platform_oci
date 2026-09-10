@@ -126,7 +126,7 @@ Details the evaluation and certification framework, including evaluation archite
 
 Defines the platform operational readiness and SRE model, including managed components, health checks, readiness, SLOs, metrics, dashboards, alerts, runbooks, incident management, capacity planning, and production checklists.
 
-### [IMPORTANT: Disclaimer Auth and Security](specs/Disclaimer%20Auth%20and%20Security_EN.md)
+### [IMPORTANT: Disclaimer Auth and Security](specs/Disclaimer_Auth_and_Security_EN.md)
 
 Oracle Cloud Infrastructure Security Best Practice Recommendations.
 
@@ -186,6 +186,7 @@ The framework should concentrate the reusable engines:
 - Langfuse/OpenTelemetry Telemetry.
 - Analytics IC/NOC/GRL.
 - MCP Tool Router.
+- Multi-intent planning and the persistent `pending_topics` queue.
 - Cache.
 - Generic RAG.
 
@@ -230,6 +231,8 @@ LangGraph
 Input Guardrails
 ↓
 Enterprise Router or Supervisor
+↓
+Multi-intent planning / pending_topics
 ↓
 Specialized agent
 ↓
@@ -11388,6 +11391,8 @@ The content of this folder should be treated as an additional framework extensio
 | Logs/traces do not correlate the same agent | labels, IDs, observability mapping | [Observability](docs/developer/en/11_observability_persistence_and_operational_readiness.md) |
 | Historical example no longer compiles | stale docs vs current API | [README Alignment Validation](docs/developer/en/VALIDATION_README_ALIGNMENT.md) |
 | Need to create a new agent from scratch | complete flow | [`README_en.md`](README_en.md) |
+| Two requests in one message trigger only one intent | multi-intent decomposition, `pending_topics`, tool allowlist | [Multi-Intent Planning](docs/features/en/16_multi_intent_planning.md) |
+| A secondary agent repeats the primary transaction or confirmation | isolation of `active_transaction`, `mcp_tools`, and operational state | [Multi-Intent Planning](docs/features/en/16_multi_intent_planning.md) |
 
 ### 34. Advanced Features
 
@@ -11462,6 +11467,29 @@ The content of this folder should be treated as an additional framework extensio
 **What it is:** user-facing semantics for input blocks, blocked-turn state cleanup, and output-guardrail validation of the generated feedback.
 
 **Use it when:** `COER`/input guardrails generate generic messages, `route=blocked` carries stale results, or you need to reason about precedence between input guardrails, routing, and tools.
+
+### Implemented feature guides
+
+The `01` through `12` manuals above organize documentation by development area. The guides below document each executable feature individually:
+
+1. [Authentication](docs/features/en/01_authentication.md)
+2. [Deterministic Transactional Workflow](docs/features/en/02_deterministic_transactional_workflow.md)
+3. [Domain-Requested LLM Composition](docs/features/en/03_domain_requested_llm_composition.md)
+4. [Domain-Requested RAG](docs/features/en/04_domain_requested_rag.md)
+5. [Long-Term Memory](docs/features/en/05_long_term_memory.md)
+6. [Offline Workflow Regression](docs/features/en/06_offline_workflow_regression.md)
+7. [Pause and Resume Workflow](docs/features/en/07_pause_resume_workflow.md)
+8. [Route Stickiness](docs/features/en/08_route_stickiness.md)
+9. [Voice Interruption Replay](docs/features/en/09_voice_interruption_replay.md)
+10. [Workflow Error Recovery](docs/features/en/10_workflow_error_recovery.md)
+11. [Clarification](docs/features/en/11_clarification.md)
+12. [Durable Idempotency](docs/features/en/12_durable_idempotency.md)
+13. [Dynamic Transaction States](docs/features/en/13_dynamic_transaction_states.md)
+14. [Post-Finalization Replay](docs/features/en/14_post_finalization_replay.md)
+15. [Retrieval and Tool Guardrails](docs/features/en/15_retrieval_tool_guardrails.md)
+16. [Multi-Intent Planning and Pending Topics](docs/features/en/16_multi_intent_planning.md)
+
+The [English feature index](docs/features/en/README.md) must be updated whenever a new feature guide is added.
 
 ### Main tutorial
 

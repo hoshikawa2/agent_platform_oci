@@ -185,6 +185,7 @@ O framework deve concentrar os motores reutilizáveis:
 - Telemetria Langfuse/OpenTelemetry.
 - Analytics IC/NOC/GRL.
 - MCP Tool Router.
+- Planejamento multi-intent e fila persistente de `pending_topics`.
 - Cache.
 - RAG genérico.
 
@@ -229,6 +230,8 @@ LangGraph
 Input Guardrails
   ↓
 Enterprise Router ou Supervisor
+  ↓
+Planejamento multi-intent / pending_topics
   ↓
 Agente especializado
   ↓
@@ -11486,6 +11489,8 @@ O conteúdo desta pasta deve ser tratado como uma extensão adicional do framewo
 | Um exemplo antigo não compila | documentação histórica versus API atual | [Validação README x Código](docs/developer/pt/VALIDATION_README_ALIGNMENT.md) |
 | Preciso criar um agente novo do zero | fluxo completo | [`README.md`](README.md) |
 | Preciso saber onde colocar uma nova feature | arquitetura e boundaries | [Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) |
+| Duas solicitações na mesma mensagem acionam apenas uma intent | decomposição multi-intent, `pending_topics`, allowlist de tools | [Planejamento Multi-Intent](docs/features/pt-BR/16_multi_intent_planning.md) |
+| O agent secundário repete a transação ou confirmação primária | isolamento de `active_transaction`, `mcp_tools` e estado operacional | [Planejamento Multi-Intent](docs/features/pt-BR/16_multi_intent_planning.md) |
 
 ### 34. Funcionalidades Avançadas
 
@@ -11561,9 +11566,31 @@ O conteúdo desta pasta deve ser tratado como uma extensão adicional do framewo
 
 **Use quando:** um `COER`/guardrail de entrada gera mensagem genérica, `route=blocked` carrega resultados antigos ou há dúvida sobre a precedência entre input guardrails, routing e tools.
 
+### Guias de features implementadas
+
+Os manuais `01` a `12` acima organizam os assuntos por área de desenvolvimento. Os guias abaixo documentam cada feature executável individualmente:
+
+1. [Autenticação](docs/features/pt-BR/01_authentication.md)
+2. [Workflow Transacional Determinístico](docs/features/pt-BR/02_deterministic_transactional_workflow.md)
+3. [Composição por LLM Solicitada pelo Domínio](docs/features/pt-BR/03_domain_requested_llm_composition.md)
+4. [RAG Solicitado pelo Domínio](docs/features/pt-BR/04_domain_requested_rag.md)
+5. [Memória de Longo Prazo](docs/features/pt-BR/05_long_term_memory.md)
+6. [Regressão Offline de Workflow](docs/features/pt-BR/06_offline_workflow_regression.md)
+7. [Pause e Resume de Workflow](docs/features/pt-BR/07_pause_resume_workflow.md)
+8. [Route Stickiness](docs/features/pt-BR/08_route_stickiness.md)
+9. [Replay em Interrupções de Voz](docs/features/pt-BR/09_voice_interruption_replay.md)
+10. [Recuperação de Erro em Workflow](docs/features/pt-BR/10_workflow_error_recovery.md)
+11. [Clarificação](docs/features/pt-BR/11_clarification.md)
+12. [Idempotência Durável](docs/features/pt-BR/12_durable_idempotency.md)
+13. [Estados Transacionais Dinâmicos](docs/features/pt-BR/13_dynamic_transaction_states.md)
+14. [Replay Após Finalização](docs/features/pt-BR/14_post_finalization_replay.md)
+15. [Guardrails de Retrieval e Tools](docs/features/pt-BR/15_retrieval_tool_guardrails.md)
+16. [Planejamento Multi-Intent e Pending Topics](docs/features/pt-BR/16_multi_intent_planning.md)
+
+O [índice de features em português](docs/features/pt-BR/README.md) deve ser atualizado sempre que um novo guia for adicionado.
+
 ### Tutorial principal
 
 [`README.md`](README.md) continua sendo a referência para o passo a passo completo:
 
 `arquitetura → configuração → criação do agente → registro → estado → routing → tools → MCP → identidade → execução → testes → gateways → memória → RAG`.
-

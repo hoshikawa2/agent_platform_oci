@@ -2,6 +2,20 @@ import pytest
 from types import SimpleNamespace
 
 from agent_framework.routing.enterprise_router import EnterpriseRouter
+
+
+def test_single_word_keyword_requires_a_complete_token():
+    from agent_framework.routing.models import IntentDefinition
+
+    router = object.__new__(EnterpriseRouter)
+    router.intents = [
+        IntentDefinition(
+            name="cancel", agent="orders_agent", priority=10,
+            keywords=["cancela"], examples=[], enabled=True,
+        )
+    ]
+    assert router._route_by_keyword("cancela o pedido") is not None
+    assert router._route_by_keyword("sim, pode cancelar") is None
 from agent_framework.routing.models import RouteDecision
 
 

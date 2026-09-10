@@ -36,6 +36,8 @@ class AgentState(TypedDict, total=False):
     missing_parameters: list[str]
     supervisor_plan: dict[str, Any]
     supervisor_results: list[dict[str, Any]]
+    pending_topics: list[dict[str, Any]]
+    handled_topics: list[dict[str, Any]]
     active_agent: str
     route_bypassed: bool
     continuity_signal: dict[str, Any]

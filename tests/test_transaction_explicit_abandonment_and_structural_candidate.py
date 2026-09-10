@@ -82,6 +82,11 @@ def _active_state(message):
             "started_from_intent": "contas_contestation",
             "parameter_schema": {"valor": {"type": "number"}},
         },
+        "history": [
+            {"role": "user", "content": "não reconheço o Tamboro Mensal, quero tirar da fatura"},
+            {"role": "assistant", "content": "Qual é o valor da cobrança que você deseja contestar?"},
+            {"role": "user", "content": message},
+        ],
     }
 
 

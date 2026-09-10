@@ -7,6 +7,7 @@ from agent_framework.guardrails.rail_action import RailAction
 from agent_framework.guardrails.rail_result import RailResult
 from agent_framework.judges.judge import JudgePipeline
 from agent_framework.routing.enterprise_router import EnterpriseRouter
+from agent_framework.routing.pending_topics import drain_pending_topics
 from agent_framework.supervisor.supervisor import Supervisor
 from agent_framework.observability.workflow_events import WorkflowTelemetry
 from agent_framework.observability.guardrail_events import GuardrailTelemetry
@@ -409,6 +410,10 @@ class AgentWorkflow:
                     "reason": decision.reason if decision.method == "continuity" else None,
                     "profile": (decision.metadata or {}).get("continuity_profile"),
                 } if decision.method == "continuity" else {},
+                "pending_topics": (
+                    (decision.metadata or {}).get("multi_intent_plan", {}).get("operations", [])[1:]
+                    if (decision.metadata or {}).get("multi_intent_plan") else []
+                ),
             }
 
     async def billing_agent(self, state):
@@ -547,14 +552,28 @@ class AgentWorkflow:
         agente gerar `answer` e antes dos judges/persistência, produzindo campos
         supervisor_* no state e eventos GRL.001..GRL.009 via AgentObserver.
         """
+        drained = await drain_pending_topics(
+            state,
+            str(state.get("answer") or ""),
+            {
+                "billing_agent": self.billing.run,
+                "product_agent": self.product.run,
+                "orders_agent": self.orders.run,
+                "support_agent": self.support.run,
+            },
+        )
+        candidate = drained.answer
         if not bool(getattr(self.settings, "ENABLE_OUTPUT_SUPERVISOR", True)):
             return {
+                "answer": candidate,
+                "final_answer": candidate,
+                "pending_topics": drained.pending_topics,
+                "handled_topics": drained.handled_topics,
                 "output_guardrails_already_applied": False,
                 "supervisor_action": "disabled",
                 "supervisor_attempt": int(state.get("supervisor_attempt", 0)),
             }
 
-        candidate = state.get("answer") or ""
         context = {
             **(state.get("context") or {}),
             "tenant_id": state.get("tenant_id"),
@@ -623,6 +642,8 @@ class AgentWorkflow:
                     for r in decision.results
                 ],
                 "output_guardrails_already_applied": True,
+                "pending_topics": drained.pending_topics,
+                "handled_topics": drained.handled_topics,
                 "guardrail_decisions": state.get("guardrail_decisions", [])
                 + [item for r in decision.results for item in (r.metadata or {}).get("legacy_decisions", [])],
             }

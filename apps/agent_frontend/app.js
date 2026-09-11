@@ -34,6 +34,15 @@ function stripOwnAgentMarker(value, agent) {
   const normalize = (name) => String(name || "").replace(/[_\s-]+/g, "").toLowerCase();
   return normalize(marker[1]) === normalize(agent) ? text.slice(marker[0].length).trim() : text;
 }
+function orderAgentMessages(agentResponses) {
+  return [...agentResponses].sort(
+    (a, b) => Number(Boolean(a.primary)) - Number(Boolean(b.primary))
+  );
+}
+function sameAgent(left, right) {
+  const normalize = (name) => String(name || "").replace(/[_\s-]+/g, "").toLowerCase();
+  return Boolean(normalize(left)) && normalize(left) === normalize(right);
+}
 function addUserMessage(text) {
   const div = document.createElement("div");
   div.className = "msg user chat-bubble--user";
@@ -68,12 +77,19 @@ function getAgentMessages(data) {
     const messages = candidates.map((item) => ({
       agent: item?.agent || item?.agent_id || item?.agentId || item?.name,
       text: stripOwnAgentMarker(item?.answer ?? item?.text ?? item?.message ?? item?.response ?? item?.content, item?.agent || item?.agent_id || item?.agentId || item?.name),
+      primary: item?.primary === true,
     })).filter((item) => item.agent && responseText(item.text).trim());
-    if (messages.length) return messages;
+    if (messages.length) return orderAgentMessages(messages);
   }
   const text = data?.text ?? data?.speak ?? data?.message ?? data?.response ?? data?.content ?? data?.output;
   const taggedMessages = splitTaggedAgentMessages(text);
-  if (taggedMessages.length) return taggedMessages;
+  if (taggedMessages.length) {
+    const primaryAgent = metadata.active_agent || metadata.route || data?.route || metadata.route_decision?.agent || metadata.route_decision?.route;
+    return orderAgentMessages(taggedMessages.map((item) => ({
+      ...item,
+      primary: sameAgent(item.agent, primaryAgent),
+    })));
+  }
   const agent = metadata.active_agent || metadata.route || data?.agent_id || metadata.agent_id || val("agent") || "agent";
   return responseText(text).trim() ? [{ agent, text }] : [];
 }

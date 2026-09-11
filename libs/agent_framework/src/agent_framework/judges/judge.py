@@ -18,6 +18,54 @@ from .calibrated.llm_client import CalibratedJudgeLLMClient
 logger = logging.getLogger("agent_framework.judges")
 
 
+def _find_original_transaction_request(context: dict[str, Any]) -> str:
+    """Recover the originating request from bounded, framework-owned evidence."""
+    preferred_keys = ('operator_instructions', 'original_user_request', 'query', 'source_text')
+
+    def walk(value: Any, depth: int = 0) -> str:
+        if depth > 7:
+            return ''
+        if isinstance(value, dict):
+            for key in preferred_keys:
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            for candidate in value.values():
+                found = walk(candidate, depth + 1)
+                if found:
+                    return found
+        elif isinstance(value, (list, tuple)):
+            for candidate in value:
+                found = walk(candidate, depth + 1)
+                if found:
+                    return found
+        return ''
+
+    for key in ('transaction_evidence', 'mcp_results', 'evidence', 'selected_tool_call', 'pending_tool_call'):
+        found = walk(context.get(key))
+        if found:
+            return found
+    return ''
+
+
+def _quality_judge_question(question: Any, context: dict[str, Any]) -> str:
+    current = str(question or '')
+    # The runtime/router owns natural-language confirmation classification.
+    # Judges consume that structured decision and never classify lexical tokens.
+    if not bool(context.get('confirmation_received')):
+        return current
+    original = _find_original_transaction_request(context)
+    if not original or original.strip().casefold() == current.strip().casefold():
+        return current
+    return f"Solicitação original: {original}\nConfirmação do usuário neste turno: {current}"
+
+
+def _is_response_quality_judge(judge: Any) -> bool:
+    name = str(getattr(judge, 'name', '') or '').strip().casefold()
+    task = str(getattr(judge, 'task', '') or '').strip().casefold()
+    return 'response_quality' in name or name in {'quality', 'rqlt'} or task == 'rqlt'
+
+
 class JudgeResult(BaseModel):
     name: str
     score: float
@@ -508,9 +556,10 @@ class JudgePipeline:
                     return []
         async def _evaluate(judge):
             evaluate = judge.evaluate
+            judge_question = _quality_judge_question(question, ctx) if _is_response_quality_judge(judge) else question
             if inspect.iscoroutinefunction(evaluate):
-                return await evaluate(question, answer, ctx)
-            result = await asyncio.to_thread(evaluate, question, answer, ctx)
+                return await evaluate(judge_question, answer, ctx)
+            result = await asyncio.to_thread(evaluate, judge_question, answer, ctx)
             if inspect.isawaitable(result):
                 return await result
             return result

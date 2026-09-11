@@ -2,15 +2,21 @@
 
 O `MultiIntentPlanner` reconhece solicitações independentes na mesma mensagem e
 cria um plano limitado às intents, agents e tools declarados em
-`config/routing.yaml`. O planejador não executa operações nem permite que o LLM
-invente uma sequência: o roteador escolhe a operação primária e o workflow do
-domínio continua responsável pela transação.
+`config/routing.yaml`. O planejador não executa operações. O roteador escolhe a
+operação primária e o workflow do domínio continua responsável pela transação.
 
 ## Configuração
 
 Não existe configuração adicional. O planejador usa as intents do `routing.yaml`
 e lê `tool_policies.yaml` para priorizar automaticamente a única operação
 transacional. Pedidos secundários são persistidos em `pending_topics`.
+
+Quando `ENABLE_LLM_ROUTER=true`, mensagens compostas que não produzam um plano
+determinístico completo passam por um classificador multi-intent estruturado. O
+resultado do LLM só informa nomes de intents e trechos da mensagem. Agent,
+domínio e tools são sempre recuperados do `routing.yaml`; intent inexistente,
+baixa confiança ou JSON inválido são rejeitados. O limite padrão de confiança é
+`0.65` e pode ser sobrescrito por `multi_intent.llm_confidence_threshold`.
 
 - intent conhecida e read-only: executada pelo agent correspondente;
 - intent conhecida e transacional: mantida pendente para confirmação própria;
@@ -24,10 +30,12 @@ workflow transacional coordenador.
 
 1. O `EnterpriseRouter` separa a entrada em cláusulas e resolve cada uma pelas
    keywords das intents cadastradas.
-2. `tool_policies.yaml` identifica a operação transacional e a torna primária.
-3. A primeira operação é roteada normalmente para seu agent/workflow.
-4. O `agent_graph` compõe as mensagens públicas antes do supervisor de saída.
-5. Durante uma confirmação, uma frase como `sim e me manda a segunda via`
+2. Se o plano estiver ausente ou contiver trecho provisoriamente fora de escopo,
+   o classificador LLM tenta reconhecer semanticamente as intents componentes.
+3. `tool_policies.yaml` identifica a operação transacional e a torna primária.
+4. A primeira operação é roteada normalmente para seu agent/workflow.
+5. O `agent_graph` compõe as mensagens públicas antes do supervisor de saída.
+6. Durante uma confirmação, uma frase como `sim e me manda a segunda via`
    confirma a transação aberta e registra a solicitação secundária, sem causar
    troca indevida de intent.
 

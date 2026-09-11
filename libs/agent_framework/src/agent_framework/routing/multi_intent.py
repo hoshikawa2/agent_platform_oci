@@ -30,11 +30,12 @@ class MultiIntentPlan(BaseModel):
 
 
 class MultiIntentPlanner:
-    """Deterministic planner constrained by routing.yaml.
+    """Multi-intent planner constrained by routing.yaml.
 
-    The planner never invents agents or tools. It recognizes independently
-    configured intents in conjunction-separated clauses. Execution remains
-    owned by the agent/workflow runtime.
+    Deterministic recognition is attempted first. Structured semantic output
+    can then be validated by :meth:`plan_from_semantic`; the LLM never owns
+    agents, domains or tools, which are always hydrated from configured intents.
+    Execution remains owned by the agent/workflow runtime.
     """
 
     _SPLIT = re.compile(r"\s*(?:,|;|\be\b|\bmas\b|\btamb[eé]m\b)\s*", re.I)
@@ -56,6 +57,9 @@ class MultiIntentPlanner:
         # técnicos/overrides; sua ausência nunca desabilita a detecção.
         self.enabled = bool(self.config.get("enabled", True))
         self.max_operations = max(2, int(self.config.get("max_operations", 4)))
+        self.llm_confidence_threshold = float(
+            self.config.get("llm_confidence_threshold", 0.65)
+        )
         self.transactional_tools = set(transactional_tools or set())
 
     @staticmethod
@@ -88,6 +92,31 @@ class MultiIntentPlanner:
     def _is_transactional(self, operation: PlannedIntent) -> bool:
         return any(tool in self.transactional_tools for tool in operation.tools)
 
+    def looks_compound(self, text: str) -> bool:
+        """Return whether a turn is worth sending to the semantic fallback."""
+        clauses = [
+            part.strip(" .")
+            for part in self._SPLIT.split(str(text or ""))
+            if part.strip(" .")
+        ]
+        if len(clauses) < 2:
+            return False
+        return any(
+            self._looks_like_request(clause) or self._intent_for_clause(clause)
+            for clause in clauses
+        )
+
+    @classmethod
+    def confirmation_remainder(cls, text: str) -> str | None:
+        match = cls._CONFIRM_WITH_REMAINDER.match(str(text or ""))
+        return match.group(1).strip() if match is not None else None
+
+    @staticmethod
+    def needs_semantic_fallback(plan: MultiIntentPlan | None) -> bool:
+        return plan is None or any(
+            operation.disposition == "unsupported" for operation in plan.operations
+        )
+
     @classmethod
     def _looks_like_request(cls, clause: str) -> bool:
         normalized = cls._normalize(clause)
@@ -110,6 +139,103 @@ class MultiIntentPlanner:
             message=f"Sobre {clause}, não consigo ajudar nesta jornada.",
             status="pending",
         )
+
+    def _finalize_operations(
+        self, operations: list[PlannedIntent]
+    ) -> MultiIntentPlan | None:
+        if len(operations) < 2:
+            return None
+        transactional = [item for item in operations if self._is_transactional(item)]
+        if len(transactional) == 1:
+            primary_operation = transactional[0]
+            operations.sort(key=lambda item: item is not primary_operation)
+        for operation in operations[1:]:
+            if self._is_transactional(operation) and operation.disposition == "execute":
+                operation.disposition = "defer"
+        return MultiIntentPlan(
+            plan_id=f"mip-{uuid.uuid4().hex}",
+            operations=operations[: self.max_operations],
+            execution_mode="primary_with_secondary",
+        )
+
+    def _semantic_operations(
+        self, payload: dict[str, Any], *, allow_single: bool = False
+    ) -> list[PlannedIntent] | None:
+        try:
+            confidence = float(payload.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            return None
+        if confidence < self.llm_confidence_threshold:
+            return None
+        raw_operations = payload.get("operations")
+        if not isinstance(raw_operations, list):
+            return None
+        catalog = {intent.name: intent for intent in self.intents}
+        operations: list[PlannedIntent] = []
+        seen: set[str] = set()
+        for raw in raw_operations[: self.max_operations]:
+            if not isinstance(raw, dict):
+                return None
+            source_text = str(raw.get("source_text") or "").strip()
+            intent_name = str(raw.get("intent") or "").strip()
+            if not source_text:
+                return None
+            if bool(raw.get("unsupported")):
+                operations.append(
+                    self._off_context(source_text, f"op-{len(operations) + 1}")
+                )
+                continue
+            intent = catalog.get(intent_name)
+            # Fail closed: an invented/disabled intent invalidates the semantic
+            # plan instead of trusting agent/tool fields supplied by the model.
+            if intent is None:
+                return None
+            if intent.name in seen:
+                continue
+            seen.add(intent.name)
+            operations.append(PlannedIntent(
+                operation_id=f"op-{len(operations) + 1}",
+                intent=intent.name,
+                agent=intent.agent,
+                domain=intent.domain,
+                tools=list(intent.mcp_tools),
+                source_text=source_text,
+            ))
+        minimum = 1 if allow_single else 2
+        if len(operations) < minimum or not any(op.intent in catalog for op in operations):
+            return None
+        return operations
+
+    def plan_from_semantic(self, payload: dict[str, Any]) -> MultiIntentPlan | None:
+        """Validate structured LLM output against the configured intent catalog."""
+        if not self.enabled:
+            return None
+        operations = self._semantic_operations(payload)
+        return self._finalize_operations(operations) if operations else None
+
+    def plan_confirmation_from_semantic(
+        self,
+        payload: dict[str, Any],
+        *,
+        primary_intent: str,
+        primary_agent: str,
+    ) -> MultiIntentPlan | None:
+        """Validate one semantic secondary while preserving an open transaction."""
+        if not self.enabled:
+            return None
+        secondary = self._semantic_operations(payload, allow_single=True)
+        if not secondary or len(secondary) != 1 or secondary[0].intent == primary_intent:
+            return None
+        primary = next((item for item in self.intents if item.name == primary_intent), None)
+        operations = [PlannedIntent(
+            operation_id="op-1",
+            intent=primary_intent,
+            agent=primary_agent,
+            domain=primary.domain if primary else None,
+            tools=list(primary.mcp_tools) if primary else [],
+            source_text="confirmation",
+        ), secondary[0].model_copy(update={"operation_id": "op-2"})]
+        return self._finalize_operations(operations)
 
     def plan(self, text: str) -> MultiIntentPlan | None:
         if not self.enabled:
@@ -134,21 +260,9 @@ class MultiIntentPlanner:
             ))
         if not operations or len(operations) + len(unknown_clauses) < 2:
             return None
-        # Regra técnica geral: uma mutação que exige o contrato transacional é a
-        # operação primária. Não é necessário cadastrar cada par de intents.
-        transactional = [item for item in operations if self._is_transactional(item)]
-        if len(transactional) == 1:
-            primary_operation = transactional[0]
-            operations.sort(key=lambda item: item is not primary_operation)
-        for operation in operations[1:]:
-            if self._is_transactional(operation) and operation.disposition == "execute":
-                operation.disposition = "defer"
         for clause in unknown_clauses[: max(0, self.max_operations - len(operations))]:
             operations.append(self._off_context(clause, f"op-{len(operations) + 1}"))
-        return MultiIntentPlan(
-            plan_id=f"mip-{uuid.uuid4().hex}", operations=operations,
-            execution_mode="primary_with_secondary",
-        )
+        return self._finalize_operations(operations)
 
     def plan_confirmation_secondary(
         self, text: str, *, primary_intent: str, primary_agent: str
@@ -161,10 +275,9 @@ class MultiIntentPlanner:
         """
         if not self.enabled:
             return None
-        match = self._CONFIRM_WITH_REMAINDER.match(str(text or ""))
-        if match is None:
+        clause = self.confirmation_remainder(text)
+        if clause is None:
             return None
-        clause = match.group(1).strip()
         secondary = self._intent_for_clause(clause)
         primary = next((item for item in self.intents if item.name == primary_intent), None)
         if secondary is not None and secondary.name == primary_intent:

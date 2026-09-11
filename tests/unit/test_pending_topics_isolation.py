@@ -9,7 +9,10 @@ async def test_secondary_topic_does_not_inherit_primary_transaction_state():
 
     async def billing_agent(state):
         captured.update(state)
-        return {"answer": "Aqui está a sua segunda via."}
+        return {
+            "answer": "Aqui está a sua segunda via.",
+            "mcp_results": [{"tool_name": "consultar_faturas", "ok": True}],
+        }
 
     state = {
         "answer": "Você confirma o cancelamento do Tamboro?",
@@ -49,5 +52,10 @@ async def test_secondary_topic_does_not_inherit_primary_transaction_state():
     assert captured["mcp_tools"] == ["consultar_faturas"]
     assert captured["available_mcp_tools"] == ["consultar_faturas"]
     assert captured["domain"] == "telecom_contas"
-    assert result.answer.startswith("Aqui está a sua segunda via.")
+    assert result.answer.startswith("Você confirma o cancelamento")
+    assert result.answer.endswith("Aqui está a sua segunda via.")
     assert result.pending_topics == []
+    assert result.mcp_results == [
+        {"tool_name": "consultar_vas"},
+        {"tool_name": "consultar_faturas", "ok": True},
+    ]

@@ -569,6 +569,7 @@ class AgentWorkflow:
                 "final_answer": candidate,
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
+                "mcp_results": drained.mcp_results,
                 "output_guardrails_already_applied": False,
                 "supervisor_action": "disabled",
                 "supervisor_attempt": int(state.get("supervisor_attempt", 0)),
@@ -576,6 +577,10 @@ class AgentWorkflow:
 
         context = {
             **(state.get("context") or {}),
+            "evidence": drained.mcp_results or (state.get("context") or {}).get("evidence"),
+            "tool_result": drained.mcp_results or (state.get("context") or {}).get("tool_result"),
+            "tool_executed": any(isinstance(item, dict) and item.get("ok") for item in drained.mcp_results),
+            "mcp_results": drained.mcp_results,
             "tenant_id": state.get("tenant_id"),
             "agent_id": state.get("agent_id"),
             "session_id": state.get("conversation_key") or state.get("session_id"),
@@ -644,6 +649,7 @@ class AgentWorkflow:
                 "output_guardrails_already_applied": True,
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
+                "mcp_results": drained.mcp_results,
                 "guardrail_decisions": state.get("guardrail_decisions", [])
                 + [item for r in decision.results for item in (r.metadata or {}).get("legacy_decisions", [])],
             }

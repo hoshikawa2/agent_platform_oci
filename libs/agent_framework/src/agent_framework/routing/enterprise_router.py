@@ -741,6 +741,23 @@ class EnterpriseRouter:
         # muda para uma ação transacional (por exemplo, devolução).
         planner = getattr(self, "multi_intent_planner", None)
         multi_intent_plan = planner.plan(str(text)) if planner is not None else None
+        multi_intent_method = "keyword"
+        if (
+            planner is not None
+            and planner.looks_compound(str(text))
+            and planner.needs_semantic_fallback(multi_intent_plan)
+            and self.enable_llm_router
+            and self.llm is not None
+        ):
+            try:
+                semantic_plan = await self._plan_multi_intent_by_llm(str(text), state)
+                if semantic_plan is not None:
+                    multi_intent_plan = semantic_plan
+                    multi_intent_method = "llm"
+            except Exception as exc:
+                # O fallback semântico é fail-safe: um plano determinístico
+                # parcial continua válido se o provedor estiver indisponível.
+                logger.exception("Falha no classificador LLM multi-intent: %s", exc)
         if multi_intent_plan is not None:
             primary = multi_intent_plan.operations[0]
             decision = RouteDecision(
@@ -748,10 +765,15 @@ class EnterpriseRouter:
                 agent=primary.agent,
                 intent=primary.intent,
                 confidence=1.0,
-                reason="Plano multi-intent validado a partir de intents configuradas.",
-                method="keyword",
+                reason=(
+                    "Plano multi-intent classificado semanticamente e validado contra intents configuradas."
+                    if multi_intent_method == "llm"
+                    else "Plano multi-intent validado a partir de intents configuradas."
+                ),
+                method=multi_intent_method,
                 metadata={
                     "multi_intent": True,
+                    "multi_intent_classifier": multi_intent_method,
                     "multi_intent_plan": multi_intent_plan.model_dump(mode="json"),
                 },
                 domain=primary.domain,
@@ -838,6 +860,26 @@ class EnterpriseRouter:
             compound_plan = self.multi_intent_planner.plan_confirmation_secondary(
                 text, primary_intent=owner_intent, primary_agent=state_decision.agent
             )
+            remainder = self.multi_intent_planner.confirmation_remainder(text)
+            if (
+                remainder
+                and self.multi_intent_planner.needs_semantic_fallback(compound_plan)
+                and self.enable_llm_router
+                and self.llm is not None
+            ):
+                try:
+                    semantic_plan = await self._plan_multi_intent_by_llm(
+                        remainder,
+                        state,
+                        confirmation_primary=(owner_intent, state_decision.agent),
+                    )
+                    if semantic_plan is not None:
+                        compound_plan = semantic_plan
+                except Exception as exc:
+                    logger.exception(
+                        "Falha no classificador LLM multi-intent após confirmação: %s",
+                        exc,
+                    )
             confirmation = "confirm" if compound_plan is not None else parse_transaction_confirmation(text)
             source = "deterministic"
             classifier_output = None
@@ -1222,6 +1264,76 @@ class EnterpriseRouter:
             domain=intent.domain,
             mcp_tools=intent.mcp_tools,
         )
+
+    async def _plan_multi_intent_by_llm(
+        self,
+        text: str,
+        state: dict[str, Any],
+        *,
+        confirmation_primary: tuple[str, str] | None = None,
+    ):
+        """Classify compound requests and validate them through the planner.
+
+        The model returns only intent names and source fragments. Agent, domain
+        and tool ownership always come from the loaded routing catalog.
+        """
+        allowed = [intent for intent in self.intents if intent.enabled]
+        allowed_payload = [
+            {
+                "intent": intent.name,
+                "description": intent.description,
+                "examples": intent.examples[:3],
+            }
+            for intent in allowed
+        ]
+        secondary_only = confirmation_primary is not None
+        system = (
+            "Você é um classificador multi-intent. Identifique objetivos independentes "
+            "expressos explicitamente pelo usuário. Não execute ações e não responda ao "
+            "usuário. Use somente nomes presentes em allowed_intents. Para um pedido "
+            "explícito que não pertença a nenhuma intent permitida, use intent=null e "
+            "unsupported=true. Não transforme detalhes, parâmetros ou objetos de uma "
+            "mesma solicitação em novas intents. "
+            + (
+                "A confirmação da transação já foi consumida; classifique somente o pedido "
+                "secundário fornecido e retorne exatamente uma operação. "
+                if secondary_only else
+                "Retorne pelo menos duas operações somente quando houver múltiplos objetivos. "
+            )
+            + "Retorne somente JSON válido no formato: "
+            '{"confidence":0.0,"operations":[{"intent":"nome_ou_null",'
+            '"source_text":"trecho literal","unsupported":false}]}.'
+        )
+        active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+        payload = {
+            "message": text,
+            "allowed_intents": allowed_payload,
+            "secondary_only": secondary_only,
+            "transaction_context": ({
+                "status": state.get("transaction_status"),
+                "started_from_intent": active_tx.get("started_from_intent"),
+                "tool_name": active_tx.get("tool_name"),
+            } if active_tx else None),
+        }
+        answer = await self.llm.ainvoke(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.0,
+            max_tokens=768,
+            profile_name="router",
+            component_name="router.multi_intent",
+            generation_name="llm.router.multi_intent",
+        )
+        data = self._parse_json(answer)
+        if confirmation_primary is not None:
+            return self.multi_intent_planner.plan_confirmation_from_semantic(
+                data,
+                primary_intent=confirmation_primary[0],
+                primary_agent=confirmation_primary[1],
+            )
+        return self.multi_intent_planner.plan_from_semantic(data)
 
     async def _route_by_llm(self, text: str, state: dict[str, Any]) -> RouteDecision:
         allowed = [i for i in self.intents if i.enabled]

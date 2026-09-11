@@ -94,6 +94,33 @@ def update_graph(path: Path) -> None:
     path.write_text(before + marker + output, encoding="utf-8")
 
 
+def update_evidence_propagation(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    marker = '                "handled_topics": drained.handled_topics,\n'
+    replacement = marker + '                "mcp_results": drained.mcp_results,\n'
+    if replacement in text:
+        return
+    if marker not in text:
+        raise RuntimeError(f"Marcador de evidências não encontrado em {path}")
+    path.write_text(text.replace(marker, replacement), encoding="utf-8")
+
+
+def update_guardrail_evidence_context(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    marker = "        context = {\n            **(state.get(\"context\") or {}),\n"
+    addition = (
+        marker
+        + '            "evidence": drained.mcp_results or (state.get("context") or {}).get("evidence"),\n'
+        + '            "tool_result": drained.mcp_results or (state.get("context") or {}).get("tool_result"),\n'
+        + '            "tool_executed": any(isinstance(item, dict) and item.get("ok") for item in drained.mcp_results),\n'
+        + '            "mcp_results": drained.mcp_results,\n'
+    )
+    if addition in text:
+        return
+    text = replace_once(text, marker, addition, path)
+    path.write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     tuning = ROOT / "Tuning-Performance"
     states = sorted(tuning.glob("**/app/state.py"))
@@ -102,6 +129,8 @@ def main() -> None:
         update_state(path)
     for path in graphs:
         update_graph(path)
+        update_evidence_propagation(path)
+        update_guardrail_evidence_context(path)
     print(f"pending_topics sincronizado: {len(states)} states, {len(graphs)} graphs")
 
 

@@ -13,6 +13,7 @@ class PendingTopicDrain:
     answer: str
     pending_topics: list[dict[str, Any]]
     handled_topics: list[dict[str, Any]]
+    mcp_results: list[dict[str, Any]]
 
 
 async def drain_pending_topics(
@@ -28,6 +29,7 @@ async def drain_pending_topics(
     ))
     remaining: list[dict[str, Any]] = []
     handled = list(state.get("handled_topics") or [])
+    combined_mcp_results = list(state.get("mcp_results") or [])
     secondary_answers: list[str] = []
     for topic in topics:
         disposition = topic.get("disposition")
@@ -83,6 +85,9 @@ async def drain_pending_topics(
         if not answer:
             remaining.append(topic)
             continue
+        for evidence in (result or {}).get("mcp_results") or []:
+            if isinstance(evidence, dict) and evidence not in combined_mcp_results:
+                combined_mcp_results.append(evidence)
         secondary_answers.append(answer)
         handled.append({**topic, "status": "completed"})
 
@@ -93,9 +98,5 @@ async def drain_pending_topics(
             unique.append(answer)
     if unique:
         secondary = "\n\n".join(unique)
-        candidate = (
-            f"{secondary}\n\n{candidate.lstrip()}".strip()
-            if state.get("confirmation_required")
-            else f"{candidate.rstrip()}\n\n{secondary}".strip()
-        )
-    return PendingTopicDrain(candidate, remaining, handled)
+        candidate = f"{candidate.rstrip()}\n\n{secondary}".strip()
+    return PendingTopicDrain(candidate, remaining, handled, combined_mcp_results)

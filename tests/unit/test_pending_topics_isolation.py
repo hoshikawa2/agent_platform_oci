@@ -66,3 +66,52 @@ async def test_secondary_topic_does_not_inherit_primary_transaction_state():
     ]
     assert result.rag_results[0]["metadata"]["provider"] == "kbdb"
     assert result.rag_results[0]["context"] == "Documento recuperado da base de conhecimento."
+
+
+@pytest.mark.asyncio
+async def test_deferred_transaction_is_promoted_after_primary_completes():
+    async def cancellation_agent(state):
+        assert state["user_text"] == "quero cancelar meu pedido"
+        return {
+            "answer": "Você confirma o cancelamento do pedido PED-1001?",
+            "transaction_status": "AWAITING_CONFIRMATION",
+            "confirmation_required": True,
+            "pending_tool_call": {
+                "tool_name": "cancelar_pedido",
+                "arguments": {"order_id": "PED-1001"},
+            },
+            "active_transaction": {
+                "tool_name": "cancelar_pedido",
+                "status": "AWAITING_CONFIRMATION",
+            },
+        }
+
+    state = {
+        "answer": "A devolução foi registrada com sucesso.",
+        "route": "support_agent",
+        "active_agent": "support_agent",
+        "intent": "retail_support_exchange_return",
+        "transaction_status": "COMPLETED",
+        "pending_topics": [{
+            "operation_id": "op-3",
+            "intent": "retail_order_cancel",
+            "agent": "orders_agent",
+            "domain": "retail",
+            "tools": ["consultar_pedido", "cancelar_pedido"],
+            "source_text": "quero cancelar meu pedido",
+            "disposition": "defer",
+            "status": "pending",
+        }],
+    }
+
+    result = await drain_pending_topics(
+        state, state["answer"], {"orders_agent": cancellation_agent}
+    )
+
+    assert result.pending_topics == []
+    assert result.state_patch["route"] == "orders_agent"
+    assert result.state_patch["intent"] == "retail_order_cancel"
+    assert result.state_patch["transaction_status"] == "AWAITING_CONFIRMATION"
+    assert result.state_patch["pending_tool_call"]["tool_name"] == "cancelar_pedido"
+    assert result.agent_responses[-1]["primary"] is True
+    assert result.agent_responses[-1]["agent"] == "orders_agent"

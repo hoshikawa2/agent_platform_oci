@@ -69,17 +69,30 @@ class MultiIntentPlanner:
 
     def _intent_for_clause(self, clause: str) -> IntentDefinition | None:
         normalized = self._normalize(clause)
-        clause_tokens = set(re.findall(r"[\w]+", normalized, flags=re.UNICODE))
+        ordered_clause_tokens = re.findall(r"[\w]+", normalized, flags=re.UNICODE)
+        clause_tokens = set(ordered_clause_tokens)
         matches: list[tuple[int, int, IntentDefinition]] = []
         for intent in self.intents:
             for keyword in intent.keywords:
                 token = self._normalize(keyword)
                 keyword_tokens = re.findall(r"[\w]+", token, flags=re.UNICODE)
+                # Expressões configuradas representam conceitos, não somente
+                # substrings literais. Preserve a ordem dos termos e aceite
+                # qualificadores intermediários: "cancelar pedido" também
+                # reconhece "cancelar meu pedido", sem enumerar variações no YAML.
+                cursor = 0
+                ordered_match = bool(keyword_tokens)
+                for keyword_token in keyword_tokens:
+                    try:
+                        cursor = ordered_clause_tokens.index(keyword_token, cursor) + 1
+                    except ValueError:
+                        ordered_match = False
+                        break
                 matched = bool(
                     keyword_tokens
                     and (
                         (len(keyword_tokens) == 1 and keyword_tokens[0] in clause_tokens)
-                        or (len(keyword_tokens) > 1 and token in normalized)
+                        or (len(keyword_tokens) > 1 and ordered_match)
                     )
                 )
                 if matched:
@@ -146,7 +159,7 @@ class MultiIntentPlanner:
         if len(operations) < 2:
             return None
         transactional = [item for item in operations if self._is_transactional(item)]
-        if len(transactional) == 1:
+        if transactional:
             primary_operation = transactional[0]
             operations.sort(key=lambda item: item is not primary_operation)
         for operation in operations[1:]:

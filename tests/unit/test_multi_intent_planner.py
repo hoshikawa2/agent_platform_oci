@@ -40,6 +40,28 @@ def test_transactional_intent_is_primary_even_when_mentioned_second():
     assert [item.intent for item in plan.operations] == ["cancel", "invoice"]
 
 
+def test_multiword_keyword_accepts_intermediate_qualifier_without_yaml_variant():
+    plan = _planner().plan("quero cancelar meu pedido e preciso da segunda via")
+    assert plan is not None
+    assert [item.intent for item in plan.operations] == ["cancel", "invoice"]
+
+
+def test_first_of_multiple_transactions_is_primary_and_next_is_deferred():
+    planner = MultiIntentPlanner([
+        IntentDefinition(name="invoice", agent="billing", priority=30, keywords=["fatura"], mcp_tools=["consultar_fatura"]),
+        IntentDefinition(name="return", agent="support", priority=20, keywords=["devolver pedido"], mcp_tools=["solicitar_devolucao"]),
+        IntentDefinition(name="cancel", agent="orders", priority=10, keywords=["cancelar pedido"], mcp_tools=["cancelar_pedido"]),
+    ], transactional_tools={"solicitar_devolucao", "cancelar_pedido"})
+
+    plan = planner.plan(
+        "quero consultar minha fatura. quero devolver pedido. quero cancelar pedido"
+    )
+
+    assert plan is not None
+    assert [item.intent for item in plan.operations] == ["return", "invoice", "cancel"]
+    assert [item.disposition for item in plan.operations] == ["execute", "execute", "defer"]
+
+
 def test_sentence_boundary_does_not_leak_previous_intent_into_knowledge_query():
     planner = MultiIntentPlanner([
         IntentDefinition(name="invoice", agent="billing", priority=20, keywords=["fatura"]),

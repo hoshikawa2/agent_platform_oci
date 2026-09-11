@@ -248,6 +248,28 @@ class AgentWorkflow:
             input=state.get("user_text"),
         ):
             history_texts = [m.get("content", "") for m in state.get("history", [])]
+            guardrail_active_transaction = (
+                state.get("active_transaction")
+                if isinstance(state.get("active_transaction"), dict)
+                else {}
+            )
+            guardrail_transaction_status = str(
+                guardrail_active_transaction.get("status")
+                or state.get("transaction_status")
+                or ""
+            ).strip().upper()
+            pending_call = state.get("pending_tool_call") if isinstance(state.get("pending_tool_call"), dict) else {}
+            if state.get("confirmation_required") and pending_call.get("tool_name"):
+                guardrail_transaction_status = "AWAITING_CONFIRMATION"
+            elif state.get("missing_parameters") and pending_call.get("tool_name"):
+                guardrail_transaction_status = "COLLECTING_PARAMETERS"
+            for mcp_result in reversed(list(state.get("mcp_results") or [])):
+                if not isinstance(mcp_result, dict):
+                    continue
+                mcp_status = str(mcp_result.get("transaction_status") or "").strip().upper()
+                if mcp_status in {"COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION"}:
+                    guardrail_transaction_status = mcp_status
+                    break
             await self.observer.emit_grl(
                 "001",
                 {
@@ -266,6 +288,10 @@ class AgentWorkflow:
                     "tenant_id": state.get("tenant_id"),
                     "agent_id": state.get("agent_id"),
                     "agent_profile": state.get("agent_profile") or {},
+                    "transaction_status": guardrail_transaction_status,
+                    "missing_parameters": list(state.get("missing_parameters") or []),
+                    "active_transaction": guardrail_active_transaction,
+                    "mcp_results": list(state.get("mcp_results") or []),
                 },
             )
             for _decision in decisions:
@@ -412,7 +438,8 @@ class AgentWorkflow:
                 } if decision.method == "continuity" else {},
                 "pending_topics": (
                     (decision.metadata or {}).get("multi_intent_plan", {}).get("operations", [])[1:]
-                    if (decision.metadata or {}).get("multi_intent_plan") else []
+                    if (decision.metadata or {}).get("multi_intent_plan")
+                    else list(state.get("pending_topics") or [])
                 ),
             }
 
@@ -576,6 +603,7 @@ class AgentWorkflow:
                 "output_guardrails_already_applied": False,
                 "supervisor_action": "disabled",
                 "supervisor_attempt": int(state.get("supervisor_attempt", 0)),
+                **drained.state_patch,
             }
 
         context = {
@@ -667,6 +695,7 @@ class AgentWorkflow:
                 "agent_responses": drained.agent_responses,
                 "mcp_results": drained.mcp_results,
                 "rag_results": drained.rag_results,
+                **drained.state_patch,
                 "guardrail_decisions": state.get("guardrail_decisions", [])
                 + [item for r in decision.results for item in (r.metadata or {}).get("legacy_decisions", [])],
             }

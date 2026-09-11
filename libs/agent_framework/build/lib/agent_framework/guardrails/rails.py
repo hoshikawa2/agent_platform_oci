@@ -338,9 +338,43 @@ class LoopRail(Guardrail):
     code = "VLOOP"
     stage = "input"
 
+    @staticmethod
+    def _transaction_status(ctx: dict[str, Any]) -> str:
+        nonterminal = {
+            "COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION", "EXECUTING",
+            "PAUSED", "WAITING_INPUT",
+        }
+        for result in reversed(list(ctx.get("mcp_results") or [])):
+            if isinstance(result, dict):
+                result_status = str(result.get("transaction_status") or "").strip().upper()
+                if result_status in nonterminal:
+                    return result_status
+        active_transaction = ctx.get("active_transaction")
+        if isinstance(active_transaction, dict):
+            active_status = str(active_transaction.get("status") or "").strip().upper()
+            if active_status in nonterminal:
+                return active_status
+        return str(ctx.get("transaction_status") or "").strip().upper()
+
     async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
+        ctx = _ctx(context)
+        transaction_status = self._transaction_status(ctx)
+        if transaction_status in {"COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION"}:
+            return RailDecision(
+                code=self.code,
+                allowed=True,
+                reason=f"continuidade_transacional:{transaction_status}",
+                sanitized_text=text,
+                metadata={
+                    "history_window": len(list(ctx.get("history_texts") or [])[-6:]),
+                    "repeated": False,
+                    "mechanism": "deterministic_transaction_bypass",
+                    "transaction_status": transaction_status,
+                    "calibrated": True,
+                },
+            )
         normalized = _lower(text).strip()
-        history = [_lower(h).strip() for h in _ctx(context).get("history_texts", [])[-6:]]
+        history = [_lower(h).strip() for h in ctx.get("history_texts", [])[-6:]]
         repeated = history.count(normalized) >= 2 if normalized else False
         return RailDecision(
             code=self.code,

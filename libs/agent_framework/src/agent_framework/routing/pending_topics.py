@@ -16,6 +16,29 @@ class PendingTopicDrain:
     handled_topics: list[dict[str, Any]]
     mcp_results: list[dict[str, Any]]
     rag_results: list[dict[str, Any]]
+    state_patch: dict[str, Any]
+
+
+_LIVE_TRANSACTION_STATUSES = {
+    "COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION", "WAITING_CONFIRMATION",
+    "PENDING", "RUNNING", "IN_PROGRESS",
+}
+
+_TRANSACTION_STATE_KEYS = {
+    "active_transaction", "transaction_status", "transaction_pre_validation",
+    "confirmation_required", "confirmation_received", "selected_tool_call",
+    "pending_tool_call", "pending_tool_clarification", "pending_domain_workflow",
+    "missing_parameters", "tool_policy_result", "next_state", "workflow_id",
+}
+
+
+def _has_live_transaction(state: dict[str, Any]) -> bool:
+    active = state.get("active_transaction")
+    active_status = active.get("status") if isinstance(active, dict) else None
+    status = str(active_status or state.get("transaction_status") or "").upper()
+    if status:
+        return status in _LIVE_TRANSACTION_STATUSES
+    return bool(state.get("confirmation_required") or state.get("pending_tool_call"))
 
 
 async def drain_pending_topics(
@@ -34,6 +57,8 @@ async def drain_pending_topics(
     combined_mcp_results = list(state.get("mcp_results") or [])
     combined_rag_results = list(state.get("rag_results") or [])
     secondary_answers: list[str] = []
+    state_patch: dict[str, Any] = {}
+    may_promote_deferred = not _has_live_transaction(state)
     agent_responses = list(state.get("agent_responses") or [])
     if not agent_responses and str(candidate or "").strip():
         primary_agent = str(
@@ -53,9 +78,15 @@ async def drain_pending_topics(
         })
     for topic in topics:
         disposition = topic.get("disposition")
+        promoted = False
         if disposition == "defer":
-            remaining.append(topic)
-            continue
+            if not may_promote_deferred:
+                remaining.append(topic)
+                continue
+            topic = {**topic, "disposition": "execute", "status": "pending"}
+            disposition = "execute"
+            promoted = True
+            may_promote_deferred = False
         if disposition != "execute":
             handled.append({**topic, "status": "completed"})
             continue
@@ -123,14 +154,42 @@ async def drain_pending_topics(
             if rag_evidence not in combined_rag_results:
                 combined_rag_results.append(rag_evidence)
         secondary_answers.append(answer)
+        if promoted:
+            agent_responses = [{**item, "primary": False} for item in agent_responses]
         agent_responses.append({
             "operation_id": topic.get("operation_id"),
             "agent": topic.get("agent"),
             "intent": topic.get("intent"),
             "answer": answer,
-            "primary": False,
+            "primary": promoted,
             "status": "completed",
         })
+        if promoted:
+            for key in _TRANSACTION_STATE_KEYS:
+                if key in (result or {}):
+                    state_patch[key] = result[key]
+            state_patch.update({
+                "route": topic.get("agent"),
+                "active_agent": topic.get("agent"),
+                "intent": topic.get("intent"),
+                "domain": topic.get("domain"),
+                "mcp_tools": topic.get("tools") or [],
+                # Replace the completed transaction's continuity snapshot so
+                # the next reply cannot be routed back to the previous agent.
+                "route_decision": {
+                    "route": topic.get("agent"),
+                    "agent": topic.get("agent"),
+                    "intent": topic.get("intent"),
+                    "domain": topic.get("domain"),
+                    "mcp_tools": topic.get("tools") or [],
+                    "next_state": (result or {}).get("next_state"),
+                    "metadata": {
+                        "multi_intent_secondary": True,
+                        "promoted_from_pending_topics": True,
+                        "operation_id": topic.get("operation_id"),
+                    },
+                },
+            })
         handled.append({**topic, "status": "completed"})
 
     secondary_answers.extend(MultiIntentPlanner.public_messages(plan))
@@ -148,4 +207,5 @@ async def drain_pending_topics(
         handled_topics=handled,
         mcp_results=combined_mcp_results,
         rag_results=combined_rag_results,
+        state_patch=state_patch,
     )

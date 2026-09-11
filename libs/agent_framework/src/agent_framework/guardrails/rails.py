@@ -358,30 +358,38 @@ class LoopRail(Guardrail):
 
     @staticmethod
     def _transaction_status(ctx: dict[str, Any]) -> str:
-        status = str(ctx.get("transaction_status") or "").strip().upper()
-        if status:
-            return status
+        nonterminal = {
+            "COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION", "EXECUTING",
+            "PAUSED", "WAITING_INPUT",
+        }
+        # A queued multi-intent transaction may be promoted immediately after
+        # the previous one completed. Prefer the newest live MCP evidence over
+        # a stale top-level COMPLETED status left by checkpoint merge order.
+        for result in reversed(list(ctx.get("mcp_results") or [])):
+            if isinstance(result, dict):
+                result_status = str(result.get("transaction_status") or "").strip().upper()
+                if result_status in nonterminal:
+                    return result_status
         active_transaction = ctx.get("active_transaction")
         if isinstance(active_transaction, dict):
-            return str(active_transaction.get("status") or "").strip().upper()
-        return ""
+            active_status = str(active_transaction.get("status") or "").strip().upper()
+            if active_status in nonterminal:
+                return active_status
+        return str(ctx.get("transaction_status") or "").strip().upper()
 
     async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
         ctx = _ctx(context)
         transaction_status = self._transaction_status(ctx)
 
-        # A short confirmation (for example ``sim``/``não``) may legitimately
-        # appear several times in the same session because each transaction has
-        # its own confirmation boundary. VLOOP protects against conversational
-        # repetition; it must not consume the input that belongs to an active
-        # transaction awaiting confirmation. The transaction runtime/classifier
-        # remains responsible for deciding whether the utterance is actually a
-        # valid confirm/reject response.
-        if transaction_status == "AWAITING_CONFIRMATION":
+        # Parameter values and short confirmations may legitimately repeat in
+        # the same session. VLOOP must not consume input owned by the active
+        # transaction contract; extraction/confirmation remains responsible
+        # for deciding whether the value is valid.
+        if transaction_status in {"COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION"}:
             return RailDecision(
                 code=self.code,
                 allowed=True,
-                reason="continuidade_transacional:AWAITING_CONFIRMATION",
+                reason=f"continuidade_transacional:{transaction_status}",
                 sanitized_text=text,
                 metadata={
                     "history_window": len(list(ctx.get("history_texts") or [])[-6:]),

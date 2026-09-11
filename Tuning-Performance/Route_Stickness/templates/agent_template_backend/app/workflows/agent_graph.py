@@ -488,6 +488,7 @@ class AgentWorkflow:
         return {
             "answer": answer,
             "supervisor_results": partials,
+            "agent_responses": partials,
             "mcp_results": mcp_results,
             "next_state": "SUPERVISOR_ACTIVE",
         }
@@ -567,6 +568,7 @@ class AgentWorkflow:
                 "final_answer": candidate,
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
+                "agent_responses": drained.agent_responses,
                 "mcp_results": drained.mcp_results,
                 "rag_results": drained.rag_results,
                 "output_guardrails_already_applied": False,
@@ -660,6 +662,7 @@ class AgentWorkflow:
                 "output_guardrails_already_applied": True,
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
+                "agent_responses": drained.agent_responses,
                 "mcp_results": drained.mcp_results,
                 "rag_results": drained.rag_results,
                 "guardrail_decisions": state.get("guardrail_decisions", [])

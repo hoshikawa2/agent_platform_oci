@@ -56,6 +56,9 @@ async def test_secondary_topic_does_not_inherit_primary_transaction_state():
     assert captured["domain"] == "telecom_contas"
     assert result.answer.startswith("Você confirma o cancelamento")
     assert result.answer.endswith("Aqui está a sua segunda via.")
+    assert [item["agent"] for item in result.agent_responses] == ["agent", "faturas_agent"]
+    assert result.agent_responses[0]["primary"] is True
+    assert result.agent_responses[1]["primary"] is False
     assert result.pending_topics == []
     assert result.mcp_results == [
         {"tool_name": "consultar_vas"},

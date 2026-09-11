@@ -11,6 +11,7 @@ AgentHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 @dataclass(frozen=True)
 class PendingTopicDrain:
     answer: str
+    agent_responses: list[dict[str, Any]]
     pending_topics: list[dict[str, Any]]
     handled_topics: list[dict[str, Any]]
     mcp_results: list[dict[str, Any]]
@@ -33,6 +34,23 @@ async def drain_pending_topics(
     combined_mcp_results = list(state.get("mcp_results") or [])
     combined_rag_results = list(state.get("rag_results") or [])
     secondary_answers: list[str] = []
+    agent_responses = list(state.get("agent_responses") or [])
+    if not agent_responses and str(candidate or "").strip():
+        primary_agent = str(
+            state.get("active_agent")
+            or state.get("route")
+            or route.get("agent")
+            or route.get("route")
+            or state.get("agent_id")
+            or "agent"
+        )
+        agent_responses.append({
+            "agent": primary_agent,
+            "intent": state.get("intent") or route.get("intent"),
+            "answer": str(candidate).strip(),
+            "primary": True,
+            "status": "completed",
+        })
     for topic in topics:
         disposition = topic.get("disposition")
         if disposition == "defer":
@@ -105,6 +123,14 @@ async def drain_pending_topics(
             if rag_evidence not in combined_rag_results:
                 combined_rag_results.append(rag_evidence)
         secondary_answers.append(answer)
+        agent_responses.append({
+            "operation_id": topic.get("operation_id"),
+            "agent": topic.get("agent"),
+            "intent": topic.get("intent"),
+            "answer": answer,
+            "primary": False,
+            "status": "completed",
+        })
         handled.append({**topic, "status": "completed"})
 
     secondary_answers.extend(MultiIntentPlanner.public_messages(plan))
@@ -116,5 +142,10 @@ async def drain_pending_topics(
         secondary = "\n\n".join(unique)
         candidate = f"{candidate.rstrip()}\n\n{secondary}".strip()
     return PendingTopicDrain(
-        candidate, remaining, handled, combined_mcp_results, combined_rag_results
+        answer=candidate,
+        agent_responses=agent_responses,
+        pending_topics=remaining,
+        handled_topics=handled,
+        mcp_results=combined_mcp_results,
+        rag_results=combined_rag_results,
     )

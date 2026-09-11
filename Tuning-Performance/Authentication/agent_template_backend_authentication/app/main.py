@@ -369,6 +369,8 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
                     "route": result.get("route"),
                     "intent": result.get("intent"),
                     "route_decision": result.get("route_decision"),
+                    "supervisor_results": result.get("supervisor_results") or [],
+                    "agent_responses": result.get("agent_responses") or result.get("supervisor_results") or [],
                     "domain": result.get("domain"),
                     "mcp_tools": result.get("mcp_tools"),
                     "mcp_results": result.get("mcp_results"),

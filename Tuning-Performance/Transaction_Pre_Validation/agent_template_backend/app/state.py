@@ -40,6 +40,7 @@ class AgentState(TypedDict, total=False):
     missing_parameters: list[str]
     supervisor_plan: dict[str, Any]
     supervisor_results: list[dict[str, Any]]
+    agent_responses: list[dict[str, Any]]
     pending_topics: list[dict[str, Any]]
     handled_topics: list[dict[str, Any]]
     active_agent: str

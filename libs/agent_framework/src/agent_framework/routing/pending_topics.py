@@ -14,6 +14,7 @@ class PendingTopicDrain:
     pending_topics: list[dict[str, Any]]
     handled_topics: list[dict[str, Any]]
     mcp_results: list[dict[str, Any]]
+    rag_results: list[dict[str, Any]]
 
 
 async def drain_pending_topics(
@@ -30,6 +31,7 @@ async def drain_pending_topics(
     remaining: list[dict[str, Any]] = []
     handled = list(state.get("handled_topics") or [])
     combined_mcp_results = list(state.get("mcp_results") or [])
+    combined_rag_results = list(state.get("rag_results") or [])
     secondary_answers: list[str] = []
     for topic in topics:
         disposition = topic.get("disposition")
@@ -88,6 +90,20 @@ async def drain_pending_topics(
         for evidence in (result or {}).get("mcp_results") or []:
             if isinstance(evidence, dict) and evidence not in combined_mcp_results:
                 combined_mcp_results.append(evidence)
+        rag_metadata = (result or {}).get("rag")
+        rag_context = str((result or {}).get("rag_context") or "").strip()
+        if isinstance(rag_metadata, dict):
+            rag_evidence = {
+                "operation_id": topic.get("operation_id"),
+                "intent": topic.get("intent"),
+                "agent": topic.get("agent"),
+                "source_text": source_text,
+                "metadata": rag_metadata,
+            }
+            if rag_context:
+                rag_evidence["context"] = rag_context
+            if rag_evidence not in combined_rag_results:
+                combined_rag_results.append(rag_evidence)
         secondary_answers.append(answer)
         handled.append({**topic, "status": "completed"})
 
@@ -99,4 +115,6 @@ async def drain_pending_topics(
     if unique:
         secondary = "\n\n".join(unique)
         candidate = f"{candidate.rstrip()}\n\n{secondary}".strip()
-    return PendingTopicDrain(candidate, remaining, handled, combined_mcp_results)
+    return PendingTopicDrain(
+        candidate, remaining, handled, combined_mcp_results, combined_rag_results
+    )

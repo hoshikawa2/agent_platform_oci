@@ -23,6 +23,7 @@ class AgentState(TypedDict, total=False):
     domain: str
     mcp_tools: list[str]
     mcp_results: list[dict[str, Any]]
+    rag_results: list[dict[str, Any]]
     available_mcp_tools: list[str]
     selected_tool_call: dict[str, Any]
     pending_tool_call: dict[str, Any]

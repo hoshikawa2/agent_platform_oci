@@ -40,6 +40,20 @@ def test_transactional_intent_is_primary_even_when_mentioned_second():
     assert [item.intent for item in plan.operations] == ["cancel", "invoice"]
 
 
+def test_sentence_boundary_does_not_leak_previous_intent_into_knowledge_query():
+    planner = MultiIntentPlanner([
+        IntentDefinition(name="invoice", agent="billing", priority=20, keywords=["fatura"]),
+        IntentDefinition(name="knowledge", agent="support", priority=30, keywords=["tarifação"]),
+    ])
+    plan = planner.plan(
+        "quero ver minha fatura e o valor. depois gostaria de saber como funciona a tarifação do plano"
+    )
+    assert plan is not None
+    knowledge = next(item for item in plan.operations if item.intent == "knowledge")
+    assert knowledge.source_text == "depois gostaria de saber como funciona a tarifação do plano"
+    assert not knowledge.source_text.startswith("valor")
+
+
 def test_does_not_plan_single_intent_or_invent_unknown_intent():
     assert _planner().plan("quero cancelar pedido") is None
     assert _planner().plan("quero cancelar pedido e saber o clima") is None

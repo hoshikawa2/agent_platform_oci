@@ -124,6 +124,9 @@ class Settings(BaseSettings):
     KBDB_DOCUMENT_TYPE: str | None = 'customer_safe'
     KBDB_METADATA_JSON: str | None = None
     KBDB_MIN_SCORE: float | None = None
+    KBDB_IDENTIFY_DOCUMENT: bool = True
+    KBDB_STORE_QUERY: bool = True
+    KBDB_IDENTIFY_TOP_N: int = 3
     # MCP só pula retrieval quando declarar explicitamente rag_sufficient/knowledge_sufficient.
     SKIP_RAG_WHEN_MCP_SUFFICIENT: bool = True
     # Preserva comportamento legado do RAG standard; KBDB enterprise é grounded-only por padrão.

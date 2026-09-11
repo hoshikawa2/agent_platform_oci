@@ -570,6 +570,7 @@ class AgentWorkflow:
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
                 "mcp_results": drained.mcp_results,
+                "rag_results": drained.rag_results,
                 "output_guardrails_already_applied": False,
                 "supervisor_action": "disabled",
                 "supervisor_attempt": int(state.get("supervisor_attempt", 0)),
@@ -577,7 +578,19 @@ class AgentWorkflow:
 
         context = {
             **(state.get("context") or {}),
-            "evidence": drained.mcp_results or (state.get("context") or {}).get("evidence"),
+            "evidence": (list(drained.mcp_results) + list(drained.rag_results)) or (state.get("context") or {}).get("evidence"),
+            "tool_result": drained.mcp_results or (state.get("context") or {}).get("tool_result"),
+            "tool_executed": any(isinstance(item, dict) and item.get("ok") for item in drained.mcp_results),
+            "mcp_results": drained.mcp_results,
+            "evidence": (list(drained.mcp_results) + list(drained.rag_results)) or (state.get("context") or {}).get("evidence"),
+            "tool_result": drained.mcp_results or (state.get("context") or {}).get("tool_result"),
+            "tool_executed": any(isinstance(item, dict) and item.get("ok") for item in drained.mcp_results),
+            "mcp_results": drained.mcp_results,
+            "evidence": (list(drained.mcp_results) + list(drained.rag_results)) or (state.get("context") or {}).get("evidence"),
+            "tool_result": drained.mcp_results or (state.get("context") or {}).get("tool_result"),
+            "tool_executed": any(isinstance(item, dict) and item.get("ok") for item in drained.mcp_results),
+            "mcp_results": drained.mcp_results,
+            "evidence": (list(drained.mcp_results) + list(drained.rag_results)) or (state.get("context") or {}).get("evidence"),
             "tool_result": drained.mcp_results or (state.get("context") or {}).get("tool_result"),
             "tool_executed": any(isinstance(item, dict) and item.get("ok") for item in drained.mcp_results),
             "mcp_results": drained.mcp_results,
@@ -650,6 +663,7 @@ class AgentWorkflow:
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
                 "mcp_results": drained.mcp_results,
+                "rag_results": drained.rag_results,
                 "guardrail_decisions": state.get("guardrail_decisions", [])
                 + [item for r in decision.results for item in (r.metadata or {}).get("legacy_decisions", [])],
             }
@@ -733,6 +747,7 @@ class AgentWorkflow:
             relevant_transaction_evidence = list(state.get("relevant_transaction_evidence") or [])
             judge_context["transaction_evidence"] = relevant_transaction_evidence
             current_evidence = list(state.get("mcp_results", []) or [])
+            current_evidence.extend(state.get("rag_results", []) or [])
             current_evidence.extend(relevant_transaction_evidence)
             judge_context["evidence"] = current_evidence or judge_context.get("evidence")
             judge_context["route"] = state.get("route")
@@ -880,6 +895,7 @@ class AgentWorkflow:
                     "judges": state.get("judge_results", []),
                     "mcp_tools": state.get("mcp_tools", []),
                     "mcp_results": state.get("mcp_results", []),
+                    "rag_results": state.get("rag_results", []),
                     "transaction_evidence": state.get("relevant_transaction_evidence", []),
                 },
             )

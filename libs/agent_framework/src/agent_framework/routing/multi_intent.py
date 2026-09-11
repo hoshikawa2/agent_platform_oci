@@ -38,7 +38,7 @@ class MultiIntentPlanner:
     Execution remains owned by the agent/workflow runtime.
     """
 
-    _SPLIT = re.compile(r"\s*(?:,|;|\be\b|\bmas\b|\btamb[eé]m\b)\s*", re.I)
+    _SPLIT = re.compile(r"\s*(?:[.!?]+|,|;|\be\b|\bmas\b|\btamb[eé]m\b)\s*", re.I)
     _CONFIRM_WITH_REMAINDER = re.compile(
         r"^\s*(?:sim|s|pode|pode\s+sim|isso\s+mesmo|claro|ok|confirmo)\s*(?:,|;|\be\b)\s*(.+)$",
         re.I,

@@ -108,6 +108,14 @@ class ProductAgent(AgentRuntimeMixin):
             "next_state": "PRODUCT_ACTIVE",
             "mcp_results": tool_context,
             "rag": rag_metadata,
+            "rag_context": rag_context,
+            "rag_results": [{
+                "intent": state.get("intent"),
+                "agent": self.name,
+                "source_text": str(state.get("sanitized_input") or state.get("user_text") or ""),
+                "metadata": rag_metadata,
+                **({"context": rag_context} if rag_context else {}),
+            }],
             "memory_context_metadata": state.get("memory_context_metadata"),
             **self.transaction_state_patch(state),
         }

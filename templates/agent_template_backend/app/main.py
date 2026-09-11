@@ -460,6 +460,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
                     "domain": result.get("domain"),
                     "mcp_tools": result.get("mcp_tools"),
                     "mcp_results": result.get("mcp_results"),
+                    "rag_results": result.get("rag_results"),
                     "transaction_evidence": result.get("relevant_transaction_evidence", []),
                     "transaction_pre_validation": result.get("transaction_pre_validation"),
                     "business_context": business_context.model_dump(),

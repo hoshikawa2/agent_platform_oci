@@ -85,6 +85,43 @@ class KbdbRagService:
         finally:
             conn.close()
 
+    @staticmethod
+    def _procedure_arguments(cur) -> list[dict[str, Any]]:
+        """Discover the installed facade signature instead of assuming bind types."""
+        cur.execute(
+            """
+            SELECT argument_name, position, in_out, data_type, overload
+              FROM all_arguments
+             WHERE package_name = 'PKG_KB_SERVING'
+               AND object_name = 'SEARCH_KNOWLEDGE_BASE'
+               AND data_level = 0
+             ORDER BY NVL(overload, '0'), sequence
+            """
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return []
+        # Use the first visible overload. Each returned row describes one bind.
+        first_overload = rows[0][4]
+        return [
+            {
+                "name": str(row[0] or ""),
+                "position": int(row[1] or 0),
+                "in_out": str(row[2] or "IN").upper(),
+                "data_type": str(row[3] or "").upper(),
+            }
+            for row in rows
+            if row[4] == first_overload and int(row[1] or 0) > 0
+        ]
+
+    @staticmethod
+    def _out_var(cur, oracledb, data_type: str):
+        if data_type == "JSON" and hasattr(oracledb, "DB_TYPE_JSON"):
+            return cur.var(oracledb.DB_TYPE_JSON)
+        if data_type in {"CLOB", "NCLOB"} and hasattr(oracledb, "DB_TYPE_CLOB"):
+            return cur.var(oracledb.DB_TYPE_CLOB)
+        return cur.var(oracledb.DB_TYPE_VARCHAR, size=32767)
+
     def _search_sync(self, query: str, k: int) -> dict[str, Any]:
         import oracledb
         metadata = self.settings.KBDB_METADATA_JSON
@@ -95,8 +132,13 @@ class KbdbRagService:
             cur = conn.cursor()
             if self.settings.KBDB_MIN_SCORE is not None:
                 cur.callproc("PKG_KB_SERVING.set_min_score", [float(self.settings.KBDB_MIN_SCORE)])
-            out = cur.var(oracledb.DB_TYPE_JSON)
-            cur.callproc("PKG_KB_SERVING.search_knowledge_base", [
+            signature = self._procedure_arguments(cur)
+            if not signature:
+                raise RuntimeError(
+                    "Não foi possível descobrir a assinatura de "
+                    "PKG_KB_SERVING.SEARCH_KNOWLEDGE_BASE em ALL_ARGUMENTS"
+                )
+            canonical_inputs = [
                 self.settings.KBDB_SEARCH_TYPE,
                 query,
                 int(k),
@@ -106,8 +148,58 @@ class KbdbRagService:
                 int(self.settings.KBDB_MAX_CROSS_REF_HOPS),
                 self.settings.KBDB_DOCUMENT_TYPE or None,
                 metadata or None,
-                out,
-            ])
+                bool(getattr(self.settings, "KBDB_IDENTIFY_DOCUMENT", True)),
+                bool(getattr(self.settings, "KBDB_STORE_QUERY", True)),
+                int(getattr(self.settings, "KBDB_IDENTIFY_TOP_N", 3)),
+            ]
+            named_inputs = {
+                "SEARCH_TYPE": self.settings.KBDB_SEARCH_TYPE,
+                "QUERY": query,
+                "QUERY_TEXT": query,
+                "QUESTION": query,
+                "TOP_K": int(k),
+                "K": int(k),
+                "NODE_EXPANSION": bool(self.settings.KBDB_NODE_EXPANSION),
+                "ENABLE_NODE_EXPANSION": bool(self.settings.KBDB_NODE_EXPANSION),
+                "NODE_MAX_RELATED": int(self.settings.KBDB_NODE_MAX_RELATED),
+                "MAX_RELATED_NODES": int(self.settings.KBDB_NODE_MAX_RELATED),
+                "GRAPH_CROSS_REF": bool(self.settings.KBDB_GRAPH_CROSS_REF),
+                "ENABLE_GRAPH_CROSS_REF": bool(self.settings.KBDB_GRAPH_CROSS_REF),
+                "MAX_CROSS_REF_HOPS": int(self.settings.KBDB_MAX_CROSS_REF_HOPS),
+                "DOCUMENT_TYPE": self.settings.KBDB_DOCUMENT_TYPE or None,
+                "METADATA_JSON": metadata or None,
+                "METADATA": metadata or None,
+                "IDENTIFY_DOCUMENT": bool(getattr(self.settings, "KBDB_IDENTIFY_DOCUMENT", True)),
+                "STORE_QUERY": bool(getattr(self.settings, "KBDB_STORE_QUERY", True)),
+                "IDENTIFY_TOP_N": int(getattr(self.settings, "KBDB_IDENTIFY_TOP_N", 3)),
+            }
+            input_index = 0
+            binds: list[Any] = []
+            out = None
+            for argument in signature:
+                if "OUT" in argument["in_out"]:
+                    bind = self._out_var(cur, oracledb, argument["data_type"])
+                    binds.append(bind)
+                    out = bind
+                    continue
+                if input_index >= len(canonical_inputs):
+                    raise RuntimeError(
+                        "Assinatura KBDB possui parâmetros de entrada não suportados: "
+                        f"{[item['name'] for item in signature]}"
+                    )
+                normalized_name = argument["name"].strip().upper()
+                if normalized_name.startswith("P_"):
+                    normalized_name = normalized_name[2:]
+                value = named_inputs.get(normalized_name, canonical_inputs[input_index])
+                input_index += 1
+                if argument["data_type"] == "NUMBER" and isinstance(value, bool):
+                    value = 1 if value else 0
+                elif argument["data_type"] in {"VARCHAR", "VARCHAR2", "CHAR", "NCHAR"} and isinstance(value, bool):
+                    value = "true" if value else "false"
+                binds.append(value)
+            if out is None:
+                raise RuntimeError("Assinatura KBDB não possui parâmetro OUT visível")
+            cur.callproc("PKG_KB_SERVING.search_knowledge_base", binds)
             value = _lob_value(out.getvalue())
             if isinstance(value, str):
                 return json.loads(value)

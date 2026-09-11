@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from contextlib import contextmanager
 
 import pytest
 
@@ -16,6 +17,7 @@ def _settings(**overrides):
         KBDB_NODE_MAX_RELATED=8, KBDB_GRAPH_CROSS_REF=False,
         KBDB_MAX_CROSS_REF_HOPS=1, KBDB_DOCUMENT_TYPE="customer_safe",
         KBDB_METADATA_JSON=None, KBDB_MIN_SCORE=None,
+        KBDB_IDENTIFY_DOCUMENT=True, KBDB_STORE_QUERY=True, KBDB_IDENTIFY_TOP_N=3,
     )
     data.update(overrides)
     return SimpleNamespace(**data)
@@ -115,3 +117,69 @@ def test_kbdb_does_not_fallback_to_framework_adb_credentials():
     )
     with pytest.raises(RuntimeError, match="KBDB_DB_USER"):
         KbdbRagService(settings)
+
+
+def test_kbdb_discovers_number_flags_and_clob_output(monkeypatch):
+    import sys
+    from agent_framework.rag.kbdb_service import KbdbRagService
+
+    captured = {}
+
+    class Var:
+        def __init__(self, value=None):
+            self.value = value
+
+        def getvalue(self):
+            return self.value
+
+    class Cursor:
+        def execute(self, statement):
+            captured["signature_query"] = statement
+
+        def fetchall(self):
+            names = [
+                ("P_SEARCH_TYPE", "VARCHAR2"), ("P_QUERY", "VARCHAR2"),
+                ("P_TOP_K", "NUMBER"), ("P_NODE_EXPANSION", "NUMBER"),
+                ("P_NODE_MAX_RELATED", "NUMBER"), ("P_DOCUMENT_TYPE", "VARCHAR2"),
+                ("P_METADATA", "CLOB"), ("P_IDENTIFY_DOCUMENT", "NUMBER"),
+                ("P_STORE_QUERY", "NUMBER"), ("P_IDENTIFY_TOP_N", "NUMBER"),
+                ("P_RESULT", "CLOB"),
+            ]
+            return [
+                (name, index, "OUT" if index == 11 else "IN", data_type, None)
+                for index, (name, data_type) in enumerate(names, start=1)
+            ]
+
+        def var(self, data_type, size=None):
+            captured["out_type"] = data_type
+            return Var('{"units": [], "seeds": []}')
+
+        def callproc(self, name, binds):
+            captured["procedure"] = name
+            captured["binds"] = binds
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    class FakeOracleDb:
+        DB_TYPE_JSON = "JSON"
+        DB_TYPE_CLOB = "CLOB"
+        DB_TYPE_VARCHAR = "VARCHAR"
+
+    service = KbdbRagService(_settings())
+
+    @contextmanager
+    def connect():
+        yield Connection()
+
+    monkeypatch.setitem(sys.modules, "oracledb", FakeOracleDb)
+    monkeypatch.setattr(service, "_connect", connect)
+
+    result = service._search_sync("como funciona?", 5)
+
+    assert result == {"units": [], "seeds": []}
+    assert captured["procedure"] == "PKG_KB_SERVING.search_knowledge_base"
+    assert captured["binds"][3] == 1
+    assert captured["binds"][7:10] == [1, 1, 3]
+    assert captured["out_type"] == "CLOB"

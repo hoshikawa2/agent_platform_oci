@@ -4,9 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-    </list>
+    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -52,27 +50,107 @@
     "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "ModuleVcsDetector.initialDetectionPerformed": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "main",
+    "Shell Script.agent_frontend.executor": "Run",
+    "Shell Script.agent_template_backend.executor": "Run",
+    "Shell Script.mcp_gateway.executor": "Run",
+    "Shell Script.mcp_server.executor": "Run",
+    "git-widget-placeholder": "master",
     "kotlin-language-version-configured": "true",
-    "last_opened_file_path": "D:/Dropbox/ORACLE/TIM/FY27/Commits/agent_platform_oci",
+    "last_opened_file_path": "C:/Asus_Projects/kbdb/agent_framework_oci/templates/agent_template_backend",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "configurable.group.appearance",
+    "project.structure.last.edited": "Project",
+    "project.structure.proportion": "0.15",
+    "project.structure.side.proportion": "0.2",
+    "settings.editor.selected.configurable": "advanced.settings",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Asus_Projects\kbdb\agent_framework_oci\templates\agent_template_backend" />
+    </key>
+  </component>
+  <component name="RunManager" selected="Shell Script.agent_template_backend">
+    <configuration name="agent_frontend" type="ShConfigurationType">
+      <option name="SCRIPT_TEXT" value="wsl bash -lc &quot;source .venv/bin/activate &amp;&amp; cd apps/agent_frontend &amp;&amp; python -m http.server 5173&quot;" />
+      <option name="INDEPENDENT_SCRIPT_PATH" value="true" />
+      <option name="SCRIPT_PATH" value="" />
+      <option name="SCRIPT_OPTIONS" value="" />
+      <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="true" />
+      <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="INDEPENDENT_INTERPRETER_PATH" value="true" />
+      <option name="INTERPRETER_PATH" value="powershell.exe" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="EXECUTE_IN_TERMINAL" value="true" />
+      <option name="EXECUTE_SCRIPT_FILE" value="false" />
+      <envs />
+      <method v="2" />
+    </configuration>
+    <configuration name="agent_template_backend" type="ShConfigurationType">
+      <option name="SCRIPT_TEXT" value="wsl bash -lc &quot;source .venv/bin/activate &amp;&amp; cd templates/agent_template_backend &amp;&amp; python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload&quot;" />
+      <option name="INDEPENDENT_SCRIPT_PATH" value="false" />
+      <option name="SCRIPT_PATH" value="$PROJECT_DIR$/templates/agent_template_backend/app" />
+      <option name="SCRIPT_OPTIONS" value="" />
+      <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="false" />
+      <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="INDEPENDENT_INTERPRETER_PATH" value="true" />
+      <option name="INTERPRETER_PATH" value="powershell.exe" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="EXECUTE_IN_TERMINAL" value="true" />
+      <option name="EXECUTE_SCRIPT_FILE" value="false" />
+      <envs />
+      <method v="2" />
+    </configuration>
+    <configuration name="mcp_gateway" type="ShConfigurationType">
+      <option name="SCRIPT_TEXT" value="wsl bash -lc &quot;source .venv/bin/activate &amp;&amp; cd scripts &amp;&amp; bash run_mcp_gateway.sh&quot;" />
+      <option name="INDEPENDENT_SCRIPT_PATH" value="true" />
+      <option name="SCRIPT_PATH" value="" />
+      <option name="SCRIPT_OPTIONS" value="" />
+      <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="true" />
+      <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="INDEPENDENT_INTERPRETER_PATH" value="true" />
+      <option name="INTERPRETER_PATH" value="powershell.exe" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="EXECUTE_IN_TERMINAL" value="true" />
+      <option name="EXECUTE_SCRIPT_FILE" value="false" />
+      <envs />
+      <method v="2" />
+    </configuration>
+    <configuration name="mcp_server" type="ShConfigurationType">
+      <option name="SCRIPT_TEXT" value="wsl bash -lc &quot;source .venv/bin/activate &amp;&amp; cd scripts &amp;&amp; bash run_mcp_servers.sh&quot;" />
+      <option name="INDEPENDENT_SCRIPT_PATH" value="true" />
+      <option name="SCRIPT_PATH" value="" />
+      <option name="SCRIPT_OPTIONS" value="" />
+      <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="true" />
+      <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="INDEPENDENT_INTERPRETER_PATH" value="true" />
+      <option name="INTERPRETER_PATH" value="powershell.exe" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="EXECUTE_IN_TERMINAL" value="true" />
+      <option name="EXECUTE_SCRIPT_FILE" value="false" />
+      <envs />
+      <method v="2" />
+    </configuration>
+    <list>
+      <item itemvalue="Shell Script.agent_template_backend" />
+      <item itemvalue="Shell Script.mcp_gateway" />
+      <item itemvalue="Shell Script.mcp_server" />
+      <item itemvalue="Shell Script.agent_frontend" />
+    </list>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-jdk-30f59d01ecdd-cffe25b9f5b3-intellij.indexing.shared.core-IU-253.28294.334" />
-        <option value="bundled-js-predefined-d6986cc7102b-c7e53b3be11b-JavaScript-IU-253.28294.334" />
+        <option value="bundled-jdk-9823dce3aa75-fbdcb00ec9e3-intellij.indexing.shared.core-IU-251.29188.36" />
+        <option value="bundled-js-predefined-d6986cc7102b-09060db00ec0-JavaScript-IU-251.29188.36" />
       </set>
     </attachedChunks>
   </component>
@@ -92,10 +170,10 @@
       <workItem from="1785245181314" duration="79000" />
       <workItem from="1785245608367" duration="670000" />
       <workItem from="1785326458404" duration="86000" />
-      <workItem from="1785414225783" duration="148000" />
-      <workItem from="1785414447653" duration="704000" />
-      <workItem from="1785630146329" duration="316000" />
-      <workItem from="1787832640995" duration="4662000" />
+      <workItem from="1785405876905" duration="1300000" />
+      <workItem from="1785409583147" duration="1561000" />
+      <workItem from="1785452072692" duration="784000" />
+      <workItem from="1785453511270" duration="1006000" />
     </task>
     <task id="LOCAL-00001" summary="Ajustes na documentação e remanejamento dos folders">
       <option name="closed" value="true" />

@@ -12,6 +12,8 @@ async def test_secondary_topic_does_not_inherit_primary_transaction_state():
         return {
             "answer": "Aqui está a sua segunda via.",
             "mcp_results": [{"tool_name": "consultar_faturas", "ok": True}],
+            "rag": {"provider": "kbdb", "attempted": True, "status": "executed", "document_count": 1},
+            "rag_context": "Documento recuperado da base de conhecimento.",
         }
 
     state = {
@@ -59,3 +61,5 @@ async def test_secondary_topic_does_not_inherit_primary_transaction_state():
         {"tool_name": "consultar_vas"},
         {"tool_name": "consultar_faturas", "ok": True},
     ]
+    assert result.rag_results[0]["metadata"]["provider"] == "kbdb"
+    assert result.rag_results[0]["context"] == "Documento recuperado da base de conhecimento."

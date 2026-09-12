@@ -1046,6 +1046,73 @@ With llm_profiles.yaml:
 
 ## 5. Creating a new agent
 
+### 5.0. Current implementation contract (read before copying code)
+
+The executable template under `templates/agent_template_backend` is the code reference. A new agent must reuse the framework public runtime; do not copy an `AgentRuntimeMixin` implementation into the domain. The local `app/agents/runtime.py` file is only an adapter and also registers response renderers:
+
+```python
+from agent_framework.runtime import AgentRuntimeMixin, MessageBuilder, RuntimeContext
+from app.presentation import register_tool_renderers
+
+register_tool_renderers()
+
+__all__ = ["AgentRuntimeMixin", "MessageBuilder", "RuntimeContext"]
+```
+
+Why these declarations matter:
+
+| Declaration | Required? | Reason |
+| --- | --- | --- |
+| `AgentRuntimeMixin` | Yes | Centralizes MCP, transactions, RAG, memory, cache, messages, and telemetry; prevents parallel engines inside agents. |
+| `register_tool_renderers()` | Yes in the current template | Registers MCP result presentation before the first execution. Without it, a direct response may use the generic format. |
+| `apply_agent_profile_prompt` | Yes for template agents | Combines the code prompt with the isolated policy selected by `agent_id`. |
+| Class `name` | Yes | Identifies the specialty in RAG, prompts, and telemetry. `route` is the node name and `agent_id` is the profile/backend; they are different concepts. For new agents, use one identifier unless compatibility requires divergence. |
+| Constructor dependencies | Yes, when supplied by the workflow | The mixin uses `llm`, `tool_router`, `rag_service`, `cache`, `settings`, `observer`, `memory`, and `summary_memory`; do not instantiate them again in the agent. |
+| `transaction_state_patch(state)` | Yes for every return that can participate in a transaction | Preserves collection, confirmation, evidence, workflow, and state cleanup across turns. |
+| `prepare_memory_context(state)` | Yes before `build_messages()` when memory is enabled | Injects the summary and recent window without duplicating the entire history. |
+
+Import through the template adapter:
+
+```python
+from app.agents.prompting import apply_agent_profile_prompt
+from app.agents.runtime import AgentRuntimeMixin
+```
+
+Do not import internal modules such as `agent_framework.runtime.agent_runtime`: that path is an implementation detail and may change. Do not recreate the LLM client, MCP router, memory, or telemetry inside the class; the workflow injects configured instances.
+
+The correct minimum `run()` flow is:
+
+1. emit start;
+2. collect/execute MCP context;
+3. write `state["mcp_results"]`;
+4. return a parameter clarification first, when present;
+5. return a transactional confirmation next, when present;
+6. use a direct MCP answer only when its presentation policy declares it sufficient;
+7. retrieve RAG when applicable;
+8. prepare memory, build messages, and call the LLM;
+9. include `transaction_state_patch(state)` in every relevant return;
+10. emit completion.
+
+This order is functional, not merely stylistic: retrieving RAG or calling the LLM before handling a pending confirmation can answer the wrong question or replay an operation.
+
+### 5.0.1. What must actually be copied
+
+Only blocks marked **COPY** form the implementation. Other fragments explain an API or show an anti-pattern and do not constitute an executable agent by themselves.
+
+| Order | File | Required declaration |
+| --- | --- | --- |
+| 1 | `app/agents/financeiro_agent.py` | Complete class from section 5.3. |
+| 2 | `app/workflows/agent_graph.py` | Import, `agent_kwargs` instantiation, wrapper, node, route, and supervisor handler; chapter 6. |
+| 3 | `config/agents.yaml` | `agent_id` registration and paths; chapter 8. |
+| 4 | `config/agents/financeiro_agent/*.yaml` | Isolated prompt, guardrails, and judges; chapter 9. |
+| 5 | `config/routing.yaml` | Intent, state, agent, tools, examples, keywords, and priority; chapter 10. |
+| 6 | `config/tools.yaml` | Catalog, server, semantic schema, and presentation; chapter 11. |
+| 7 | `config/tool_policies.yaml` | Type, confirmation, parameters, pre-validation, and workflow; section 11.3.1. |
+| 8 | `config/mcp_parameter_mapping.yaml` | Canonical-key translation for each MCP; chapter 13. |
+| 9 | `.env` and `llm_profiles.yaml` | Router, agent, RAG, guardrail, and judge paths/profiles; chapters 4 and 4.2. |
+
+Creating only the Python file neither registers the agent nor authorizes its tools. Configuration is part of the executable contract.
+
 In this example, we will create an agent called `finance_agent` for generic financial service.
 
 ### 5.1. Before the code: what is an agent in this framework?
@@ -2356,15 +2423,15 @@ Reasoning and execution belong to the Agent Framework.
 This file must contain the specific logic of the financial agent. It must:
 
 1. Receive the `state`.
-2. Separate `context`, `session`, `business_context` and `tool_arguments`.
+2. Read `context`, `session`, `business_context`, and `tool_arguments` through mixin helpers without duplicating precedence.
 3. Issue start IC using `AgentRuntimeMixin`.
 4. Collect context from MCP tools, if any, using the framework's MCP Tool Router.
-5. Collect RAG context, if any, using the framework's generic RAG.
-6. Set up a domain prompt.
-7. Call the LLM through the common runtime, with cache and telemetry.
-8. Assemble a standardized response.
-9. Issue completion IC.
-10. Return data to the workflow.
+5. Stop for parameter collection or transactional confirmation when runtime requests it.
+6. Return a direct MCP response only when an explicit presentation policy allows it.
+7. Collect RAG when applicable and prepare memory before building messages.
+8. Build the prompt and call the LLM through the common runtime.
+9. Return `rag_results`, memory metadata, and `transaction_state_patch(state)`.
+10. Emit completion IC.
 
 
 ### 5.2.1. Understanding `state`, `context`, `session`, `business_context` and `tool_arguments`
@@ -2470,6 +2537,12 @@ In the template, `AgentRuntimeMixin` concentrates utility methods such as:
 | `_emit_grl()` | Issues custom governance event | domain rule blocked or sanitized something |
 | `_retrieve_rag_context()` | Queries the framework's generic RAG | agent needs document context |
 | `_collect_mcp_context()` | Calls the MCP tools declared in `state.mcp_tools` | agent needs to consult external systems |
+| `transaction_clarification_message()` | Returns the canonical question for the next parameter | after MCP and before RAG/LLM |
+| `transaction_confirmation_message()` | Returns the pending confirmation prepared by runtime | after collection and before final execution |
+| `transaction_state_patch()` | Correctly preserves or clears transactional state | in every return that may participate in a transaction |
+| `build_direct_mcp_answer()` | Renders MCP only when direct response is authorized | before RAG/LLM |
+| `prepare_memory_context()` | Prepares the summary and recent window | immediately before `build_messages()` |
+| `build_messages()` | Builds canonical context, MCP, RAG, and memory messages | before `_invoke_llm_cached()` |
 | `_cache_get()` | Reads generic cache | advanced use, usually indirect |
 | `_cache_set()` | Writes generic cache | advanced use, usually indirect |
 | `_llm_cache_key()` | Creates a stable LLM cache key | normally used internally |
@@ -2518,9 +2591,20 @@ Therefore, this pattern appears in the agent:
 
 ```python
 class FinanceiroAgent(AgentRuntimeMixin):
-name = "financeiro_agent"
+    name = "financeiro_agent"
 
-    def __init__(self, llm, telemetry=None, tool_router=None, rag_service=None, cache=None, settings=None, observer=None):
+    def __init__(
+        self,
+        llm,
+        telemetry=None,
+        tool_router=None,
+        rag_service=None,
+        cache=None,
+        settings=None,
+        observer=None,
+        memory=None,
+        summary_memory=None,
+    ):
         self.llm = llm
         self.telemetry = telemetry
         self.tool_router = tool_router
@@ -2528,6 +2612,8 @@ name = "financeiro_agent"
         self.cache = cache
         self.settings = settings
         self.observer = observer
+        self.memory = memory
+        self.summary_memory = summary_memory
 ```
 
 This means:
@@ -2620,7 +2706,7 @@ tool_context = await self._collect_mcp_context(state)
 
 The developer should use this method when it is sufficient to call the tools defined by the intent.
 
-If the agent needs to choose special arguments per tool, skip dangerous tools, require confirmation, or set up additional parameters, it can implement its own method in the agent and call the router in a more controlled way, as in the `BackofficeAgent` example.
+If a tool requires special arguments, blocking, confirmation, pre-validation, or a workflow, declare it in `tools.yaml`, `tool_policies.yaml`, and `mcp_parameter_mapping.yaml`. Do not implement a second executor inside the agent. Python customization belongs only to domain behavior not represented by these contracts and must still call `execute_tools_for_intent()` or `_collect_mcp_context()`.
 
 #### 5.2.2.6. How`_retrieve_rag_context()` works
 
@@ -2686,18 +2772,18 @@ This prevents each agent from implementing caching differently.
 
 The developer should understand that caching is useful for deterministic prompts or repeated queries, but should be used with caution for sensitive actions. The agent should not confirm an external operation just because an LLM response came from the cache. Operational confirmations must depend on the actual return from the tool.
 
-#### 5.2.2.8. When to use`_collect_mcp_context()` and when to create your own logic
+#### 5.2.2.8. When to use `_collect_mcp_context()` and when to declare policies
 
-Use `_collect_mcp_context()` when:
+Use `_collect_mcp_context()` for intent tools. Runtime applies catalog, schema, and declared policies, including sensitive operations.
 
 ```text
 the intent has already defined the correct tools
 the canonical parameters are already in the business_context
 the execution can call all the tools in the list
-no tool represents a sensitive action
+transactional policies are declared in tool_policies.yaml
 ```
 
-Create your own logic in the agent when:
+Declare configuration, rather than a manual agent `if`, when:
 
 ```text
 a tool can only be called after explicit confirmation
@@ -2707,14 +2793,17 @@ a registration/change tool cannot run automatically
 a sequence of tools depends on the previous result
 ```
 
-Example of a safe rule:
+Example of a safe policy:
 
-```python
-if tool.startswith("registrar_") and not action_text:
-return {"ok": False, "skipped": True, "reason": "action without explicit confirmation"}
+```yaml
+tool_policies:
+  registrar_acao:
+    operation_type: transactional
+    require_confirmation: true
+    requires: [action_text]
 ```
 
-This is a domain rule and should stay in the agent, not in the mixin.
+The meaning of `action_text` belongs to the domain, but collection, blocking, and confirmation belong to configurable runtime.
 
 #### 5.2.2.9. How the dev should read the `run()` of an agent that inherits the mixin
 
@@ -2734,78 +2823,25 @@ When opening an agent, the developer should look for this mental structure:
 
 If the agent does this, it is using the framework correctly.
 
-#### 5.2.2.10. Minimum example of correct use of the mixin
+#### 5.2.2.10. Correct minimum mixin order
 
-```python
-async def run(self, state):
-    await self._emit_ic(
-        "IC.FINANCEIRO_AGENT_STARTED",
-        state,
-        {"business_component": "financeiro"},
-        component="agent.financeiro.start",
-    )
+This is a conceptual map, **not a second copy block**:
 
-    tool_context = await self._collect_tool_context(state)
-    if tool_context:
-        await self._emit_ic(
-            "IC.FINANCEIRO_MCP_CONTEXT_COLLECTED",
-            state,
-            {"tool_result_count": len(tool_context)},
-            component="agent.financeiro.mcp",
-        )
-
-    rag_context, rag_metadata = await self._retrieve_rag_context(state)
-    if rag_metadata.get("enabled"):
-        await self._emit_ic(
-            "IC.FINANCEIRO_RAG_CONTEXT_RETRIEVED",
-            state,
-            {
-                "document_count": rag_metadata.get("document_count"),
-                "graph_neighbors": rag_metadata.get("graph_neighbors"),
-                "latency_ms": rag_metadata.get("latency_ms"),
-            },
-            component="agent.financeiro.rag",
-        )
-
-    # Prepara ConversationSummaryMemory antes de montar o prompt.
-    # O build_messages() do framework injeta resumo + últimas mensagens quando habilitado.
-    await self.prepare_memory_context(state)
-
-    messages = self.build_messages(
-        state,
-        system_prompt=apply_agent_profile_prompt(
-            state,
-            "You are a financial agent. Respond clearly, using data from available tools. Do not confirm financial actions without evidence and explicit confirmation."
-        ),
-        mcp_results=tool_context,
-        rag_context=rag_context,
-        rag_metadata=rag_metadata,
-    )
-
-    answer = await self._invoke_llm_cached(state, "FinanceiroAgent", messages)
-    result = {
-        "answer": f"[FinanceiroAgent] {answer}",
-        "next_state": "FINANCEIRO_ACTIVE",
-        "mcp_results": tool_context,
-        "rag": rag_metadata,
-        "memory_context_metadata": state.get("memory_context_metadata"),
-    }
-
-    await self._emit_ic(
-        "IC.FINANCEIRO_AGENT_COMPLETED",
-        state,
-        {
-            "answer_chars": len(result.get("answer") or ""),
-            "has_mcp_results": bool(tool_context),
-            "rag_enabled": bool(rag_metadata.get("enabled")),
-            "memory_context": state.get("memory_context_metadata"),
-        },
-        component="agent.financeiro.completed",
-    )
-    return result
+```text
+emit start
+→ collect MCP and save state.mcp_results
+→ handle transaction_clarification_message
+→ handle transaction_confirmation_message
+→ try build_direct_mcp_answer
+→ retrieve RAG
+→ prepare_memory_context
+→ build_messages
+→ _invoke_llm_cached
+→ return rag_results + transaction_state_patch
+→ emit completion
 ```
 
-This example shows the intention of the mixin: the developer writes the agent's reasoning, but delegates infrastructure to standardized methods.
+Use only the complete file in section 5.3 for copy and paste.
 
 #### 5.2.2.11. Common mistakes when using `AgentRuntimeMixin`
 
@@ -2814,7 +2850,7 @@ Inherit from AgentRuntimeMixin, but call REST directly inside the agent.
 Create another manual cache instead of using _invoke_llm_cached().
 Emit events directly in formats other than the observer.
 Placing a domain rule inside runtime.py.
-Using _collect_mcp_context() for an action tool without confirmation.
+Calling an action tool outside _collect_mcp_context()/execute_tools_for_intent() and bypassing confirmation policy.
 Ignore business_context and get loose parameters from the payload.
 Treat global session_id and backend_session_id as if they were the same thing.
 Overwrite internal mixin methods unnecessarily.
@@ -3353,22 +3389,33 @@ mcp_parameter_mapping.yaml translates to the name expected by each MCP Server.
 
 Not every tool is just for consultation. Some tools perform actions, such as registering an opinion, opening a request, canceling a service, or creating a protocol.
 
-These tools must be declared with a policy in `config/tools.yaml`:
+The contract is split: description and schema belong in `config/tools.yaml`; execution authorization belongs in `config/tool_policies.yaml`:
 
 ```yaml
-tools:
 tools:
   registrar_acao_backoffice:
     description: Registers operational action in the backoffice.
     mcp_server: backoffice
     enabled: true
-    tool_type: action
-    requires: [protocol_id, action_text, operator_session]
-    confirmation_required: false
     args_schema:
-      protocol_id: string
-      action_text: string
-      operator_session: string
+      protocol_id:
+        type: string
+        description: Interaction protocol.
+      action_text:
+        type: string
+        description: Action text authorized by the operator.
+      operator_session:
+        type: string
+        description: Authenticated operator session.
+```
+
+```yaml
+# config/tool_policies.yaml
+tool_policies:
+  registrar_acao_backoffice:
+    operation_type: transactional
+    require_confirmation: true
+    requires: [protocol_id, action_text, operator_session]
 ```
 
 With this, the framework is able to block the call before it reaches the MCP when a required field is missing:
@@ -3490,7 +3537,7 @@ Create:
 app/agents/financeiro_agent.py
 ```
 
-Annotated base code:
+**COPY — complete canonical file:**
 
 ```python
 from app.agents.prompting import apply_agent_profile_prompt
@@ -3531,6 +3578,7 @@ class FinanceiroAgent(AgentRuntimeMixin):
         )
 
         tool_context = await self._collect_tool_context(state)
+        state["mcp_results"] = tool_context
         if tool_context:
             await self._emit_ic(
                 "IC.FINANCEIRO_MCP_CONTEXT_COLLECTED",
@@ -3539,16 +3587,59 @@ class FinanceiroAgent(AgentRuntimeMixin):
                 component="agent.financeiro.mcp",
             )
 
+        clarification_message = self.transaction_clarification_message(state)
+        if clarification_message:
+            return {
+                "answer": f"[FinanceiroAgent] {clarification_message}",
+                "next_state": state.get("next_state") or "COLLECTING_PARAMETERS",
+                "mcp_results": tool_context,
+                **self.transaction_state_patch(state),
+            }
+
+        confirmation_message = self.transaction_confirmation_message(state)
+        if confirmation_message:
+            return {
+                "answer": f"[FinanceiroAgent] {confirmation_message}",
+                "next_state": state.get("next_state"),
+                "mcp_results": tool_context,
+                **self.transaction_state_patch(state),
+            }
+
+        direct_answer = self.build_direct_mcp_answer(state, tool_context, agent_label="FinanceiroAgent")
+        if direct_answer:
+            return {
+                "answer": direct_answer,
+                "next_state": state.get("next_state") or "ACTIVE",
+                "mcp_results": tool_context,
+                "rag": {"enabled": False, "skipped": True, "reason": "direct_mcp_answer"},
+                **self.transaction_state_patch(state),
+            }
+
         rag_context, rag_metadata = await self._retrieve_rag_context(state)
-        if rag_metadata.get("enabled"):
+        rag_event_payload = {
+            "provider": rag_metadata.get("provider"),
+            "status": rag_metadata.get("status"),
+            "attempted": rag_metadata.get("attempted"),
+            "enabled": rag_metadata.get("enabled"),
+            "document_count": rag_metadata.get("document_count"),
+            "graph_neighbors": rag_metadata.get("graph_neighbors"),
+            "latency_ms": rag_metadata.get("latency_ms"),
+            "reason": rag_metadata.get("reason"),
+            "error": rag_metadata.get("error"),
+            "query": rag_metadata.get("query"),
+            "namespace": rag_metadata.get("namespace"),
+        }
+        await self._emit_ic(
+            "IC.FINANCEIRO_RAG_CONTEXT_EVALUATED",
+            state,
+            rag_event_payload,
+            component="agent.financeiro.rag",
+        )
+        if rag_metadata.get("enabled") and rag_metadata.get("status") == "executed":
             await self._emit_ic(
                 "IC.FINANCEIRO_RAG_CONTEXT_RETRIEVED",
                 state,
-                {
-                    "document_count": rag_metadata.get("document_count"),
-                    "graph_neighbors": rag_metadata.get("graph_neighbors"),
-                    "latency_ms": rag_metadata.get("latency_ms"),
-                },
+                rag_event_payload,
                 component="agent.financeiro.rag",
             )
 
@@ -3573,7 +3664,16 @@ class FinanceiroAgent(AgentRuntimeMixin):
             "next_state": "FINANCEIRO_ACTIVE",
             "mcp_results": tool_context,
             "rag": rag_metadata,
+            "rag_context": rag_context,
+            "rag_results": [{
+                "intent": state.get("intent"),
+                "agent": self.name,
+                "source_text": str(state.get("sanitized_input") or state.get("user_text") or ""),
+                "metadata": rag_metadata,
+                **({"context": rag_context} if rag_context else {}),
+            }],
             "memory_context_metadata": state.get("memory_context_metadata"),
+            **self.transaction_state_patch(state),
         }
 
         await self._emit_ic(
@@ -3595,6 +3695,77 @@ class FinanceiroAgent(AgentRuntimeMixin):
 
 ### 5.3.1. How to adapt this example to a real agent
 
+#### 5.3.1.1. Capabilities inherited without new Python declarations
+
+The section 5.3 block stays small because `_collect_mcp_context()` calls `execute_tools_for_intent()` and materializes `relevant_transaction_evidence`. Do not copy these internals into `FinanceiroAgent`:
+
+| Automatic capability | Source of truth |
+| --- | --- |
+| Read-only/transactional tool allowlist and selection | `routing.yaml` + `tools.yaml` + `tool_policies.yaml` |
+| Semantic extraction of required parameters | `requires` + `args_schema` (`type`, `label`, `description`, `user_prompt`) |
+| Collection and confirmation continuity | `active_transaction`, confirmation snapshot, and `state_policies` |
+| Cancellation on a real intent change | `transaction_interruption=intent_shift` decision from `EnterpriseRouter` |
+| Pre-validation and possible effective-operation replacement | `pre_validation` and validator-tool response |
+| Paused workflow resume | `pending_domain_workflow` + declarative workflow |
+| Ambiguous MCP-result clarification | `pending_tool_clarification` returned by the tool |
+| MCP cache and deduplication | tool cache configuration and MCP runtime |
+| Operational evidence for supervisor/judges | `relevant_transaction_evidence` materialized by the mixin |
+| Early termination on `BLOCKED`/terminal result | MCP envelope and termination policy |
+| Tool-requested RAG | `requires_rag` and optional `rag_query` in MCP output |
+| Required LLM composition | `requires_llm_composition` and structured MCP instructions |
+| Safe direct response | declared `response.direct`/renderer, never payload presence alone |
+
+The agent only needs to preserve helper order and return the patches. If a capability fails, fix YAML, the MCP contract, or runtime; do not add a second state machine to the financial agent.
+
+#### 5.3.1.2. What must be specific to the financial agent
+
+Customize only the class identity, IC codes, `business_component`, domain prompt, `agent_label`, and active state in the agent. Longer permanent rules belong in `config/agents/financeiro_agent/prompt_policy.yaml`; schemas, confirmation, and execution remain in their dedicated YAML files.
+
+#### 5.3.1.3. Commented walkthrough of `run()`
+
+1. **Start event.** `_emit_ic()` adds session, tenant, agent, route, and intent correlation. A missing observer does not stop service.
+2. **MCP collection.** `_collect_tool_context()` is only a domain-readable name delegating to `_collect_mcp_context()`. Runtime selects allowed tools, applies policies, executes them, and records operational evidence.
+3. **Result materialization.** `state["mcp_results"] = tool_context` must happen before clarification, RAG, and messages so RAG, supervisor, and judges consume the same evidence.
+4. **Parameter clarification.** `transaction_clarification_message()` detects `COLLECTING_PARAMETERS` and uses schema `label`, `description`, and `user_prompt`. Early return prevents RAG/LLM from answering instead of asking the transactional question.
+5. **Confirmation.** `transaction_confirmation_message()` presents the frozen operation and arguments. The action is not executed in this return; acceptance is processed by runtime/router on the next turn.
+6. **Direct response.** `build_direct_mcp_answer()` exits early only for a terminal result, final workflow, or `response.direct: true` with a valid renderer/template. `requires_rag` and `requires_llm_composition` disable this shortcut.
+7. **RAG evaluation.** `_retrieve_rag_context()` may return `executed`, `empty`, `error`, `blocked`, `no_service`, or skipped. Therefore the example always emits `RAG_CONTEXT_EVALUATED` and emits `RETRIEVED` only for an actual execution.
+8. **Memory.** `prepare_memory_context()` is asynchronous and must precede `build_messages()`. It prepares the summary/recent window; the builder only consumes it.
+9. **Prompt.** `apply_agent_profile_prompt()` combines the registered-agent prefix with the local rule. `build_messages()` adds sanitized input, required context, MCP, RAG, and memory without dumping raw state.
+10. **LLM.** `_invoke_llm_cached()` uses the `FinanceiroAgent` profile, telemetry, contextual cache key, and compacted retry on context-window errors.
+11. **Output contract.** `rag`, `rag_context`, `rag_results`, and `memory_context_metadata` let downstream nodes audit the response source.
+12. **Transactional patch.** `transaction_state_patch(state)` belongs in the final return and every transactional early return; omitting it loses continuity or retains stale latches.
+13. **Completion event.** Emit it after assembling the result. Early returns represent waiting/direct-response branches and do not pass through the final LLM-composition event.
+
+#### 5.3.1.4. Expected state for primary paths
+
+| Path | LLM called? | RAG called? | Essential state/output |
+| --- | --- | --- | --- |
+| Ordinary query without direct response | Yes | According to policy | `answer`, `mcp_results`, `rag_results`, transactional patch |
+| Missing parameter | No | No | `COLLECTING_PARAMETERS`, `missing_parameters`, `active_transaction` |
+| Awaiting acceptance | No | No | `AWAITING_CONFIRMATION`, `pending_tool_call`, immutable snapshot |
+| Accepted confirmation | Depends on result | Depends on MCP directives | actual tool result and execution evidence |
+| Rejected confirmation | No | No | `CANCELLED` transaction and cleared latches |
+| Direct MCP response | No | No | renderer/template text and `reason=direct_mcp_answer` |
+| Tool requires RAG | Yes, after retrieval | Yes | `required_by_tool=true`, effective query, and retrieved documents |
+| Tool requires composition | Yes | According to directive | MCP instructions included in `messages` |
+| Technical RAG failure | Yes, with other evidence | Attempted | `status=error`; conversation continues |
+| Paused workflow | Not until input arrives | No | declarative prompt and `pending_domain_workflow` |
+| Terminal result/handoff | No | No | terminal message; tool chain stopped |
+
+#### 5.3.1.5. Why the agent has no generic `try/except`
+
+MCP, RAG, observability, cache, and compaction are handled in their proper layers. An `except Exception` in `FinanceiroAgent` would hide contract failures and might turn a blocked operation into an apparently successful answer. Catch exceptions in the agent only for a specific business recovery; otherwise let the workflow and telemetry record the failure.
+
+#### 5.3.1.6. How to validate the copyable example
+
+The repository includes `tests/test_readme_financeiro_agent_example.py`. It extracts code directly from `README.md` and `README_en.md`, compiles, instantiates, and exercises normal composition, clarification, confirmation, direct response, and RAG evaluation. Documentation is therefore executable: incompatible changes fail the test.
+
+```bash
+PYTHONPATH="libs/agent_framework/src:templates/agent_template_backend" \
+  pytest -q tests/test_readme_financeiro_agent_example.py
+```
+
 In the example above, `session`, `business_context`, and `tool_arguments` appear in the prompt for educational purposes. In production, the developer should avoid throwing huge objects directly into the prompt. Ideally, only the necessary fields should be selected.
 
 Example of reasoning for a financial agent:
@@ -3608,24 +3779,14 @@ business_context.interaction_key → useful for tracking protocol/call/interacti
 tool_arguments        → useful when the Gateway or Identity Resolver has already prepared exact parameters.
 ```
 
-A common utility function within the agent is a `pick()` with an explicit order of precedence:
+Do not copy a `pick()` function into every agent. Precedence is already a `RuntimeContext` contract:
 
 ```python
-def pick(name: str, *, tool_arguments, business_context, ctx, session, session_metadata, state):
-    if name in tool_arguments:
-        return tool_arguments.get(name)
-    if isinstance(business_context, dict) and name in business_context:
-        return business_context.get(name)
-    if name in ctx:
-        return ctx.get(name)
-    if name in session:
-        return session.get(name)
-    if name in session_metadata:
-        return session_metadata.get(name)
-    return state.get(name)
+runtime = self.get_runtime_context(state)
+customer_key = runtime.pick("customer_key", "cpf", "cnpj", "msisdn")
 ```
 
-This function makes it clear that the agent is not “guessing” where the data comes from. It is following a trust policy.
+This keeps one trust policy in the framework and prevents divergence among agents.
 
 ### 5.3.2. Where does the Agent Gateway come in in this code?
 
@@ -4619,6 +4780,68 @@ A supervisor can decide the sequence of agents, handoff, or combination of respo
 
 Use router when the domain is well mapped. Use supervisor when the conversation requires decomposition, multiple agents, or more flexible decision-making.
 
+### 10.6. Complete contract and routing intelligence
+
+Current routing is not limited to keywords. It applies state/continuity policy, deterministic recognition, semantic LLM fallback when enabled, and a safe fallback. The LLM proposes an intent; the framework validates its name, agent, enabled status, and confidence against the YAML catalog. It cannot invent a route.
+
+```yaml
+router:
+  mode: router                 # router | supervisor; ROUTING_MODE may override
+  fallback_agent: financeiro_agent
+  confidence_threshold: 0.65
+  allow_handoff: true
+  transaction_confirmation:
+    semantic_fallback:
+      enabled: true
+      allowed_values: [YES, NO, CONTINUE]
+      confirm_values: [YES]
+      reject_values: [NO]
+      continue_values: [CONTINUE]
+      include_relevant_context: true
+      profile_name: router
+      prompt: |
+        Classify only the pending confirmation.
+
+multi_intent:
+  enabled: true
+  llm_confidence_threshold: 0.65
+  max_operations: 4
+
+state_policies:
+  - state: COLLECTING_FINANCEIRO_PARAMETERS
+    agent: financeiro_agent
+  - state: WAITING_FINANCEIRO_CONFIRMATION
+    agent: financeiro_agent
+
+intents:
+  - name: financeiro_pagamentos
+    enabled: true
+    domain: financeiro
+    agent: financeiro_agent
+    description: Payment lookup and explanation.
+    priority: 15
+    mcp_tools: [consultar_titulo_financeiro, consultar_pagamentos_financeiro]
+    keywords: [payment, invoice, duplicate]
+    examples: [My payment has not cleared yet.]
+```
+
+| Attribute | Effect |
+| --- | --- |
+| `description` | Gives business context to semantic fallback; document positive and negative intent boundaries. |
+| `examples` | Representative utterances for semantic classification; vary phrasing rather than duplicating keywords. |
+| `keywords` | Deterministic evidence. Prefer specific phrases; generic terms increase collisions. |
+| `priority` | Breaks ties: a lower number wins. It is not confidence. |
+| `enabled` | Disables an intent without deleting its contract. Disabled intents are rejected from LLM output. |
+| `domain` | Isolates vocabulary and supports multi-agent/multi-intent composition. |
+| `mcp_tools` | Ordered allowlist for the intent; names must exist in `tools.yaml`. |
+| `state_policies` | Preserves collection and confirmation before reclassifying short text. |
+| `confidence_threshold` | Rejects weak semantic classifications. Calibrate with offline regression. |
+| `allow_handoff` | Allows a controlled agent change when a valid decision targets another route. |
+
+For several requests in one utterance, enable `multi_intent` and link every operation to a registered intent. Transactional operations still undergo individual collection and confirmation; the planner does not bypass tool policies.
+
+Use the `router` profile in `llm_profiles.yaml` and enable the LLM router through the supported environment setting. If the provider is unavailable or confidence falls below the threshold, behavior remains deterministic and fail-safe. Test unambiguous keywords, no-keyword phrases, collisions, disabled intents, short pending replies, `intent_shift`, and two operations in one utterance.
+
 ---
 
 ## 11. Configuring tools in `config/tools.yaml`
@@ -4690,6 +4913,47 @@ Does the result have sensitive data that needs to be masked?
 
 The backend should not directly call HTTP/SOAP/DB from business systems when this call can be standardized via the MCP Tool Router.
 
+
+### 11.3.1. Required separation: catalog versus policy
+
+`tools.yaml` describes **what a tool is and how to call it**. `tool_policies.yaml` describes **when and under which conditions it may execute**. New agents must use this separation; legacy fields in `tools.yaml` remain for compatibility only.
+
+```yaml
+# config/tool_policies.yaml
+version: 1
+defaults:
+  operation_type: read_only
+  require_confirmation: false
+
+tool_policies:
+  cancelar_acordo:
+    operation_type: transactional
+    require_confirmation: true
+    requires: [customer_key, agreement_id]
+    pre_validation:
+      enabled: true
+      tool: validar_cancelamento_acordo
+      fail_open: false
+    execution:
+      mode: workflow
+      workflow: cancelamento_acordo
+      version: active
+```
+
+| Field | Usage rule |
+| --- | --- |
+| `operation_type` | `read_only` may run without confirmation; `transactional` enters collection, confirmation, evidence, and idempotency. |
+| `require_confirmation` | Requires explicit acceptance. Do not infer confirmation in agent code. |
+| `requires` | Canonical required parameters. Runtime asks for one semantic field at a time and preserves collected values. |
+| `pre_validation.enabled` | Runs an eligibility lookup before confirmation/action. |
+| `pre_validation.tool` | Read-only tool that validates the operation; it must exist in `tools.yaml`. |
+| `pre_validation.fail_open` | When `false`, unavailability or rejection blocks the action; recommended for sensitive operations. |
+| `execution.mode` | `direct_tool` (default) calls MCP; `workflow` delegates to a declarative workflow; `agent` delegates to the agent. |
+| `execution.workflow` / `version` | Name under `workflows/` and resolved version (`active` or explicit). |
+
+Do not duplicate `requires` in Python. Declare type, description, and expected values when applicable in the `tools.yaml` `args_schema`: this metadata feeds the single transactional extractor, which receives the current utterance, known values, and bounded conversational context for the same transaction, as well as collection questions. “Value” is insufficient; prefer “monetary amount of the disputed charge, in BRL.”
+
+MCP may also declare `requires_rag`, `requires_llm_composition`, or a `direct` response with a registered presentation policy. `direct` must be explicit: the presence of an MCP payload does not mean it is already an adequate customer-facing response.
 
 ### 11.4. MCP Cache
 

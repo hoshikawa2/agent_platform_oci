@@ -2,6 +2,8 @@
 
 Documentation for the main `agent_framework_oci` features.
 
+To implement these features together in a real agent, also use [13 — Advanced Transactional Workflows](../../developer/en/13_advanced_transactional_workflows.md), [14 — Advanced Routing, Parameters, and State](../../developer/en/14_advanced_routing_parameters_and_state.md), [15 — Presentation, Recovery, and Observability](../../developer/en/15_presentation_recovery_and_observability.md), and [16 — Multi-Agent Composition and Lifecycle](../../developer/en/16_multi_agent_composition_and_lifecycle.md). They contain copyable contracts and the integrated development flow not repeated in every individual guide.
+
 - [Authentication](01_authentication.md)
 - [Deterministic Transactional Workflow](02_deterministic_transactional_workflow.md)
 - [Domain Requested LLM Composition](03_domain_requested_llm_composition.md)

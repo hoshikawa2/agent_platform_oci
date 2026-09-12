@@ -160,33 +160,23 @@ _, decisions = await pipeline.run_tool(
 
 ### SPI de guardrails e judges externos
 
-> Conteúdo consolidado a partir de `docs/EXTERNAL_GUARDRAILS_JUDGES.md`.
+Use extensões quando a política ou o critério de qualidade pertencer ao domínio do agente. Um guardrail implementa `evaluate(text, context) -> RailDecision` e pode atuar em `input`, `retrieval`, `tool` ou `output`. Um judge implementa `evaluate(question, answer, context) -> JudgeResult` e avalia a resposta sem reescrevê-la.
 
-`agent_framework_oci` supports agent-owned guardrails and judges without importing domain code into the core.
+O guia [Guardrails e judges externos](../../EXTERNAL_GUARDRAILS_JUDGES.md) contém a estrutura de diretórios, imports, classes completas para copiar, YAML, explicação de cada declaração, fail-open/fail-closed, observabilidade e teste executável.
 
-```yaml
-output:
-  - code: ACME_POLICY
-    type: external
-    class: app.extensions.guardrails:AcmePolicyRail
-```
+Pontos indispensáveis:
 
-```yaml
-judges:
-  - name: acme_quality
-    type: external
-    class: app.extensions.judges:AcmeQualityJudge
-    threshold: 0.7
-```
+- `type: external` e `class: pacote.modulo:Classe` ativam o import dinâmico;
+- `kwargs` são argumentos do construtor; judges também podem receber `llm` e `settings` injetados;
+- guardrails externos não recebem `llm` no construtor: o pipeline o disponibiliza no contexto somente quando criado com `llm=...`;
+- métodos síncronos rodam em worker thread; métodos assíncronos rodam no event loop;
+- judges são concorrentes e preservam a ordem declarada no YAML;
+- exceções esperadas de judges externos devem ser tratadas pela implementação;
+- códigos, regras e vocabulário de negócio ficam no pacote do agente, nunca importados pelo core.
 
-Native entries remain unchanged. External synchronous `evaluate()` methods execute in worker threads via `asyncio.to_thread`; asynchronous methods execute concurrently on the framework event loop. Judges run concurrently with `asyncio.gather`, preserving YAML result order. Agent plugins should reuse the LLM supplied by the framework rather than instantiate a separate provider.
+> **Limitação atual:** o `agent_template_backend` instancia um par global de pipelines no startup. Os campos `guardrails_config_path` e `judges_config_path` do registro não selecionam automaticamente configurações por requisição. Extensões dependentes de LLM também exigem que a composição passe `llm` e `settings` aos pipelines, conforme o guia completo.
 
-The core must not reference a concrete agent package, company, product, telecom identifier or domain-specific policy. Domain-specific variants belong to the agent and should receive distinct public codes/names.
-
-### Compatibility rule
-Domain policies must not be replaced by cosmetically generic text inside the core while losing the original policy. The generic core implementation and the agent-specific implementation may coexist; the embedding agent explicitly selects its own code/name in YAML.
-
-Legacy business validators should migrate to the agent domain. A temporary compatibility shim is acceptable for old imports, but new application code must import the agent-owned implementation.
+Valide o exemplo publicado com `pytest -q tests/test_external_guardrails_judges_documentation.py`.
 
 ### Execução obrigatória de judges em transações
 

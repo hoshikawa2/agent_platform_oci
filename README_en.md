@@ -32,7 +32,15 @@ The documentation has three clear levels:
 
 1. **Main tutorial:** this [`README_en.md`](README_en.md) — build, configure, run and test an agent end to end.
 2. **Architecture:** [01 — Architecture and Concepts](docs/developer/en/01_architecture_and_concepts.md) — components, boundaries and implementation placement.
-3. **Specialized references:** manuals `02` through `12` — deep implementation and troubleshooting by capability.
+3. **Specialized references:** manuals `02` through `16` — deep implementation, copyable code, and troubleshooting by capability.
+
+The newest capabilities are consolidated in:
+
+- [13 — Advanced transactional workflows](docs/developer/en/13_advanced_transactional_workflows.md)
+- [14 — Advanced routing, parameters, and state](docs/developer/en/14_advanced_routing_parameters_and_state.md)
+- [15 — Presentation, recovery, and observability](docs/developer/en/15_presentation_recovery_and_observability.md)
+- [16 — Multi-agent composition and lifecycle](docs/developer/en/16_multi_agent_composition_and_lifecycle.md)
+- [External guardrails and judges — complete implementation](docs/EXTERNAL_GUARDRAILS_JUDGES_en.md)
 
 If you are creating a new agent, follow this `README_en.md` from the beginning. For deeper implementation details or troubleshooting, use the links below.
 
@@ -11732,9 +11740,25 @@ The content of this folder should be treated as an additional framework extensio
 
 **Use it when:** `COER`/input guardrails generate generic messages, `route=blocked` carries stale results, or you need to reason about precedence between input guardrails, routing, and tools.
 
+### [13 — Advanced Transactional Workflows](docs/developer/en/13_advanced_transactional_workflows.md)
+
+**What it is:** pre-validation, actions, versioning, pause/resume, idempotency, and replay.
+
+### [14 — Advanced Routing, Parameters, and State](docs/developer/en/14_advanced_routing_parameters_and_state.md)
+
+**What it is:** precedence, semantic confirmation, hybrid extraction, temporal reconciliation, and dynamic states.
+
+### [15 — Presentation, Recovery, and Observability](docs/developer/en/15_presentation_recovery_and_observability.md)
+
+**What it is:** renderers, Output Supervisor, recovery, voice replay, mappings, and Pub/Sub.
+
+### [16 — Multi-Agent Composition and Lifecycle](docs/developer/en/16_multi_agent_composition_and_lifecycle.md)
+
+**What it is:** isolation, bundles, supervisor/subagents, security, readiness, and certification.
+
 ### Implemented feature guides
 
-The `01` through `12` manuals above organize documentation by development area. The guides below document each executable feature individually:
+The `01` through `16` manuals above organize documentation by development area. The guides below document each executable feature individually:
 
 1. [Authentication](docs/features/en/01_authentication.md)
 2. [Deterministic Transactional Workflow](docs/features/en/02_deterministic_transactional_workflow.md)

@@ -125,11 +125,35 @@ If something is not working, use **Search by problem** below.
 
 **Use when:** block messages are generic, `COER` should ask for clarification, or blocked-turn metadata contains stale routing/tool results.
 
+### [13 — Advanced Transactional Workflows](./13_advanced_transactional_workflows.md)
+
+**What it is:** pre-validation, versioned workflow actions, pause/resume, idempotency, replay, and recovery.
+
+**Use when:** a sensitive tool requires a deterministic and recoverable process.
+
+### [14 — Advanced Routing, Parameters, and State](./14_advanced_routing_parameters_and_state.md)
+
+**What it is:** routing precedence, semantic confirmation, hybrid extraction, temporal reconciliation, dynamic states, and subagents.
+
+**Use when:** routing or collection works on the happy path but fails in real conversations.
+
+### [15 — Presentation, Recovery, and Observability](./15_presentation_recovery_and_observability.md)
+
+**What it is:** renderers, Output Supervisor, recovery, voice replay, events, mappings, and ordered Pub/Sub.
+
+**Use when:** output changes evidence, an effect may repeat, or telemetry cannot reconstruct execution.
+
+### [16 — Multi-Agent Composition and Lifecycle](./16_multi_agent_composition_and_lifecycle.md)
+
+**What it is:** actual isolation, per-agent bundles, supervisor/subagents, LLM/RAG/memory, and readiness.
+
+**Use when:** multiple agents share one deployment or a new capability must reach production.
+
 ### Main tutorial
 
 [`README_en.md`](README_en.md) remains the reference for the complete step-by-step flow:
 
-`architecture → configuration → agent creation → registration → state → routing → tools → MCP → identity → execution → tests → gateways → memory → RAG`.
+`architecture → configuration → agent creation → registration → state → routing → tools → MCP → identity → workflows → idempotency → execution → tests → gateways → memory → RAG → operations`.
 
 ### Maintenance
 
@@ -141,4 +165,3 @@ When evolving a feature:
 - update the specialized manual with behavior, configuration, examples, and troubleshooting;
 - update SPECs if the contract changed;
 - keep release notes as history, not as the only current documentation.
-

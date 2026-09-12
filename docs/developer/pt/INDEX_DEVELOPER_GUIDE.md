@@ -126,11 +126,35 @@ Se algo não está funcionando, use **Buscar pelo problema** abaixo.
 
 **Use quando:** mensagens de bloqueio são genéricas, `COER` deveria pedir esclarecimento ou o metadata de um turno bloqueado contém routing/tools antigos.
 
+### [13 — Workflows Transacionais Avançados](./13_workflows_transacionais_avancados.md)
+
+**O que é:** implementação de pré-validação, workflow versionado, actions, pausa/retomada, idempotência, replay e recuperação.
+
+**Use quando:** uma tool sensível precisa executar um processo determinístico e recuperável.
+
+### [14 — Routing, Parâmetros e Estado Avançados](./14_routing_parametros_e_estado_avancados.md)
+
+**O que é:** precedência do router, confirmação semântica, extração híbrida, reconciliação temporal, estados dinâmicos e subagentes.
+
+**Use quando:** routing, coleta ou retomada funcionam no happy path, mas falham em conversas reais.
+
+### [15 — Apresentação, Recuperação e Observabilidade](./15_apresentacao_recuperacao_e_observabilidade.md)
+
+**O que é:** renderers, Output Supervisor, recuperação, voice replay, eventos, mappings e Pub/Sub ordenado.
+
+**Use quando:** a resposta altera evidências, um efeito pode repetir ou a telemetria não permite reconstruir o fluxo.
+
+### [16 — Multiagente, Composição e Ciclo de Vida](./16_multiagente_composicao_e_ciclo_de_vida.md)
+
+**O que é:** isolamento efetivo, bundles por agente, supervisor/subagentes, LLM/RAG/memória e readiness.
+
+**Use quando:** vários agentes compartilham o deployment ou uma nova capacidade precisa chegar à produção.
+
 ### Tutorial principal
 
 [`README.md`](../../../README.md) continua sendo a referência para o passo a passo completo:
 
-`arquitetura → configuração → criação do agente → registro → estado → routing → tools → MCP → identidade → execução → testes → gateways → memória → RAG`.
+`arquitetura → configuração → criação do agente → registro → estado → routing → tools → MCP → identidade → workflows → idempotência → execução → testes → gateways → memória → RAG → operação`.
 
 ### Manutenção
 

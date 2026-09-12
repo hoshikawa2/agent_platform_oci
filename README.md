@@ -32,7 +32,15 @@ A documentação possui três níveis:
 
 1. **Tutorial principal:** este [`README.md`](README.md) — criação, configuração, execução e teste de um agente do início ao fim.
 2. **Arquitetura:** [01 — Arquitetura e Conceitos](docs/developer/pt/01_architecture_and_concepts.md) — componentes, responsabilidades e onde implementar cada coisa.
-3. **Referências especializadas:** manuais `02` a `12` — implementação profunda e troubleshooting por capacidade.
+3. **Referências especializadas:** manuais `02` a `16` — implementação profunda, código copiável e troubleshooting por capacidade.
+
+As funcionalidades mais recentes estão consolidadas em:
+
+- [13 — Workflows transacionais avançados](docs/developer/pt/13_workflows_transacionais_avancados.md)
+- [14 — Routing, parâmetros e estado avançados](docs/developer/pt/14_routing_parametros_e_estado_avancados.md)
+- [15 — Apresentação, recuperação e observabilidade](docs/developer/pt/15_apresentacao_recuperacao_e_observabilidade.md)
+- [16 — Multiagente, composição e ciclo de vida](docs/developer/pt/16_multiagente_composicao_e_ciclo_de_vida.md)
+- [Guardrails e judges externos — implementação completa](docs/EXTERNAL_GUARDRAILS_JUDGES.md)
 
 Se você está começando um novo agente, siga este `README.md` desde o início. Para aprofundamento ou troubleshooting, use os links abaixo.
 
@@ -11821,9 +11829,25 @@ O conteúdo desta pasta deve ser tratado como uma extensão adicional do framewo
 
 **Use quando:** um `COER`/guardrail de entrada gera mensagem genérica, `route=blocked` carrega resultados antigos ou há dúvida sobre a precedência entre input guardrails, routing e tools.
 
+### [13 — Workflows Transacionais Avançados](docs/developer/pt/13_workflows_transacionais_avancados.md)
+
+**O que é:** pré-validação, actions, versionamento, pausa/retomada, idempotência e replay.
+
+### [14 — Routing, Parâmetros e Estado Avançados](docs/developer/pt/14_routing_parametros_e_estado_avancados.md)
+
+**O que é:** precedência, confirmação semântica, extração híbrida, reconciliação temporal e estados dinâmicos.
+
+### [15 — Apresentação, Recuperação e Observabilidade](docs/developer/pt/15_apresentacao_recuperacao_e_observabilidade.md)
+
+**O que é:** renderers, Output Supervisor, recuperação, voice replay, mappings e Pub/Sub.
+
+### [16 — Multiagente, Composição e Ciclo de Vida](docs/developer/pt/16_multiagente_composicao_e_ciclo_de_vida.md)
+
+**O que é:** isolamento, bundles, supervisor/subagentes, segurança, readiness e certificação.
+
 ### Guias de features implementadas
 
-Os manuais `01` a `12` acima organizam os assuntos por área de desenvolvimento. Os guias abaixo documentam cada feature executável individualmente:
+Os manuais `01` a `16` acima organizam os assuntos por área de desenvolvimento. Os guias abaixo documentam cada feature executável individualmente:
 
 1. [Autenticação](docs/features/pt-BR/01_authentication.md)
 2. [Workflow Transacional Determinístico](docs/features/pt-BR/02_deterministic_transactional_workflow.md)

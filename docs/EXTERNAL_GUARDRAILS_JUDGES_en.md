@@ -9,6 +9,14 @@ External extensions keep domain policy in the agent package instead of coupling 
 - Class paths accept `package.module:Class` (recommended) or `package.module.Class`; that package must be importable by the backend.
 - Synchronous methods run in worker threads; asynchronous methods run on the event loop. Judges execute concurrently while result order follows YAML order.
 
+## Where the external guardrail prompt lives
+
+The documented `FinancialAmountRail` is deterministic and therefore has no prompt. For an LLM-backed external guardrail, the prompt belongs to the agent package, preferably under `financial_agent/extensions/prompts/`. The external SPI does not define standard `prompt` or `prompt_path` YAML fields; such fields work only if the external class explicitly accepts and implements them through `kwargs`.
+
+Keep the prompt builder and `PROMPT_VERSION` in a dedicated agent module, import it from `guardrails.py`, and call only the LLM exposed as `context["guardrail_llm"]` or `context["llm"]`. `guardrails.yaml` owns activation, class, constructor options, and deny action; the prompt module owns policy text/output contract; the rail owns parsing and fail-closed behavior; `llm_profiles.yaml` owns provider/model parameters; and `AgentWorkflow` must construct `GuardrailPipeline(llm=llm, ...)`.
+
+The complete copyable prompt builder and LLM guardrail are in the [Portuguese executable guide](EXTERNAL_GUARDRAILS_JUDGES.md) and are validated by `tests/test_external_guardrails_judges_documentation.py`.
+
 ```yaml
 # guardrails.yaml
 fail_fast: true

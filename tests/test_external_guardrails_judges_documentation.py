@@ -25,17 +25,38 @@ def _block(tag: str) -> str:
 
 
 @pytest.fixture()
-def documented_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def documented_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    for name in tuple(sys.modules):
+        if name == "financial_agent" or name.startswith("financial_agent."):
+            sys.modules.pop(name, None)
     package = tmp_path / "financial_agent" / "extensions"
     package.mkdir(parents=True)
+    prompts = package / "prompts"
+    prompts.mkdir()
     (tmp_path / "financial_agent" / "__init__.py").write_text("", encoding="utf-8")
     (package / "__init__.py").write_text("", encoding="utf-8")
+    (prompts / "__init__.py").write_text("", encoding="utf-8")
+    (prompts / "financial_policy.py").write_text(_block("external-guardrail-prompt-example"), encoding="utf-8")
     (package / "guardrails.py").write_text(_block("external-guardrail-example"), encoding="utf-8")
+    (package / "llm_guardrails.py").write_text(_block("external-llm-guardrail-example"), encoding="utf-8")
     (package / "judges.py").write_text(_block("external-judge-example"), encoding="utf-8")
     (tmp_path / "guardrails.yaml").write_text(_block("external-guardrail-yaml"), encoding="utf-8")
     (tmp_path / "judges.yaml").write_text(_block("external-judge-yaml"), encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
-    return tmp_path
+    yield tmp_path
+    for name in tuple(sys.modules):
+        if name == "financial_agent" or name.startswith("financial_agent."):
+            sys.modules.pop(name, None)
+
+
+class FakeGuardrailLLM:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.calls: list[tuple[list[dict[str, str]], dict]] = []
+
+    async def ainvoke(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        return self.response
 
 
 @pytest.mark.asyncio
@@ -49,6 +70,30 @@ async def test_documented_external_guardrail_loads_and_enforces_policy(documente
     assert allowed[0].code == "FIN_AMOUNT" and allowed[0].allowed
     assert denied[0].code == "FIN_AMOUNT" and not denied[0].allowed
     assert missing[0].code == "FIN_AMOUNT" and not missing[0].allowed
+
+
+@pytest.mark.asyncio
+async def test_documented_llm_guardrail_uses_agent_prompt_and_shared_llm(documented_agent: Path) -> None:
+    from financial_agent.extensions.llm_guardrails import FinancialPolicyLLMRail
+
+    llm = FakeGuardrailLLM('{"allowed": false, "reason": "Operação fora da política."}')
+    pipeline = GuardrailPipeline(tool_rails=[FinancialPolicyLLMRail()], llm=llm)
+    _, decisions = await pipeline.run_tool("transfer", {"amount": 2000.0})
+
+    assert not decisions[0].allowed
+    assert decisions[0].metadata["prompt_version"] == "financial-policy-v1"
+    messages, kwargs = llm.calls[0]
+    assert "classificador de política financeira" in messages[0]["content"]
+    assert kwargs["profile_name"] == "guardrail"
+
+
+@pytest.mark.asyncio
+async def test_documented_llm_guardrail_fails_closed_without_llm(documented_agent: Path) -> None:
+    from financial_agent.extensions.llm_guardrails import FinancialPolicyLLMRail
+
+    decision = await FinancialPolicyLLMRail().evaluate("transfer", {"tool_name": "transfer"})
+    assert not decision.allowed
+    assert "não foi disponibilizado" in decision.reason
 
 
 @pytest.mark.asyncio

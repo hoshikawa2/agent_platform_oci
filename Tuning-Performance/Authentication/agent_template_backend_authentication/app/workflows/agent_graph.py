@@ -110,7 +110,6 @@ class AgentWorkflow:
             fail_fast=bool(getattr(settings, "GUARDRAILS_FAIL_FAST", True)),
         )
         self.judges = JudgePipeline()
-        self.supervisor = Supervisor()
         self.workflow_telemetry = WorkflowTelemetry(telemetry)
         self.guardrail_telemetry = GuardrailTelemetry(telemetry)
         self.judge_telemetry = JudgeTelemetry(telemetry)
@@ -119,6 +118,14 @@ class AgentWorkflow:
         self.embedding_provider = create_embedding_provider(settings)
         self.rag_service = RagService(settings, embedding_provider=self.embedding_provider, telemetry=telemetry)
         self.router = EnterpriseRouter(settings, llm=llm, telemetry=telemetry)
+        self.supervisor = Supervisor(
+            routing_rules=[
+                (intent.name, intent.agent, list(intent.keywords))
+                for intent in self.router.intents
+                if intent.enabled
+            ],
+            fallback_agent=self.router.fallback_agent,
+        )
         agent_kwargs = {"telemetry": telemetry, "tool_router": getattr(self, "tool_router", None), "rag_service": self.rag_service, "cache": self.cache, "settings": settings, "observer": self.observer, "memory": memory, "summary_memory": summary_memory}
         self.billing = BillingAgent(llm, **agent_kwargs)
         self.product = ProductAgent(llm, **agent_kwargs)

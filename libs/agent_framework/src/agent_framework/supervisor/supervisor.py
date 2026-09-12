@@ -34,6 +34,17 @@ class Supervisor:
     """
     ROUTING_RULES: list[tuple[str, str, list[str]]] = []
 
+    def __init__(
+        self,
+        routing_rules: list[tuple[str, str, list[str]]] | None = None,
+        *,
+        fallback_agent: str | None = None,
+    ) -> None:
+        # The class attribute remains only as a backward-compatible extension
+        # hook. New applications inject domain rules loaded from routing.yaml.
+        self.routing_rules = list(routing_rules) if routing_rules is not None else list(self.ROUTING_RULES)
+        self.fallback_agent = fallback_agent
+
     async def route(self, text: str, context: dict | None = None) -> str:
         """Compatibilidade com versões anteriores: retorna apenas um agente."""
         plan = await self.route_plan({"user_text": text, "context": context or {}})
@@ -45,7 +56,7 @@ class Supervisor:
         matched_intents: list[str] = []
         matched_keywords: dict[str, list[str]] = {}
 
-        for intent, agent, keywords in self.ROUTING_RULES:
+        for intent, agent, keywords in self.routing_rules:
             hits = [kw for kw in keywords if kw in text]
             if hits:
                 if agent not in selected:

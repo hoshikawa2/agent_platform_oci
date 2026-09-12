@@ -391,17 +391,38 @@ ENABLE_SUPERVISOR=true
 ENABLE_MCP_TOOLS=true
 ```
 
-### Step 2 - Adjust Supervisor rules
+### Step 2 - Declare intents in `routing.yaml`
 
-In the current project, the Supervisor uses the `ROUTING_RULES` list in `agent_framework/src/agent_framework/supervisor/supervisor.py`. To include a new agent in supervisor mode, add a rule with intent, agent, and keywords.
+Do not edit `agent_framework/src/agent_framework/supervisor/supervisor.py`. The core class retains `ROUTING_RULES = []` only as a backward-compatible extension hook, without domain rules or agent names. The application source of truth is `config/routing.yaml`:
+
+```yaml
+intents:
+  - name: financial_analysis
+    agent: financeiro_agent
+    domain: financial
+    priority: 10
+    keywords: [balance, statement, transaction]
+    examples:
+      - What is my balance?
+      - Show my transactions.
+    mcp_tools: [consult_balance, consult_transactions]
 ```
-ROUTING_RULES = [
-    ("billing", "billing_agent", ["fatura", "conta", "cobrança", "boleto"]),
-    ("product", "product_agent", ["produto", "plano", "serviço", "internet"]),
-    ("orders", "orders_agent", ["pedido", "entrega", "rastreio", "atraso"]),
-    ("support", "support_agent", ["troca", "devolução", "garantia", "defeito"]),
-]
+
+`agent_template_backend` loads these intents with `EnterpriseRouter` and injects enabled rules into `Supervisor`:
+
+```python
+self.router = EnterpriseRouter(settings, llm=llm, telemetry=telemetry)
+self.supervisor = Supervisor(
+    routing_rules=[
+        (intent.name, intent.agent, list(intent.keywords))
+        for intent in self.router.intents
+        if intent.enabled
+    ],
+    fallback_agent=self.router.fallback_agent,
+)
 ```
+
+Router and supervisor therefore share one registry, and a new agent creates no domain dependency in the core. `examples`, `priority`, `domain`, and `mcp_tools` remain available to `EnterpriseRouter`; the deterministic supervisor consumes `name`, `agent`, and `keywords`.
 
 ### Step 3 - Ensure that `supervisor_agent` knows how to execute the agent
 
@@ -717,7 +738,7 @@ GET /debug/env
 - Instantiate the agent in `AgentWorkflow.__init__`.
 - Add the agent node to LangGraph.
 - Add the route to `routing_decision`'s `add_conditional_edges`.
-- In supervisor mode, add a rule to `Supervisor.ROUTING_RULES` and a handler to `supervisor_agent`.
+- In supervisor mode, register the intent in `routing.yaml` and the application handler in `supervisor_agent`; never edit core `Supervisor.ROUTING_RULES`.
 - Test `/health`, `/agents`, and `/debug/env`.
 - Test `/debug/route` for each intent.
 - Test `/debug/mcp/tools` and `/debug/mcp/call/{tool_name}`.

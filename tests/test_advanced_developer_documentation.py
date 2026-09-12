@@ -17,6 +17,7 @@ if str(FRAMEWORK_SRC) not in sys.path:
 
 from agent_framework.workflows.models import WorkflowDefinition
 from agent_framework.idempotency import create_idempotency_store
+from agent_framework.supervisor.supervisor import Supervisor
 
 
 PT = ROOT / "docs" / "developer" / "pt"
@@ -108,3 +109,36 @@ def test_new_chapters_have_english_counterparts_and_are_indexed() -> None:
     for pt_name, en_name in pairs.items():
         assert (PT / pt_name).is_file() and pt_name in pt_index
         assert (ROOT / "docs" / "developer" / "en" / en_name).is_file() and en_name in en_index
+
+
+@pytest.mark.asyncio
+async def test_supervisor_accepts_application_rules_without_core_hardcode() -> None:
+    supervisor = Supervisor(
+        routing_rules=[("financial_analysis", "financeiro_agent", ["saldo", "extrato"])],
+        fallback_agent="financeiro_agent",
+    )
+    matched = await supervisor.route_plan({"user_text": "Quero consultar meu saldo"})
+    fallback = await supervisor.route_plan({"user_text": "mensagem sem keyword"})
+    assert matched.agents == ["financeiro_agent"]
+    assert matched.intent == "financial_analysis"
+    assert fallback.agents == ["financeiro_agent"]
+
+
+def test_template_builds_supervisor_from_routing_yaml_intents() -> None:
+    graph = (ROOT / "templates" / "agent_template_backend" / "app" / "workflows" / "agent_graph.py").read_text(encoding="utf-8")
+    pt = (PT / "02_routing_stickiness_and_intent_shift.md").read_text(encoding="utf-8")
+    en = (ROOT / "docs" / "developer" / "en" / "02_routing_stickiness_and_intent_shift.md").read_text(encoding="utf-8")
+    assert "for intent in self.router.intents" in graph
+    assert "routing_rules=[" in graph
+    assert "adicione uma regra" not in pt
+    assert "add a rule with intent" not in en
+
+
+def test_all_tuning_templates_build_supervisor_from_routing_yaml() -> None:
+    graphs = sorted((ROOT / "Tuning-Performance").glob("**/app/workflows/agent_graph.py"))
+    assert graphs, "Nenhuma cópia executável do template encontrada em Tuning-Performance"
+    for graph_path in graphs:
+        source = graph_path.read_text(encoding="utf-8")
+        assert "for intent in self.router.intents" in source, str(graph_path.relative_to(ROOT))
+        assert "fallback_agent=self.router.fallback_agent" in source, str(graph_path.relative_to(ROOT))
+        assert source.index("self.router = EnterpriseRouter") < source.index("self.supervisor = Supervisor")

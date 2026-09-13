@@ -257,6 +257,27 @@ Esperado: active_transaction é restaurado e concluído sem reiniciar a tool.
 - `Tuning-Performance/Transaction_Pre_Validation/`
 - `Tuning-Performance/Transaction_Evidence/`
 
+### Organização física de `workflows/` no template
+
+No `agent_template_backend`, as definições declarativas ficam na raiz `workflows/` do próprio agente:
+
+```text
+templates/agent_template_backend/
+└── workflows/
+    ├── devolucao_pedido.v1.yaml
+    └── devolucao_pedido.active.yaml
+```
+
+Essa pasta pertence ao **agente**, porque expressa a sequência de negócio, versões e decisões daquele domínio. O mecanismo que interpreta esses arquivos pertence ao **framework**. Portanto:
+
+- não implemente parser, executor ou registry dentro de `workflows/`;
+- não coloque código Python nessa pasta; actions Python ficam em `app/workflow_actions/`;
+- mantenha versões imutáveis (`*.vN.yaml`) e uma definição ativa válida (`*.active.yaml`);
+- use `WORKFLOWS_PATH` quando o host precisar apontar para outro diretório;
+- mudanças genéricas em pause/resume, retry, validação ou execução devem ser feitas no módulo `agent_framework.workflows`, não copiadas para o template.
+
+O fluxo completo é: **YAML em `workflows/` → engine do framework → `node.action` → registry de actions → função em `app/workflow_actions/`**.
+
 ### Decisão arquitetural do motor de workflows
 
 > Conteúdo consolidado a partir de `docs/ADR_TRANSACTIONAL_WORKFLOW_ENGINE.md`.

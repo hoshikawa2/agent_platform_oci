@@ -114,6 +114,37 @@ async def registrar_devolucao(params: dict, state: dict) -> dict:
 
 O nome do decorator deve ser igual a `node.action`. A assinatura obrigatória é `(params: dict, state: dict) -> dict`. O módulo precisa ser importado no startup para registrar decorators. Actions devem devolver dados serializáveis; não devolva cliente HTTP, conexão, exception ou coroutine.
 
+### Organização de `app/workflow_actions/`
+
+No template, actions específicas do domínio ficam em `app/workflow_actions/`. O exemplo distribuído usa:
+
+```text
+app/workflow_actions/
+├── __init__.py
+└── devolucao.py
+```
+
+Esse diretório deve conter **somente implementação de negócio acionável pelo workflow** e pequenas funções auxiliares diretamente relacionadas. O motor de workflows, o decorator, o registry, a persistência, o mecanismo de pause/resume e a infraestrutura genérica de idempotência continuam no `agent_framework`.
+
+Uma organização maior pode separar actions por domínio ou agregado:
+
+```text
+app/workflow_actions/
+├── billing.py
+├── orders.py
+└── vas.py
+```
+
+Regras:
+
+- o `node.action` do YAML deve corresponder ao nome registrado em `@workflow_action`;
+- importe os módulos necessários no startup para que o registry seja populado antes da primeira execução;
+- não faça o core importar `app.workflow_actions.*`; o sentido da dependência é do agente para o framework;
+- não use a action como um segundo router ou como um novo runtime de agentes; ela deve executar uma etapa de negócio bem delimitada;
+- para efeitos externos, use a política e a infraestrutura de idempotência do framework e persista apenas resultados confirmados.
+
+**Anti-padrão:** copiar classes de `agent_framework.workflows` para `app/workflow_actions/` para customizar um caso local. Se o mecanismo genérico não atende, estenda o framework por uma interface reutilizável; mantenha apenas a regra específica no agente.
+
 ### Idempotência do efeito externo
 
 ```python idempotency-example

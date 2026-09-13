@@ -687,6 +687,44 @@ Validations performed:
 Note:
 - The gateway SSE proxy was left as a future step. The `/gateway/message/sse` endpoint already routes and forwards as a normal message; for end-to-end SSE, a proxy from `/gateway/events/{session_id}` to the active backend can be implemented.
 
+### Role of `app/observability/` in an agent
+
+The framework contains generic observability infrastructure; the template contains only the agent-specific integration point. In `agent_template_backend`, the reference structure is:
+
+```text
+app/observability/
+├── __init__.py
+└── telemetry_observer.py
+```
+
+`app/observability/` is appropriate for:
+
+- constructing/configuring the observer used by the agent;
+- enriching events with host-specific metadata;
+- adapting the agent contract to external integrations;
+- registering template callbacks/adapters;
+- applying agent-specific mappings/overlays when configuration supports them.
+
+It must **not** contain a second implementation of OpenTelemetry, Langfuse, IC/NOC/GRL, sequence, exporters, correlation, or persistence. Those are cross-cutting mechanisms owned by `agent_framework`.
+
+Expected dependency direction:
+
+```text
+app/observability/telemetry_observer.py
+        │ configures/composes
+        ▼
+agent_framework.observability + shared contracts
+        │
+        ├── Langfuse
+        ├── OpenTelemetry
+        ├── IC / NOC / GRL
+        └── exporters / mappings / pub-sub
+```
+
+When creating a new agent, prefer reusing the reference adapter and changing only configuration/domain metadata. If multiple agents need the same change, implement it in the core and keep `app/observability/` thin.
+
+**Anti-patterns:** importing telemetry SDKs directly in every agent to emit equivalent events; hardcoding historical labels in the agent runtime; using observability events as the source of truth for transaction state; sending full prompts, secrets, PII, or raw financial payloads.
+
 ### Source files
 
 The files below were consolidated into this manual:

@@ -143,6 +143,34 @@ Examples:
 
 If the core needs to import a concrete agent module in order to work, this separation has probably been broken.
 
+### Agent extension folders in the template
+
+`agent_template_backend` materializes selected framework extension points as local folders. These folders **do not duplicate the core**: they hold declarative configuration or domain-specific implementation that is registered with or consumed by generic `agent_framework` mechanisms.
+
+```text
+templates/agent_template_backend/
+├── workflows/
+│   ├── <workflow>.vN.yaml          # versioned deterministic workflow definition
+│   └── <workflow>.active.yaml      # active version selected by the agent
+└── app/
+    ├── workflow_actions/           # business actions invoked by workflow YAML files
+    ├── presentation/               # domain-specific deterministic renderers
+    └── observability/              # local telemetry observers/adapters and integration
+```
+
+The architectural boundary is:
+
+| Template folder | Should contain | Remains in the core |
+| --- | --- | --- |
+| `workflows/` | declarative, versioned domain YAML files | parser, validation, registry, executor, pause/resume, and workflow runtime |
+| `app/workflow_actions/` | business functions registered with `@workflow_action` | decorator, registry, execution, retry policy, and idempotency infrastructure |
+| `app/presentation/` | renderers that turn trusted results into domain responses | renderer registry, response-mode selection, and runtime fallback |
+| `app/observability/` | agent-specific observer/adapters, mappings, and enrichment | IC/NOC/GRL contracts, correlation, OTEL/Langfuse, exporters, and observability runtime |
+
+Practical rule: if an implementation could be reused without knowing a specific telecom, retail, billing, order, or other business domain, it likely belongs in `agent_framework`, not in one of these agent folders. The core must also never import concrete modules from these folders; the agent registers its extensions during startup.
+
+See: [Transactional Workflows and State](./03_transaction_workflows_and_state.md), [Advanced transactional workflows](./13_advanced_transactional_workflows.md), [Observability, Persistence, and Operational Readiness](./11_observability_persistence_and_operational_readiness.md), and [Presentation, recovery, and observability](./15_presentation_recovery_and_observability.md).
+
 ### State, memory, and checkpoint are different concepts
 
 **Execution state** represents what is happening in the turn and workflow.

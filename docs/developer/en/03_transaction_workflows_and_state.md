@@ -256,6 +256,27 @@ Esperado: active_transaction é restaurado e concluído sem reiniciar a tool.
 - `Tuning-Performance/Transaction_Pre_Validation/`
 - `Tuning-Performance/Transaction_Evidence/`
 
+### Physical organization of `workflows/` in the template
+
+In `agent_template_backend`, declarative definitions live in the agent's root `workflows/` folder:
+
+```text
+templates/agent_template_backend/
+└── workflows/
+    ├── devolucao_pedido.v1.yaml
+    └── devolucao_pedido.active.yaml
+```
+
+This folder belongs to the **agent** because it expresses domain-specific business sequencing, versions, and decisions. The mechanism that interprets these files belongs to the **framework**. Therefore:
+
+- do not implement parsers, executors, or registries inside `workflows/`;
+- do not place Python code there; Python actions belong in `app/workflow_actions/`;
+- keep immutable versions (`*.vN.yaml`) and a valid active definition (`*.active.yaml`);
+- use `WORKFLOWS_PATH` when a host must point to another directory;
+- generic pause/resume, retry, validation, or execution changes belong in `agent_framework.workflows`, not in copied template code.
+
+The complete path is: **YAML in `workflows/` → framework engine → `node.action` → action registry → function in `app/workflow_actions/`**.
+
 ### Transactional workflow engine architectural decision
 
 > Content consolidated from `docs/ADR_TRANSACTIONAL_WORKFLOW_ENGINE.md`.

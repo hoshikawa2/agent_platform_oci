@@ -683,6 +683,44 @@ Validações executadas:
 Observação:
 - O proxy SSE do gateway foi deixado como etapa futura. O endpoint /gateway/message/sse já roteia e encaminha como mensagem normal; para SSE fim-a-fim, pode-se implementar proxy de /gateway/events/{session_id} para o backend ativo.
 
+### Papel de `app/observability/` no agente
+
+O framework contém a infraestrutura genérica de observabilidade; o template contém apenas o ponto de integração específico do agente. No `agent_template_backend`, a estrutura de referência é:
+
+```text
+app/observability/
+├── __init__.py
+└── telemetry_observer.py
+```
+
+`app/observability/` é apropriado para:
+
+- construir/configurar o observer usado pelo agente;
+- enriquecer eventos com metadados específicos disponíveis no host;
+- adaptar o contrato do agente a integrações externas;
+- registrar callbacks/adapters do template;
+- aplicar mappings/overlays específicos do agente quando previstos por configuração.
+
+Ele **não** deve conter uma segunda implementação de OpenTelemetry, Langfuse, IC/NOC/GRL, sequence, exporters, correlação ou persistência. Esses mecanismos são transversais e pertencem ao `agent_framework`.
+
+A dependência esperada é:
+
+```text
+app/observability/telemetry_observer.py
+        │ configura/compõe
+        ▼
+agent_framework.observability + contratos compartilhados
+        │
+        ├── Langfuse
+        ├── OpenTelemetry
+        ├── IC / NOC / GRL
+        └── exporters / mappings / pub-sub
+```
+
+Ao criar um novo agente, prefira reutilizar o adapter de referência e alterar somente configuração/metadados de domínio. Se uma mudança for necessária para vários agentes, implemente-a no core e mantenha `app/observability/` fino.
+
+**Anti-padrões:** importar diretamente SDKs de telemetria em cada agente para emitir eventos equivalentes; codificar labels históricos no runtime do agente; usar eventos de observabilidade como fonte de verdade do estado transacional; enviar prompt integral, segredo, PII ou payload financeiro bruto.
+
 ### Arquivos de origem
 
 Os arquivos abaixo foram consolidados neste manual:

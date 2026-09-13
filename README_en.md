@@ -142,40 +142,64 @@ Oracle Cloud Infrastructure Security Best Practice Recommendations.
 
 ## 1. Architecture overview
 
-The template separates what is generic from what is specific.
+The `agent_template_backend` keeps the reusable platform engines and services inside `agent_framework_oci` and implements locally only the composition, configuration, and extensions that are specific to the agent/domain. The template is therefore a **reference composition of framework capabilities**, not a duplication of the core.
+
+The current template structure is:
 
 ```text
 agent_template_backend/
 ├── app/
-│   ├── main.py                    # FastAPI API, gateway, session, SSE, and workflow input
-│   ├── state.py                   # LangGraph shared state contract
-│   ├── workflows/
-│   │   └── agent_graph.py          # Enterprise workflow with router, guardrails, agents, judges, and persistence
+│   ├── main.py                         # FastAPI, lifecycle, gateway, sessions, SSE, health/readiness, and workflows
+│   ├── state.py                        # Shared LangGraph state contract
+│   ├── mcp_gateway_client_factory.py   # MCP Gateway client creation/configuration
 │   ├── agents/
-│   │   ├── runtime.py              # Common resources for agents: MCP, RAG, cache, IC, LLM
-│   │   ├── billing_agent.py        # Example of an invoice agent
-│   │   ├── product_agent.py        # Example of a product agent
-│   │   ├── orders_agent.py         # Example of an order agent
-│   │   └── support_agent.py        # Example of a support agent
-│   └── examples/                  # Examples of IC, NOC, GRL, MCP, and observer
+│   │   ├── runtime.py                  # Common runtime: LLM, MCP, RAG, memory, cache, and framework capabilities
+│   │   ├── prompting.py                # Agent prompt/profile composition and application
+│   │   ├── billing_agent.py            # Billing sample agent
+│   │   ├── product_agent.py            # Product sample agent
+│   │   ├── orders_agent.py             # Orders sample agent
+│   │   ├── support_agent.py            # Support sample agent
+│   │   └── README.md                    # Agent implementation guidance
+│   ├── workflows/
+│   │   └── agent_graph.py              # LangGraph composition: routing, guardrails, agents, judges, and persistence
+│   ├── workflow_actions/
+│   │   └── devolucao.py                # Deterministic/transactional workflow action example
+│   ├── observability/
+│   │   └── telemetry_observer.py       # Template telemetry/observer integration
+│   ├── presentation/
+│   │   └── tool_renderers.py           # Tool result rendering/presentation
+│   └── examples/                       # IC, NOC, GRL, MCP, and observer examples
 ├── config/
-│   ├── agents.yaml                # Record of available agents
-│   ├── routing.yaml               # Intents, keywords, fallback and route decision
-│   ├── tools.yaml                 # Catalog of tools available for the backend
-│   ├── mcp_servers.yaml           # Local MCP endpoints
-│   ├── mcp_servers.docker.yaml    # MCP endpoints in Docker Compose
-│   ├── mcp_parameter_mapping.yaml # Mapping between canonical keys and tool parameters
-│   ├── identity.yaml              # Business identity resolution
-│   ├── guardrails.yaml            # Global guardrails
-│   ├── judges.yaml                # Global judges
-│   ├── prompt_policy.yaml         # Global prompt policy
-│   └── agents/<agent_id>/         # Isolated settings by agent
+│   ├── agents.yaml                     # Agent registry and enablement
+│   ├── routing.yaml                    # Intents, keywords, fallback, stickiness, and route decision
+│   ├── tools.yaml                      # Functional tool catalog and parameters
+│   ├── tool_policies.yaml              # Execution policies: confirmation, transactions, authorization, etc.
+│   ├── mcp_servers.yaml                # MCP endpoints for local execution
+│   ├── mcp_servers.docker.yaml         # MCP endpoints for Docker execution
+│   ├── mcp_parameter_mapping.yaml      # Mapping between canonical keys and tool/MCP parameters
+│   ├── identity.yaml                   # Business identity resolution and propagation
+│   ├── guardrails.yaml                 # Guardrail configuration
+│   ├── judges.yaml                     # Judge configuration
+│   └── prompt_policy.yaml              # Global prompt composition policy
+├── workflows/
+│   ├── devolucao_pedido.active.yaml    # Active sample workflow
+│   └── devolucao_pedido.v1.yaml        # Declarative version of the sample workflow
 ├── data/
-│   └── agent_framework.db         # Local sample database, when applicable
+│   └── agent_framework.db              # Local SQLite sample database for persistence/RAG
+├── docs/                               # Template-specific guides and technical notes
+├── scripts/
+│   └── test_long_term_memory.py        # Long-Term Memory example/test
+├── llm_profiles.yaml                   # LLM profiles consumed by the template/framework
 ├── Dockerfile
 ├── requirements.txt
-└── .env                           # Local configuration
+├── .env.example                        # Reference environment variables
+├── README.md
+└── README_ENTERPRISE_TEMPLATE.md
 ```
+
+> **Important:** capabilities such as checkpoint/persistence, Long-Term Memory, generic RAG, MCP Tool Router, routing/supervisor, parameter collection, temporal reconciliation, idempotency, security, Output Supervisor, judges, guardrails, and enterprise observability belong to the **`agent_framework_oci` core**. The template only configures, composes, or extends them when required by the domain.
+
+`tools.yaml` and `tool_policies.yaml` have different and complementary responsibilities: the former describes **which tools exist and their contracts/parameters**; the latter defines **how and under which conditions they may execute**, including confirmation and transactional behavior.
 
 ### 1.1. What belongs to the framework
 

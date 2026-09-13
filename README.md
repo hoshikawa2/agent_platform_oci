@@ -141,40 +141,64 @@ Recomendações de melhores práticas de segurança da Oracle Cloud Infrastructu
 
 ## 1. Visão geral da arquitetura
 
-O template separa o que é genérico do que é específico.
+O `agent_template_backend` mantém no `agent_framework_oci` os motores e serviços reutilizáveis da plataforma e implementa localmente apenas a composição, configuração e extensões específicas do agente/domínio. O template é, portanto, uma **composição de referência das capacidades do framework**, e não uma duplicação do core.
+
+A estrutura atual do template é: 
 
 ```text
 agent_template_backend/
 ├── app/
-│   ├── main.py                    # API FastAPI, gateway, sessão, SSE e entrada do workflow
-│   ├── state.py                   # Contrato de estado compartilhado do LangGraph
-│   ├── workflows/
-│   │   └── agent_graph.py          # Workflow corporativo com router, guardrails, agentes, judges e persistência
+│   ├── main.py                         # FastAPI, lifecycle, gateway, sessões, SSE, health/readiness e workflows
+│   ├── state.py                        # Contrato de estado compartilhado pelo LangGraph
+│   ├── mcp_gateway_client_factory.py   # Criação/configuração do cliente para o MCP Gateway
 │   ├── agents/
-│   │   ├── runtime.py              # Recursos comuns para agentes: MCP, RAG, cache, IC, LLM
-│   │   ├── billing_agent.py        # Exemplo de agente de faturas
-│   │   ├── product_agent.py        # Exemplo de agente de produtos
-│   │   ├── orders_agent.py         # Exemplo de agente de pedidos
-│   │   └── support_agent.py        # Exemplo de agente de suporte
-│   └── examples/                  # Exemplos de IC, NOC, GRL, MCP e observer
+│   │   ├── runtime.py                  # Runtime comum: LLM, MCP, RAG, memória, cache e recursos do framework
+│   │   ├── prompting.py                # Composição e aplicação de prompts/profiles por agente
+│   │   ├── billing_agent.py            # Agente de exemplo para faturamento
+│   │   ├── product_agent.py            # Agente de exemplo para produtos
+│   │   ├── orders_agent.py             # Agente de exemplo para pedidos
+│   │   ├── support_agent.py            # Agente de exemplo para suporte
+│   │   └── README.md                    # Orientações específicas para implementação de agentes
+│   ├── workflows/
+│   │   └── agent_graph.py              # Composição LangGraph: routing, guardrails, agentes, judges e persistência
+│   ├── workflow_actions/
+│   │   └── devolucao.py                # Exemplo de ação de workflow determinístico/transacional
+│   ├── observability/
+│   │   └── telemetry_observer.py       # Integração de telemetria/observer do template
+│   ├── presentation/
+│   │   └── tool_renderers.py           # Renderização/apresentação de resultados de tools
+│   └── examples/                       # Exemplos de IC, NOC, GRL, MCP e observer
 ├── config/
-│   ├── agents.yaml                # Registro dos agentes disponíveis
-│   ├── routing.yaml               # Intents, keywords, fallback e decisão de rota
-│   ├── tools.yaml                 # Catálogo das ferramentas disponíveis para o backend
-│   ├── mcp_servers.yaml           # Endpoints MCP locais
-│   ├── mcp_servers.docker.yaml    # Endpoints MCP em Docker Compose
-│   ├── mcp_parameter_mapping.yaml # Mapeamento entre chaves canônicas e parâmetros das tools
-│   ├── identity.yaml              # Resolução de identidade de negócio
-│   ├── guardrails.yaml            # Guardrails globais
-│   ├── judges.yaml                # Judges globais
-│   ├── prompt_policy.yaml         # Política global de prompt
-│   └── agents/<agent_id>/         # Configurações isoladas por agente
+│   ├── agents.yaml                     # Registro e habilitação dos agentes
+│   ├── routing.yaml                    # Intents, keywords, fallback, stickiness e decisão de rota
+│   ├── tools.yaml                      # Catálogo funcional das tools e respectivos parâmetros
+│   ├── tool_policies.yaml              # Políticas de execução: confirmação, transação, autorização etc.
+│   ├── mcp_servers.yaml                # Endpoints MCP para execução local
+│   ├── mcp_servers.docker.yaml         # Endpoints MCP para execução em Docker
+│   ├── mcp_parameter_mapping.yaml      # Mapeamento entre chaves canônicas e parâmetros das tools/MCPs
+│   ├── identity.yaml                   # Resolução e propagação de identidade de negócio
+│   ├── guardrails.yaml                 # Configuração de guardrails
+│   ├── judges.yaml                     # Configuração de judges
+│   └── prompt_policy.yaml              # Política global de composição de prompts
+├── workflows/
+│   ├── devolucao_pedido.active.yaml    # Workflow ativo de exemplo
+│   └── devolucao_pedido.v1.yaml        # Versão declarativa do workflow de exemplo
 ├── data/
-│   └── agent_framework.db         # Banco local de exemplo, quando aplicável
+│   └── agent_framework.db              # Banco SQLite local de exemplo para persistência/RAG
+├── docs/                               # Guias e notas técnicas específicas do template
+├── scripts/
+│   └── test_long_term_memory.py        # Exemplo/teste de Long-Term Memory
+├── llm_profiles.yaml                   # Perfis de LLM consumidos pelo template/framework
 ├── Dockerfile
 ├── requirements.txt
-└── .env                           # Configuração local
+├── .env.example                        # Variáveis de ambiente de referência
+├── README.md
+└── README_ENTERPRISE_TEMPLATE.md
 ```
+
+> **Importante:** recursos como checkpoint/persistência, Long-Term Memory, RAG genérico, MCP Tool Router, roteamento/supervisor, coleta de parâmetros, reconciliação temporal, idempotência, segurança, Output Supervisor, judges, guardrails e observabilidade corporativa pertencem ao **core do `agent_framework_oci`**. O template apenas os configura, compõe ou estende quando necessário para o domínio.
+
+`tools.yaml` e `tool_policies.yaml` têm responsabilidades diferentes e complementares: o primeiro descreve **quais tools existem e seus contratos/parâmetros**; o segundo define **como e em quais condições elas podem ser executadas**, incluindo confirmação e comportamento transacional.
 
 ### 1.1. O que pertence ao framework
 

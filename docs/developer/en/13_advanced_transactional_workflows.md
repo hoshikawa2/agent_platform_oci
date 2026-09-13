@@ -67,6 +67,37 @@ Store definitions under `workflows/<name>.vN.yaml` and maintain a valid active d
 
 Agent actions use `@workflow_action("name")`, matching `node.action`, and implement `(params: dict, state: dict) -> dict`. Import the action module during startup so decorators register. Return serializable data only—never an HTTP client, connection, exception, or coroutine. Complete executable YAML and Python are available in the matching [Portuguese chapter](../pt/13_workflows_transacionais_avancados.md).
 
+### Organization of `app/workflow_actions/`
+
+In the template, domain-specific actions live in `app/workflow_actions/`. The distributed example uses:
+
+```text
+app/workflow_actions/
+├── __init__.py
+└── devolucao.py
+```
+
+This directory should contain **only business implementation invoked by workflows** and small helpers directly related to those actions. The workflow engine, decorator, registry, persistence, pause/resume mechanism, and generic idempotency infrastructure remain in `agent_framework`.
+
+A larger agent can split actions by domain or aggregate:
+
+```text
+app/workflow_actions/
+├── billing.py
+├── orders.py
+└── vas.py
+```
+
+Rules:
+
+- YAML `node.action` must match the name registered with `@workflow_action`;
+- import required modules during startup so the registry is populated before first execution;
+- never make the core import `app.workflow_actions.*`; dependency direction is agent → framework;
+- do not turn an action into a second router or agent runtime; it should perform one bounded business step;
+- for external side effects, use framework policy/idempotency infrastructure and persist only confirmed outcomes.
+
+**Anti-pattern:** copying `agent_framework.workflows` classes into `app/workflow_actions/` to customize a local case. If a generic mechanism is missing, extend the framework through a reusable interface and keep only domain rules in the agent.
+
 ### Idempotent external effects
 
 Create one `create_idempotency_store(...)` instance at startup and inject it into actions. Build the key from stable business identity, operation, resource, and contract version—not merely a timestamp. `IDEMPOTENCY_PROVIDER` takes precedence over checkpoint, session, and cache providers. For production transactions, enable `IDEMPOTENCY_REQUIRE_DURABLE=true` and select an appropriate `oracle`, `redis`, or `sqlite` provider. Memory does not protect across pods or restarts. Persist the outcome only after the external system confirms the effect.

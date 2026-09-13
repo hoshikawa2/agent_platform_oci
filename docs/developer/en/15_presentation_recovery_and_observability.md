@@ -4,6 +4,27 @@
 
 Use `response.mode: renderer` for trusted structured tool results whose values must not be changed by an LLM. Register each renderer once at startup. Its keyword-only contract accepts `tool_name`, `result`, `state`, and `agent_label`; return `None` when required fields are absent so the configured fallback can run. Select, format, and mask allowed fields—never interpolate the complete payload. The executable YAML and implementation are in the matching [Portuguese chapter](../pt/15_apresentacao_recuperacao_e_observabilidade.md).
 
+### Organization of `app/presentation/`
+
+In `agent_template_backend`, domain-specific renderers live in:
+
+```text
+app/presentation/
+├── __init__.py
+└── tool_renderers.py
+```
+
+The folder separates **how a trusted domain result should be presented** from the generic infrastructure that selects and executes renderers. Therefore:
+
+- `app/presentation/` implements functions such as `financial.balance`, `billing.invoice`, or another agent-specific renderer;
+- `agent_framework.presentation` owns the registry, call contract, and generic runtime integration;
+- `config/tools.yaml` selects `response.mode: renderer` and the renderer name;
+- agent startup imports/registers renderers once.
+
+Renderers must not fetch data, decide authorization, execute tools, mutate transactional state, or reinterpret a result with an LLM. Their input should already be an authorized/trusted result; the renderer only selects, masks, and formats fields.
+
+**Anti-pattern:** building a copy of the framework presentation registry or pipeline inside `app/presentation/`. If several agents need the same formatting/selection mechanism, evolve it in the core; only domain-specific presentation remains in the agent.
+
 ### Output supervision and recovery
 
 The Output Supervisor may allow, sanitize, retry, block, hand over, or observe candidate output. Keep retries bounded, provide objective retry guidance, and revalidate rewritten output. Permanent authorization or dependency failure is not a content retry.

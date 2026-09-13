@@ -144,6 +144,34 @@ Exemplos:
 
 Se o core precisa importar um módulo concreto do agente para funcionar, essa separação provavelmente foi quebrada.
 
+### Pastas de extensão do agente no template
+
+O `agent_template_backend` materializa alguns pontos de extensão do framework em pastas locais. Essas pastas **não duplicam o core**: elas contêm configuração declarativa ou implementação específica do domínio que é registrada/consumida pelos mecanismos genéricos de `agent_framework`.
+
+```text
+templates/agent_template_backend/
+├── workflows/
+│   ├── <workflow>.vN.yaml          # definição versionada do fluxo determinístico
+│   └── <workflow>.active.yaml      # versão ativa selecionada pelo agente
+└── app/
+    ├── workflow_actions/           # actions de negócio chamadas pelos workflows YAML
+    ├── presentation/               # renderers determinísticos específicos do domínio
+    └── observability/              # adapters/observers e integração local de telemetria
+```
+
+A fronteira arquitetural é:
+
+| Pasta do template | Deve conter | Permanece no core |
+| --- | --- | --- |
+| `workflows/` | YAMLs declarativos e versionados do domínio | parser, validação, registry, executor, pause/resume e runtime de workflow |
+| `app/workflow_actions/` | funções de negócio registradas com `@workflow_action` | decorator, registry, execução, política de retry e infraestrutura de idempotência |
+| `app/presentation/` | renderers que transformam resultados confiáveis em resposta de domínio | registry de renderers, seleção do modo de resposta e fallback do runtime |
+| `app/observability/` | observer/adapters, mappings e enriquecimento específicos do agente | contratos IC/NOC/GRL, correlação, OTEL/Langfuse, exporters e runtime de observabilidade |
+
+Regra prática: se uma implementação poderia ser usada sem conhecer telecom, varejo, cobrança, pedido ou outro domínio específico, ela provavelmente pertence ao `agent_framework`, e não a uma dessas pastas do agente. O core também não deve importar módulos concretos dessas pastas; o agente registra suas extensões no startup.
+
+Detalhes: [Workflows Transacionais e Estado](./03_transaction_workflows_and_state.md), [Workflows transacionais avançados](./13_workflows_transacionais_avancados.md), [Observabilidade, Persistência e Prontidão Operacional](./11_observability_persistence_and_operational_readiness.md) e [Apresentação, recuperação e observabilidade](./15_apresentacao_recuperacao_e_observabilidade.md).
+
 ### Estado, memória e checkpoint são conceitos diferentes
 
 **Estado de execução** representa o que está acontecendo no turno e no workflow.

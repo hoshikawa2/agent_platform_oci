@@ -37,6 +37,27 @@ def register_financial_renderers() -> None:
 
 Importe e execute `register_financial_renderers()` uma vez no startup. A assinatura é keyword-only e deve aceitar `tool_name`, `result`, `state` e `agent_label`. Retorne `None` quando faltarem campos obrigatórios para permitir o fallback previsto pelo runtime. Nunca interpolar o payload inteiro: selecione campos permitidos, mascare identidade e formate valores explicitamente.
 
+### Organização de `app/presentation/`
+
+No `agent_template_backend`, renderers específicos do domínio ficam em:
+
+```text
+app/presentation/
+├── __init__.py
+└── tool_renderers.py
+```
+
+A pasta existe para separar **como um resultado confiável do domínio deve ser apresentado** da infraestrutura genérica que seleciona e executa renderers. Assim:
+
+- `app/presentation/` implementa funções como `financial.balance`, `billing.invoice` ou outro renderer específico do agente;
+- `agent_framework.presentation` mantém registry, contrato de chamada e mecanismo genérico de integração com o runtime;
+- `config/tools.yaml` seleciona `response.mode: renderer` e o nome do renderer;
+- o startup do agente importa/registra os renderers uma única vez.
+
+Renderers não devem buscar dados, decidir autorização, executar tools, alterar estado transacional ou reinterpretar um resultado usando LLM. A entrada já deve representar um resultado autorizado/confiável; o renderer apenas seleciona, mascara e formata campos.
+
+**Anti-padrão:** criar em `app/presentation/` uma cópia do registry ou do pipeline de apresentação do framework. Se vários agentes precisarem do mesmo mecanismo de formatação/seleção, ele deve evoluir no core; somente a apresentação específica do domínio fica no agente.
+
 ### Output Supervisor
 
 O Output Supervisor valida a resposta candidata antes da saída final. Ele pode permitir, sanitizar, solicitar retry, bloquear, entregar a humano ou observar. `OUTPUT_SUPERVISOR_MAX_RETRIES` deve ter limite pequeno; cada retry precisa de orientação objetiva e a resposta reescrita deve passar novamente pelos controles. Não use retry para erro permanente de autorização ou indisponibilidade.

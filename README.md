@@ -196,7 +196,7 @@ agent_template_backend/
 └── README_ENTERPRISE_TEMPLATE.md
 ```
 
-> **Importante:** recursos como checkpoint/persistência, Long-Term Memory, RAG genérico, MCP Tool Router, roteamento/supervisor, coleta de parâmetros, reconciliação temporal, idempotência, segurança, Output Supervisor, judges, guardrails e observabilidade corporativa pertencem ao **core do `agent_framework_oci`**. O template apenas os configura, compõe ou estende quando necessário para o domínio.
+> **Importante:** recursos como checkpoint/persistência, Long-Term Memory, RAG genérico, MCP Tool Router, roteamento/supervisor, coleta de parâmetros, reconciliação temporal, idempotência, segurança, Output Supervisor, judges, guardrails e observabilidade corporativa pertencem ao **core do `agent_framework_oci`**. O template apenas os configura, compõe ou estende quando necessário para o domínio. Se deseja entender mais sobre o projeto agent_template_backend, clique aqui: [MANUAL_REGRAS_AGENT_TEMPLATE_BACKEND](./MANUAL_REGRAS_AGENT_TEMPLATE_BACKEND.md)
 
 `tools.yaml` e `tool_policies.yaml` têm responsabilidades diferentes e complementares: o primeiro descreve **quais tools existem e seus contratos/parâmetros**; o segundo define **como e em quais condições elas podem ser executadas**, incluindo confirmação e comportamento transacional.
 

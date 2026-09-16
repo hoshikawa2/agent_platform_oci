@@ -197,7 +197,7 @@ agent_template_backend/
 └── README_ENTERPRISE_TEMPLATE.md
 ```
 
-> **Important:** capabilities such as checkpoint/persistence, Long-Term Memory, generic RAG, MCP Tool Router, routing/supervisor, parameter collection, temporal reconciliation, idempotency, security, Output Supervisor, judges, guardrails, and enterprise observability belong to the **`agent_framework_oci` core**. The template only configures, composes, or extends them when required by the domain.
+> **Important:** capabilities such as checkpoint/persistence, Long-Term Memory, generic RAG, MCP Tool Router, routing/supervisor, parameter collection, temporal reconciliation, idempotency, security, Output Supervisor, judges, guardrails, and enterprise observability belong to the **`agent_framework_oci` core**. The template only configures, composes, or extends them when required by the domain. If you want to know more about agent_template_backend, click here: [MANUAL_RULES_AGENT_TEMPLATE_BACKEND_EN](MANUAL_RULES_AGENT_TEMPLATE_BACKEND_EN.md)
 
 `tools.yaml` and `tool_policies.yaml` have different and complementary responsibilities: the former describes **which tools exist and their contracts/parameters**; the latter defines **how and under which conditions they may execute**, including confirmation and transactional behavior.
 

@@ -63,7 +63,9 @@ def map_analytics_event_to_tim_flat_payload(
     """Map the framework analytics envelope to TIM's flat Pub/Sub/NOC schema.
 
     The canonical fields are published at the JSON root. The only intentional
-    nested object is ``agentSpecificData``.
+    nested object is ``agentSpecificData``. Application-defined fields already
+    present in ``event["payload"]`` are preserved automatically so future
+    attributes can flow through Pub/Sub/NOC/OTEL without mapper changes.
     """
     if not isinstance(event, dict):
         event = {}
@@ -74,7 +76,12 @@ def map_analytics_event_to_tim_flat_payload(
 
     token_usage = event.get("token_usage") if isinstance(event.get("token_usage"), dict) else {}
 
-    payload: dict[str, Any] = {
+    # Preserve the original application payload so attributes introduced by
+    # agents do not need to be explicitly added to this mapper. Canonical TIM
+    # fields below still normalize/override known aliases. Technical metadata
+    # is intentionally not copied wholesale.
+    payload: dict[str, Any] = dict(body)
+    payload.update({
         # Tracking
         "eventType": event.get("eventType") or event_type,
         "traceId": _first(data, "traceId", "trace_id"),
@@ -145,7 +152,7 @@ def map_analytics_event_to_tim_flat_payload(
         "agentSpecificData": _collect_agent_specific_data(metadata, body),
         "status": _first(data, "status"),
         "sequence": _first(data, "sequence"),
-    }
+    })
 
     if keep_none:
         return {k: ("" if v is None else v) for k, v in payload.items()}

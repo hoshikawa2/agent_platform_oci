@@ -301,7 +301,7 @@ intents:
 
 @pytest.mark.asyncio
 async def test_incompatible_intent_shift_runs_only_when_parameter_extractor_does_not_consume(tmp_path):
-    """A real new goal still shifts, but only after parameter extraction declines it."""
+    """A real new goal shifts after semantic parameter-relevance declines it."""
     routing = tmp_path / "routing.yaml"
     routing.write_text(
         """
@@ -331,6 +331,8 @@ intents:
 
         async def ainvoke(self, messages, **kwargs):
             prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+            if kwargs.get("generation_name") == "llm.transaction_parameter_relevance":
+                return json.dumps({"relevance": "NOT_RELEVANT", "confidence": 0.99, "reason": "test relevance"})
             if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
                 self.extraction_calls += 1
                 # The extractor must not convert a clearly new request into the
@@ -374,13 +376,13 @@ intents:
     assert decision.intent == "retail_order_cancel"
     assert decision.agent == "orders_agent"
     assert decision.metadata["transaction_interruption"] == "intent_shift"
-    assert llm.shift_calls == 1
-    assert llm.extraction_calls == 1
+    assert llm.shift_calls == 2  # ABANDON probe + SHIFT classification
+    assert llm.extraction_calls == 0  # NOT_RELEVANT skips parameter extraction
 
 
 @pytest.mark.asyncio
 async def test_semantic_shift_without_keyword_runs_after_parameter_extractor_declines(tmp_path):
-    """Semantic SHIFT remains available when no pending parameter is consumed."""
+    """Semantic SHIFT remains available after parameter relevance is NOT_RELEVANT."""
     routing = tmp_path / "routing.yaml"
     routing.write_text(
         """
@@ -410,6 +412,8 @@ intents:
 
         async def ainvoke(self, messages, **kwargs):
             prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+            if kwargs.get("generation_name") == "llm.transaction_parameter_relevance":
+                return json.dumps({"relevance": "NOT_RELEVANT", "confidence": 0.99, "reason": "test relevance"})
             if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
                 self.extraction_calls += 1
                 return json.dumps({"reason": None})
@@ -452,8 +456,8 @@ intents:
     assert decision.agent == "orders_agent"
     assert decision.metadata["transaction_interruption"] == "intent_shift"
     assert decision.metadata["interruption_source"] == "semantic_classifier"
-    assert llm.shift_calls == 1
-    assert llm.extraction_calls == 1
+    assert llm.shift_calls == 2  # ABANDON probe + SHIFT classification
+    assert llm.extraction_calls == 0  # NOT_RELEVANT skips parameter extraction
 
 
 @pytest.mark.asyncio
@@ -487,6 +491,8 @@ intents:
 
         async def ainvoke(self, messages, **kwargs):
             prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+            if kwargs.get("generation_name") == "llm.transaction_parameter_relevance":
+                return json.dumps({"relevance": "RELEVANT", "confidence": 0.99, "reason": "test relevance"})
             if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
                 self.extraction_calls += 1
                 assert "Tamboro Mensal" in prompt

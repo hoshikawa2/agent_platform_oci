@@ -11,8 +11,25 @@ from agent_framework.runtime.transaction_parameters import reconcile_transaction
 class _RouterLLM:
     async def ainvoke(self, messages, **kwargs):
         prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+        low = prompt.lower()
+        if kwargs.get("generation_name") == "llm.transaction_parameter_relevance":
+            if "isso mesmo, pode cancelar" in low or "motivo é que desisti" in low or "motivo e que desisti" in low:
+                return json.dumps({"relevance": "RELEVANT", "confidence": 0.99, "reason": "responde ao contexto solicitado"})
+            return json.dumps({"relevance": "NOT_RELEVANT", "confidence": 0.99, "reason": "não responde ao parâmetro pendente"})
         if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
             return json.dumps({"subject": None, "valor": None})
+        if (
+            "nao quero cancelar. quero apenas verificar os meus servicos contratados" in prompt.lower()
+            or "nao quero cancelar. quero apenas ver meus servicos contratados" in prompt.lower()
+            or "nao quero mais cancelar. quero apenas ver os servicos que eu contratei" in prompt.lower()
+        ):
+            return json.dumps({
+                "decision": "ABANDON",
+                "intent": "product_services_information",
+                "agent": "product_agent",
+                "confidence": 0.99,
+                "reason": "abandono explícito do cancelamento com novo objetivo",
+            })
         if "nao quero mais cancelar" in prompt.lower() or "não quero mais cancelar" in prompt.lower():
             return json.dumps({
                 "decision": "ABANDON",
@@ -48,6 +65,8 @@ router:
 state_policies:
   - state: COLLECTING_PARAMETERS
     agent: contestacao_agent
+  - state: WAITING_CONTESTACAO_CONFIRMATION
+    agent: contestacao_agent
 intents:
   - name: contas_contestation
     agent: contestacao_agent
@@ -61,6 +80,10 @@ intents:
     agent: billing_agent
     priority: 30
     keywords: [fatura]
+  - name: product_services_information
+    agent: product_agent
+    priority: 40
+    keywords: [servicos contratados, serviços contratados]
 """,
         encoding="utf-8",
     )
@@ -121,6 +144,168 @@ async def test_explicit_abandonment_without_new_goal_does_not_rearm_tool(tmp_pat
     assert decision.mcp_tools == []
     assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
     assert decision.metadata["interrupted_intent"] == "contas_contestation"
+
+
+
+
+def _awaiting_confirmation_state(message):
+    return {
+        "user_text": message,
+        "sanitized_input": message,
+        "next_state": "WAITING_CONTESTACAO_CONFIRMATION",
+        "transaction_status": "AWAITING_CONFIRMATION",
+        "intent": "state:WAITING_CONTESTACAO_CONFIRMATION",
+        "active_agent": "contestacao_agent",
+        "active_transaction": {
+            "tool_name": "cancelar_vas_avulso",
+            "arguments": {"subject": "Tamboro Mensal"},
+            "status": "AWAITING_CONFIRMATION",
+            "started_from_intent": "contas_vas_cancel",
+        },
+        "pending_tool_call": {
+            "tool_name": "cancelar_vas_avulso",
+            "arguments": {"subject": "Tamboro Mensal"},
+        },
+        "history": [
+            {"role": "user", "content": "quero cancelar tamboro"},
+            {"role": "assistant", "content": "Você confirma o cancelamento?"},
+            {"role": "user", "content": message},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_abandonment_precedes_awaiting_confirmation_and_routes_new_goal(tmp_path):
+    decision = await _router(tmp_path).route(
+        _awaiting_confirmation_state(
+            "nao quero cancelar. quero apenas verificar os meus servicos contratados"
+        )
+    )
+    assert decision.intent == "product_services_information"
+    assert decision.agent == "product_agent"
+    assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+    assert decision.metadata["interrupted_intent"] == "contas_vas_cancel"
+    assert not decision.metadata.get("transaction_turn_consumed")
+
+
+
+
+@pytest.mark.asyncio
+async def test_explicit_abandonment_precedes_generic_state_lock_without_transaction_status(tmp_path):
+    state = _awaiting_confirmation_state(
+        "nao quero cancelar. quero apenas ver meus servicos contratados"
+    )
+    # Reproduce the host/checkpoint shape observed in production: the domain
+    # WAITING_* state is restored, but transaction_status is absent/stale.
+    state.pop("transaction_status", None)
+    decision = await _router(tmp_path).route(state)
+    assert decision.intent == "product_services_information"
+    assert decision.agent == "product_agent"
+    assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+    assert decision.metadata["interrupted_state"] == "WAITING_CONTESTACAO_CONFIRMATION"
+    assert not decision.metadata.get("transaction_turn_consumed")
+
+
+@pytest.mark.asyncio
+async def test_explicit_abandonment_precedes_state_lock_with_only_domain_state_preserved(tmp_path):
+    state = _awaiting_confirmation_state(
+        "nao quero mais cancelar. quero apenas ver os servicos que eu contratei"
+    )
+    # Production checkpoint shape: only the domain WAITING_* lock survives.
+    # No transaction_status, active_transaction or legacy pending tool latch.
+    state.pop("transaction_status", None)
+    state.pop("active_transaction", None)
+    state.pop("pending_tool_call", None)
+    state.pop("selected_tool_call", None)
+    decision = await _router(tmp_path).route(state)
+    assert decision.intent == "product_services_information"
+    assert decision.agent == "product_agent"
+    assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+    assert decision.metadata["interrupted_state"] == "WAITING_CONTESTACAO_CONFIRMATION"
+    assert not decision.metadata.get("transaction_turn_consumed")
+
+
+@pytest.mark.asyncio
+async def test_plain_negative_confirmation_remains_confirmation_not_abandon(tmp_path):
+    decision = await _router(tmp_path).route(_awaiting_confirmation_state("não"))
+    assert decision.intent == "state:WAITING_CONTESTACAO_CONFIRMATION"
+    assert decision.agent == "contestacao_agent"
+    assert decision.metadata["transaction_turn_consumed"] is True
+    assert decision.metadata["transaction_confirmation_decision"] == "reject"
+    assert "transaction_interruption" not in decision.metadata
+
+class _MisleadingParameterRouterLLM(_RouterLLM):
+    async def ainvoke(self, messages, **kwargs):
+        prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+        generation = kwargs.get("generation_name")
+        low = prompt.lower()
+        # Relevance is a semantic gate before extraction. The extractor below is
+        # intentionally misleading to prove that NOT_RELEVANT prevents a false
+        # parameter value from stealing an abandonment turn.
+        if generation == "llm.transaction_parameter_relevance":
+            if "motivo é que desisti" in low or "motivo e que desisti" in low:
+                return json.dumps({"relevance": "RELEVANT", "confidence": 0.99, "reason": "responde ao reason"})
+            if "nao quero mais devolver" in low or "não quero mais devolver" in low or "nao quero mais cancelar" in low:
+                return json.dumps({"relevance": "NOT_RELEVANT", "confidence": 0.99, "reason": "abandona a ação"})
+            return json.dumps({"relevance": "NOT_RELEVANT", "confidence": 0.95, "reason": "não responde ao parâmetro"})
+        if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
+            if "motivo é que desisti" in low or "motivo e que desisti" in low:
+                return json.dumps({"valor": "desisti"})
+            if "nao quero mais cancelar" in low or "não quero mais cancelar" in low:
+                return json.dumps({"valor": 14.99})
+        if "nao quero mais devolver" in low or "não quero mais devolver" in low:
+            return json.dumps({
+                "decision": "ABANDON",
+                "intent": "product_services_information",
+                "agent": "product_agent",
+                "confidence": 0.99,
+                "reason": "abandono explícito da devolução com novo objetivo",
+            })
+        return await super().ainvoke(messages, **kwargs)
+
+
+def _router_with_misleading_parameter_extractor(tmp_path):
+    router = _router(tmp_path)
+    router.llm = _MisleadingParameterRouterLLM()
+    return router
+
+
+@pytest.mark.asyncio
+async def test_parameter_relevance_precedes_abandonment(tmp_path):
+    state = _active_state("motivo é que desisti")
+    state["missing_parameters"] = ["valor"]
+    state["active_transaction"]["parameter_schema"] = {"valor": {"type": "string", "description": "motivo informado pelo cliente"}}
+    decision = await _router_with_misleading_parameter_extractor(tmp_path).route(state)
+    assert decision.intent == "state:COLLECTING_PARAMETERS"
+    assert decision.metadata["transaction_turn_consumed"] is True
+    assert decision.metadata["transaction_parameter_relevant"] is True
+    assert decision.metadata["transaction_parameter_values"] == {"valor": "desisti"}
+    assert "transaction_interruption" not in decision.metadata
+
+
+@pytest.mark.asyncio
+async def test_semantic_not_relevant_prevents_misleading_extractor_and_allows_abandon(tmp_path):
+    decision = await _router_with_misleading_parameter_extractor(tmp_path).route(
+        _active_state("nao quero mais cancelar")
+    )
+    assert decision.intent == "state:TRANSACTION_ABANDONED"
+    assert decision.agent == "contestacao_agent"
+    assert decision.mcp_tools == []
+    assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+    assert decision.metadata["transaction_parameter_relevant"] is False
+    assert not decision.metadata.get("transaction_turn_consumed")
+
+
+@pytest.mark.asyncio
+async def test_abandon_plus_new_goal_after_parameter_relevance_fails(tmp_path):
+    decision = await _router_with_misleading_parameter_extractor(tmp_path).route(
+        _active_state("nao quero mais devolver. quero apenas ver os meus servicos contratados")
+    )
+    assert decision.intent == "product_services_information"
+    assert decision.agent == "product_agent"
+    assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+    assert decision.metadata["transaction_parameter_relevant"] is False
+
 
 
 class _PolicyRouter:
@@ -354,3 +539,79 @@ async def test_runtime_abandon_cancels_only_active_transaction_without_rearming_
     assert state["tool_policy_result"]["action"] == "cancelled_by_explicit_abandonment"
     # ABANDON encerra a ação ativa; não apaga outras ações pendentes por efeito colateral.
     assert state["pending_topics"] == [{"operation_id": "op-x", "intent": "other_pending_intent"}]
+
+class _ReasonParameterRouterLLM(_RouterLLM):
+    async def ainvoke(self, messages, **kwargs):
+        prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
+        lowered = prompt.lower()
+        if kwargs.get("generation_name") == "llm.transaction_parameter_relevance":
+            if "motivo é que desisti" in lowered or "motivo e que desisti" in lowered:
+                return json.dumps({"relevance": "RELEVANT", "confidence": 0.99, "reason": "responde ao motivo"})
+            if "nao quero mais devolver o pedido" in lowered or "não quero mais devolver o pedido" in lowered:
+                return json.dumps({"relevance": "NOT_RELEVANT", "confidence": 0.99, "reason": "abandona a devolução"})
+        if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
+            if "motivo é que desisti" in lowered or "motivo e que desisti" in lowered:
+                return json.dumps({"reason": "desisti"})
+        if "nao quero mais devolver o pedido" in lowered or "não quero mais devolver o pedido" in lowered:
+            return json.dumps({
+                "decision": "ABANDON",
+                "intent": None,
+                "agent": None,
+                "confidence": 0.99,
+                "reason": "abandono explícito da devolução",
+            })
+        return await super().ainvoke(messages, **kwargs)
+
+
+def _reason_collecting_state(message):
+    return {
+        "user_text": message,
+        "sanitized_input": message,
+        "next_state": "COLLECTING_ORDERS_PARAMETERS",
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["reason"],
+        "intent": "state:COLLECTING_PARAMETERS",
+        "active_agent": "orders_agent",
+        "active_transaction": {
+            "tool_name": "solicitar_devolucao",
+            "arguments": {"order_id": "PED-1001"},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "retail_support_exchange_return",
+            "parameter_schema": {"reason": {"type": "string", "description": "motivo da devolução"}},
+            "tool_description": "Solicita devolução de pedido informando o motivo",
+        },
+        "history": [
+            {"role": "user", "content": "quero devolver o pedido PED-1001"},
+            {"role": "assistant", "content": "Qual o motivo da devolução?"},
+            {"role": "user", "content": message},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_parameter_value_desisti_is_not_abandon_when_reason_is_expected(tmp_path):
+    router = _router(tmp_path)
+    router.llm = _ReasonParameterRouterLLM()
+    decision = await router.route(_reason_collecting_state("motivo é que desisti"))
+    assert decision.intent == "state:COLLECTING_PARAMETERS"
+    assert decision.agent == "contestacao_agent" or decision.agent == "orders_agent"
+    assert decision.metadata["transaction_turn_consumed"] is True
+    assert decision.metadata["transaction_parameter_values"] == {"reason": "desisti"}
+    assert "transaction_interruption" not in decision.metadata
+
+
+@pytest.mark.asyncio
+async def test_action_scoped_abandon_still_preempts_reason_extraction(tmp_path):
+    router = _router(tmp_path)
+    router.llm = _ReasonParameterRouterLLM()
+    # The action is explicitly abandoned; this must not be consumed as reason.
+    decision = await router.route(_reason_collecting_state("nao quero mais devolver o pedido"))
+    assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+
+
+def test_abandonment_has_no_lexical_gate_in_router_source():
+    from pathlib import Path
+    source = Path("libs/agent_framework/src/agent_framework/routing/enterprise_router.py").read_text(encoding="utf-8")
+    assert "_looks_like_explicit_abandonment" not in source
+    assert "_looks_like_action_abandonment" not in source
+    assert "cues = (" not in source

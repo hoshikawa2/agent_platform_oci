@@ -630,32 +630,144 @@ class EnterpriseRouter:
         if state_decision:
             tx_status = str(state.get("transaction_status") or "").strip().upper()
 
-            # Confirmation is the only transaction input with absolute precedence:
-            # an explicit yes/no answers the confirmation contract itself.
-            if tx_status == "AWAITING_CONFIRMATION":
-                consumed = await self._transaction_parameter_precedence(
-                    state, text=str(text), state_decision=state_decision
-                )
-                if consumed is not None:
-                    await self._emit(consumed, state)
-                    return consumed
+            active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+            legacy_tx = state.get("pending_tool_call") or state.get("selected_tool_call") or {}
+            state_lock_name = str(
+                state_decision.next_state
+                or current_state
+                or state_decision.intent.removeprefix("state:")
+                or ""
+            ).strip().upper()
+            transactional_state_lock = state_lock_name.startswith(
+                ("WAITING_", "COLLECTING_", "AWAITING_")
+            )
 
-            # Transaction parameter precedence is absolute while collecting:
-            # first let the active transaction try to consume the current turn.
-            # Only when NO pending parameter can be extracted do we ask the
-            # semantic classifier whether the user changed goals.  This prevents
-            # value/name/reference answers (for example "a de 14,99") from being
-            # stolen by a semantically plausible but incompatible intent.
-            if tx_status == "COLLECTING_PARAMETERS":
+            # Rich transactional latches remain the primary source of truth.
+            # The domain state lock is only a recovery fallback for checkpoints
+            # where those latches were not restored. This prevents a generic
+            # COLLECTING_* state from stealing a legitimate parameter answer.
+            rich_transaction_context = bool(
+                active_tx.get("tool_name")
+                or (isinstance(legacy_tx, dict) and legacy_tx.get("tool_name"))
+                or tx_status in {"COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION"}
+            )
+            fallback_state_lock_context = bool(
+                transactional_state_lock and not rich_transaction_context
+            )
+            has_transaction_context = bool(
+                rich_transaction_context or fallback_state_lock_context
+            )
+
+            # Some hosts restore the domain state but omit transaction_status.
+            # Infer only the generic phase needed by the precedence logic; do not
+            # replace richer transaction data when it exists.
+            effective_tx_status = tx_status
+            if not effective_tx_status:
+                if state_lock_name.startswith("COLLECTING_"):
+                    effective_tx_status = "COLLECTING_PARAMETERS"
+                elif state_lock_name.startswith("AWAITING_") or "CONFIRMATION" in state_lock_name:
+                    effective_tx_status = "AWAITING_CONFIRMATION"
+
+            precedence_state = state
+            if effective_tx_status and effective_tx_status != tx_status:
+                precedence_state = dict(state)
+                precedence_state["transaction_status"] = effective_tx_status
+
+            # Transactional interruption precedence is semantic, not lexical.
+            #
+            # COLLECTING_PARAMETERS is special: the pending parameter gets the
+            # first opportunity to consume the turn.  If the input is pertinent
+            # to the parameter, extraction returns values and the transaction
+            # continues.  Only when the input is not pertinent do we ask the
+            # semantic interruption classifier whether the user abandoned the
+            # active transaction.  This preserves inputs such as
+            # ``motivo é que desisti`` as a legitimate ``reason`` value while
+            # still allowing ``não quero mais devolver; quero ver meus serviços``
+            # to abandon the current operation and start a new objective.
+            if effective_tx_status == "COLLECTING_PARAMETERS":
+                if rich_transaction_context:
+                    relevance = await self._classify_transaction_parameter_relevance(
+                        precedence_state, text=str(text)
+                    )
+                    if relevance is True:
+                        consumed = await self._transaction_parameter_precedence(
+                            precedence_state, text=str(text), state_decision=state_decision
+                        )
+                        if consumed is not None:
+                            consumed.metadata = {
+                                **(consumed.metadata or {}),
+                                "transaction_parameter_relevant": True,
+                            }
+                            await self._emit(consumed, state)
+                            return consumed
+
+                        # Pertinent to the requested parameter, but extraction did
+                        # not produce a structured value. Keep transaction
+                        # ownership and let the agent reprompt/clarify; do not
+                        # reinterpret the same input as ABANDON or SHIFT.
+                        state_decision.metadata = {
+                            **(state_decision.metadata or {}),
+                            "transaction_parameter_relevant": True,
+                            "transaction_parameter_extraction_empty": True,
+                        }
+                        await self._emit(state_decision, state)
+                        return state_decision
+
+                    if relevance is None:
+                        # Compatibility/fail-safe when the relevance classifier is
+                        # unavailable: retain the previous extractor-first behavior.
+                        consumed = await self._transaction_parameter_precedence(
+                            precedence_state, text=str(text), state_decision=state_decision
+                        )
+                        if consumed is not None:
+                            consumed.metadata = {
+                                **(consumed.metadata or {}),
+                                "transaction_parameter_relevance": "unknown",
+                            }
+                            await self._emit(consumed, state)
+                            return consumed
+
+                if has_transaction_context:
+                    abandonment = await self._transaction_state_interruption_candidate(
+                        precedence_state,
+                        text=str(text),
+                        state_decision=state_decision,
+                        abandon_only=True,
+                    )
+                    if abandonment is not None:
+                        abandonment.metadata = {
+                            **(abandonment.metadata or {}),
+                            "transaction_parameter_relevant": False if rich_transaction_context else None,
+                        }
+                        await self._emit(abandonment, state)
+                        return abandonment
+
+            # In confirmation/waiting phases there is no pending free-form
+            # parameter whose value can be confused with abandonment.  Evaluate
+            # ABANDON semantically before confirmation/state-lock consumption.
+            # Plain confirmations (e.g. yes/no) are classified as CONTINUE by
+            # this probe and then follow the normal confirmation path below.
+            elif has_transaction_context:
+                abandonment = await self._transaction_state_interruption_candidate(
+                    precedence_state,
+                    text=str(text),
+                    state_decision=state_decision,
+                    abandon_only=True,
+                )
+                if abandonment is not None:
+                    await self._emit(abandonment, state)
+                    return abandonment
+
+            if effective_tx_status == "AWAITING_CONFIRMATION":
                 consumed = await self._transaction_parameter_precedence(
-                    state, text=str(text), state_decision=state_decision
+                    precedence_state, text=str(text), state_decision=state_decision
                 )
                 if consumed is not None:
                     await self._emit(consumed, state)
                     return consumed
 
             interruption = await self._transaction_state_interruption_candidate(
-                state, text=str(text), state_decision=state_decision
+                precedence_state, text=str(text), state_decision=state_decision
             )
             if interruption is not None:
                 await self._emit(interruption, state)
@@ -686,19 +798,61 @@ class EnterpriseRouter:
                 method="state",
                 next_state=tx_status,
             )
-            if tx_status == "AWAITING_CONFIRMATION":
-                consumed = await self._transaction_parameter_precedence(
-                    state, text=str(text), state_decision=synthetic
-                )
-                if consumed is not None:
-                    consumed.metadata = {
-                        **(consumed.metadata or {}),
-                        "transaction_state_recovered": True,
-                    }
-                    await self._emit(consumed, state)
-                    return consumed
-
             if tx_status == "COLLECTING_PARAMETERS":
+                relevance = await self._classify_transaction_parameter_relevance(
+                    state, text=str(text)
+                )
+                if relevance is True:
+                    consumed = await self._transaction_parameter_precedence(
+                        state, text=str(text), state_decision=synthetic
+                    )
+                    if consumed is not None:
+                        consumed.metadata = {
+                            **(consumed.metadata or {}),
+                            "transaction_state_recovered": True,
+                            "transaction_parameter_relevant": True,
+                        }
+                        await self._emit(consumed, state)
+                        return consumed
+                    synthetic.metadata = {
+                        **(synthetic.metadata or {}),
+                        "transaction_state_recovered": True,
+                        "transaction_parameter_relevant": True,
+                        "transaction_parameter_extraction_empty": True,
+                    }
+                    await self._emit(synthetic, state)
+                    return synthetic
+
+                if relevance is None:
+                    consumed = await self._transaction_parameter_precedence(
+                        state, text=str(text), state_decision=synthetic
+                    )
+                    if consumed is not None:
+                        consumed.metadata = {
+                            **(consumed.metadata or {}),
+                            "transaction_state_recovered": True,
+                            "transaction_parameter_relevance": "unknown",
+                        }
+                        await self._emit(consumed, state)
+                        return consumed
+
+            # No parameter was consumed (or this is confirmation): now decide
+            # semantically whether the user abandoned the active transaction.
+            abandonment = await self._transaction_state_interruption_candidate(
+                state,
+                text=str(text),
+                state_decision=synthetic,
+                abandon_only=True,
+            )
+            if abandonment is not None:
+                abandonment.metadata = {
+                    **(abandonment.metadata or {}),
+                    "transaction_state_recovered": True,
+                }
+                await self._emit(abandonment, state)
+                return abandonment
+
+            if tx_status == "AWAITING_CONFIRMATION":
                 consumed = await self._transaction_parameter_precedence(
                     state, text=str(text), state_decision=synthetic
                 )
@@ -837,6 +991,82 @@ class EnterpriseRouter:
         return decision
 
 
+    async def _classify_transaction_parameter_relevance(
+        self, state: dict[str, Any], *, text: str
+    ) -> bool | None:
+        """Semantically decide whether the turn answers a pending parameter.
+
+        This is intentionally separate from extraction.  A parameter extractor
+        may be able to manufacture a syntactically valid value from unrelated
+        text; relevance answers the higher-level question first: does the user
+        appear to be responding to what the active transaction asked for?
+
+        Returns True/False when classification succeeds and None when the
+        classifier is unavailable or its output cannot be trusted.
+        """
+        if not (self.enable_llm_router and self.llm is not None):
+            return None
+        missing = [str(name) for name in (state.get("missing_parameters") or []) if str(name).strip()]
+        if not missing:
+            return None
+        active = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+        tool_name = str(active.get("tool_name") or "").strip()
+        if not tool_name:
+            return None
+        payload = {
+            "message": str(text or ""),
+            "transaction": {
+                "intent": active.get("started_from_intent") or state.get("intent"),
+                "tool_name": tool_name,
+                "tool_description": active.get("tool_description"),
+                "missing_parameters": missing,
+                "parameter_schema": active.get("parameter_schema") or {},
+                "known_arguments": active.get("arguments") or {},
+                "relevant_conversation_context": (
+                    active.get("parameter_conversational_context")
+                    or self._collect_transaction_parameter_context(state=state, current_text=str(text))
+                ),
+            },
+        }
+        system = (
+            "Você decide somente se a mensagem do usuário é uma resposta pertinente ao(s) "
+            "parâmetro(s) que a transação ativa está pedindo. Avalie significado e contexto, "
+            "não palavras isoladas. Considere RELEVANT quando a mensagem fornece, esclarece, "
+            "corrige ou referencia plausivelmente o dado solicitado, mesmo em linguagem livre. "
+            "Considere NOT_RELEVANT quando a mensagem abandona a ação, inicia outro objetivo, "
+            "faz uma pergunta diferente ou não responde ao dado pedido. Não extraia valores e "
+            "não decida abandono/intent; classifique apenas pertinência. Retorne somente JSON "
+            "válido: {\"relevance\":\"RELEVANT|NOT_RELEVANT\",\"confidence\":0.0,\"reason\":\"...\"}."
+        )
+        try:
+            answer = await self.llm.ainvoke(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                temperature=0.0,
+                max_tokens=256,
+                profile_name="router",
+                component_name="router.transaction_parameter_relevance",
+                generation_name="llm.transaction_parameter_relevance",
+            )
+            data = self._parse_json(answer)
+        except Exception as exc:
+            logger.warning("Falha ao classificar pertinência do parâmetro transacional: %s", exc)
+            return None
+        relevance = str(data.get("relevance") or "").strip().upper()
+        try:
+            confidence = float(data.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if confidence < self.intent_shift_threshold:
+            return None
+        if relevance == "RELEVANT":
+            return True
+        if relevance == "NOT_RELEVANT":
+            return False
+        return None
+
     async def _transaction_parameter_precedence(
         self,
         state: dict[str, Any],
@@ -846,11 +1076,12 @@ class EnterpriseRouter:
     ) -> RouteDecision | None:
         """Try to consume the turn under the active transaction contract first.
 
-        AWAITING_CONFIRMATION consumes an explicit confirmation before any shift
-        classification. COLLECTING_PARAMETERS also has precedence: if at least one
-        pending parameter can be extracted, the active transaction keeps ownership
-        of the turn. Semantic intent-shift is evaluated only when extraction returns
-        no usable pending parameter.
+        In AWAITING_CONFIRMATION, an explicit ABANDON candidate is classified
+        before confirmation consumption; plain yes/no responses still keep
+        deterministic confirmation precedence because they do not pass the
+        abandonment gate. In COLLECTING_PARAMETERS, ABANDON is likewise checked
+        before extraction, while SHIFT remains after parameter extraction so valid
+        referential/value answers are not stolen from the active transaction.
         """
         tx_status = str(state.get("transaction_status") or "").strip().upper()
         if tx_status == "AWAITING_CONFIRMATION":
@@ -966,13 +1197,14 @@ class EnterpriseRouter:
         *,
         text: str,
         state_decision: RouteDecision,
+        abandon_only: bool = False,
     ) -> RouteDecision | None:
         """Detecta semanticamente mudança de intenção durante uma transação.
 
-        Não existe lista de palavras para desistência ou mudança de assunto. Uma
-        interrupção nasce de uma intent diferente resolvida por uma keyword
-        configurada no ``routing.yaml`` ou, na ausência dela, por uma decisão
-        semântica do LLM com o contexto da transação pendente.
+        Não existe lista de palavras para desistência. ABANDON é sempre uma
+        decisão semântica do LLM baseada no contexto transacional. Uma possível
+        nova intenção pode aparecer como hint do ``routing.yaml``, mas esse hint
+        não decide abandono e não substitui a classificação semântica.
         """
         active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
         started_intent = str(active_tx.get("started_from_intent") or "").strip()
@@ -1038,18 +1270,32 @@ class EnterpriseRouter:
                 else None
             ),
         }
-        system = (
-            "Você decide apenas se o turno atual continua a transação ativa ou muda de intenção. "
-            "Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
-            "A extração dos parâmetros pendentes já foi tentada antes desta etapa e não consumiu o turno. "
-            "Se ainda assim a mensagem for apenas uma resposta referencial/valor/nome ao dado pendente, retorne CONTINUE. "
-            "Se o usuário passou claramente a perseguir outro objetivo sem desistir explicitamente da ação atual, "
-            "retorne SHIFT e a nova intent permitida. "
-            "Se o usuário desistiu explicitamente da ação/transação atual, retorne ABANDON. "
-            "Quando ABANDON vier acompanhado de um novo objetivo, também informe intent e agent desse novo objetivo. "
-            "Quando for apenas abandono sem novo objetivo, intent e agent podem ser nulos. "
-            "Retorne somente JSON válido com decision, intent, agent, confidence, reason."
-        )
+        if abandon_only:
+            system = (
+                "Você decide somente se o usuário desistiu explicitamente da ação/transação ativa. "
+                "Quando a transação estava coletando parâmetros, a pertinência ao parâmetro já foi avaliada antes desta etapa; "
+                "portanto não transforme uma resposta pertinente ao parâmetro em abandono. "
+                "Use o significado completo da mensagem e o contexto transacional; não use palavras isoladas como regra. "
+                "Se houver desistência explícita da ação atual, retorne ABANDON. "
+                "Quando o abandono vier acompanhado de um novo objetivo, também informe intent e agent desse novo objetivo. "
+                "Quando for apenas abandono sem novo objetivo, intent e agent podem ser nulos. "
+                "Se a mensagem apenas fornece parâmetro, confirma contexto, ou somente muda/adiciona outro objetivo sem "
+                "desistir explicitamente da ação atual, retorne CONTINUE. "
+                "Retorne somente JSON válido com decision, intent, agent, confidence, reason."
+            )
+        else:
+            system = (
+                "Você decide apenas se o turno atual continua a transação ativa ou muda de intenção. "
+                "Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
+                "A extração dos parâmetros pendentes já foi tentada antes desta etapa e não consumiu o turno. "
+                "Se ainda assim a mensagem for apenas uma resposta referencial/valor/nome ao dado pendente, retorne CONTINUE. "
+                "Se o usuário passou claramente a perseguir outro objetivo sem desistir explicitamente da ação atual, "
+                "retorne SHIFT e a nova intent permitida. "
+                "Se o usuário desistiu explicitamente da ação/transação atual, retorne ABANDON. "
+                "Quando ABANDON vier acompanhado de um novo objetivo, também informe intent e agent desse novo objetivo. "
+                "Quando for apenas abandono sem novo objetivo, intent e agent podem ser nulos. "
+                "Retorne somente JSON válido com decision, intent, agent, confidence, reason."
+            )
         user = {
             "message": text,
             "transaction": transaction_context,
@@ -1074,7 +1320,10 @@ class EnterpriseRouter:
             return None
 
         decision_kind = str(data.get("decision") or "").strip().upper()
-        if decision_kind not in {"SHIFT", "ABANDON"}:
+        if abandon_only:
+            if decision_kind != "ABANDON":
+                return None
+        elif decision_kind not in {"SHIFT", "ABANDON"}:
             return None
         confidence = float(data.get("confidence") or 0.0)
         if confidence < self.intent_shift_threshold:

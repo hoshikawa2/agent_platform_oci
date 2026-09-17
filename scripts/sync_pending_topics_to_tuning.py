@@ -22,6 +22,11 @@ def update_state(path: Path) -> None:
             "    handled_topics: list[dict[str, Any]]\n",
             path,
         )
+    if "    operation_results: dict[str, dict[str, Any]]" not in text:
+        marker = "    handled_topics: list[dict[str, Any]]\n"
+        if marker in text:
+            text = text.replace(marker, marker + "    operation_results: dict[str, dict[str, Any]]\n", 1)
+
     if "    rag_results: list[dict[str, Any]]" not in text:
         text = replace_once(
             text,

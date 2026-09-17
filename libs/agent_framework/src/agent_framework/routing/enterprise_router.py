@@ -993,7 +993,8 @@ class EnterpriseRouter:
             # a perfectly valid parameter answer (for example an order identifier
             # utterance containing the generic word "pedido").  When semantic
             # classification is available, use the configured route only as a
-            # candidate hint and let the LLM decide CONTINUE vs SHIFT.  This avoids
+            # candidate hint and let the LLM decide CONTINUE, SHIFT or ABANDON.
+            # This avoids
             # both failure modes: parameter extraction cannot hide a real new goal,
             # and a broad keyword cannot steal a legitimate parameter turn.
             if not (self.enable_llm_router and self.llm is not None):
@@ -1042,7 +1043,11 @@ class EnterpriseRouter:
             "Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
             "A extração dos parâmetros pendentes já foi tentada antes desta etapa e não consumiu o turno. "
             "Se ainda assim a mensagem for apenas uma resposta referencial/valor/nome ao dado pendente, retorne CONTINUE. "
-            "Se o usuário passou claramente a perseguir outro objetivo, retorne SHIFT e a nova intent permitida. "
+            "Se o usuário passou claramente a perseguir outro objetivo sem desistir explicitamente da ação atual, "
+            "retorne SHIFT e a nova intent permitida. "
+            "Se o usuário desistiu explicitamente da ação/transação atual, retorne ABANDON. "
+            "Quando ABANDON vier acompanhado de um novo objetivo, também informe intent e agent desse novo objetivo. "
+            "Quando for apenas abandono sem novo objetivo, intent e agent podem ser nulos. "
             "Retorne somente JSON válido com decision, intent, agent, confidence, reason."
         )
         user = {
@@ -1068,16 +1073,61 @@ class EnterpriseRouter:
             logger.warning("Falha ao avaliar mudança semântica de intent transacional via LLM: %s", exc)
             return None
 
-        if str(data.get("decision") or "").strip().upper() != "SHIFT":
+        decision_kind = str(data.get("decision") or "").strip().upper()
+        if decision_kind not in {"SHIFT", "ABANDON"}:
             return None
         confidence = float(data.get("confidence") or 0.0)
         if confidence < self.intent_shift_threshold:
             return None
 
         intent_name = str(data.get("intent") or "").strip()
+        agent = str(data.get("agent") or "").strip()
+
+        if decision_kind == "ABANDON":
+            # ABANDON encerra explicitamente apenas a interação/transação ativa.
+            # Pending topics de outros objetivos não são apagados aqui. Quando a
+            # desistência também traz um novo objetivo, roteamos diretamente para
+            # ele; em abandono puro, usamos um intent de estado sem tools para que
+            # o agente atual apenas confirme o encerramento, sem rearmar a ação.
+            if intent_name:
+                agent = agent or str(self._agent_for_intent(intent_name) or "").strip()
+                if not agent:
+                    return None
+                domain = self._domain_for_intent(intent_name)
+                mcp_tools = self._tools_for_intent(intent_name)
+            else:
+                agent = str(state_decision.agent or state_decision.route or "").strip()
+                if not agent:
+                    return None
+                intent_name = "state:TRANSACTION_ABANDONED"
+                domain = None
+                mcp_tools = []
+
+            return RouteDecision(
+                route=agent,
+                agent=agent,
+                intent=intent_name,
+                confidence=confidence,
+                reason=str(data.get("reason") or "Abandono explícito da transação ativa."),
+                method="llm",
+                metadata={
+                    "transaction_interruption": "explicit_abandonment",
+                    "interrupted_state": state_decision.next_state,
+                    "interrupted_agent": state_decision.agent,
+                    "interrupted_intent": started_intent or previous_intent,
+                    "interruption_source": "semantic_classifier",
+                    "configured_routing_hint": (
+                        configured_candidate.intent if configured_candidate is not None else None
+                    ),
+                    "raw_llm_answer": answer[:1000],
+                },
+                domain=domain,
+                mcp_tools=mcp_tools,
+            )
+
         if not intent_name or intent_name == (started_intent or previous_intent):
             return None
-        agent = str(data.get("agent") or self._agent_for_intent(intent_name) or "").strip()
+        agent = agent or str(self._agent_for_intent(intent_name) or "").strip()
         if not agent:
             return None
 

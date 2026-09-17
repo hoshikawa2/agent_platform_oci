@@ -1293,6 +1293,28 @@ Agents:
 
 This second template shows how to reuse the same architecture for another business domain.
 
+### Transaction decisions: CONTINUE, SHIFT, and ABANDON
+
+When a transaction is active, the `EnterpriseRouter` semantic classifier distinguishes three outcomes:
+
+- `CONTINUE`: the message still belongs to the active transaction;
+- `SHIFT`: the message starts another goal without explicitly giving up the current action;
+- `ABANDON`: the user explicitly gives up the current action/transaction.
+
+`ABANDON` is a routing decision, not a new persisted `transaction_status`. The operational terminal state remains `CANCELLED`. The router publishes `transaction_interruption=explicit_abandonment`; the runtime closes the active transaction, clears its live latches, and records `cancelled_by_explicit_abandonment`. For a pure abandonment with no new goal, the router uses `state:TRANSACTION_ABANDONED` with `mcp_tools=[]` so the abandoned tool cannot be selected again by the same turn.
+
+The decision does not globally clear `pending_topics`. In multi-intent flows, unrelated pending operations remain available. `SHIFT` must not be interpreted as abandoning the entire plan either.
+
+Examples:
+
+```text
+"before that, show my subscribed services" -> SHIFT
+"I don't want to cancel anymore"           -> ABANDON
+"the order is PED-1001"                     -> CONTINUE
+```
+
+When `ABANDON` also contains a new goal, `intent` and `agent` point to that goal. For pure abandonment, the LLM may omit them and the framework creates the technical abandonment intent.
+
 ### Generic deterministic intent shift — current behavior
 
 > Content consolidated from `Documentacao/RELEASE_NOTES_GENERIC_DETERMINISTIC_INTENT_SHIFT_V15.md`.

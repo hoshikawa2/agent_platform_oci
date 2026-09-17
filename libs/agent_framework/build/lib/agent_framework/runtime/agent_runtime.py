@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping
 
 
 from agent_framework.memory.summary_memory import MemoryContext, render_recent_messages
-from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
+from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, reconcile_transaction_parameters, parse_transaction_confirmation
 from agent_framework.workflows.input_contract import match_expected_input
 
 
@@ -366,6 +366,119 @@ class AgentRuntimeMixin:
 
 
     @classmethod
+    def _mcp_workflows_terminal_for_rag(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+        """Detecta workflows do turno já encerrados para evitar retrieval pós-execução.
+
+        A regra é intencionalmente estreita: somente resultados que se identificam
+        como workflow (``workflow_status`` em metadata ou ``workflow_name``/
+        ``execution_id`` junto de ``status`` no payload) participam da decisão.
+        ``COMPLETED`` e ``FAILED`` são tratados igualmente como terminais para RAG.
+        Se não houver workflow detectado, o comportamento normal de RAG permanece.
+        """
+        statuses: list[str] = []
+        for item in mcp_results or []:
+            if not isinstance(item, dict):
+                continue
+
+            metadata = item.get("metadata")
+            if isinstance(metadata, Mapping):
+                workflow_status = str(metadata.get("workflow_status") or "").strip().upper()
+                if workflow_status:
+                    statuses.append(workflow_status)
+                    continue
+
+            result = item.get("result")
+            for mapping in cls._iter_mapping_values(result):
+                if not isinstance(mapping, Mapping):
+                    continue
+                identifies_workflow = bool(mapping.get("workflow_name") or mapping.get("execution_id"))
+                status = str(mapping.get("status") or "").strip().upper()
+                if identifies_workflow and status:
+                    statuses.append(status)
+                    break
+
+        if not statuses:
+            return False, []
+        terminal = {"COMPLETED", "FAILED"}
+        return all(status in terminal for status in statuses), statuses
+
+    @staticmethod
+    def _operation_result_is_terminal(result: Any) -> bool:
+        if not isinstance(result, Mapping):
+            return False
+        return str(result.get("status") or "").strip().lower() in {"completed", "failed"}
+
+    @classmethod
+    def _has_pending_operations_for_rag(cls, state: dict[str, Any]) -> bool:
+        """Retorna True quando a fila executável ainda possui trabalho não terminal.
+
+        ``pending_topics`` é a fonte de trabalho pendente. O ``multi_intent_plan``
+        persistido é contexto/read-only e não pode ser reinterpretado como fila,
+        pois seus status originais podem permanecer ``pending`` após a conclusão.
+        ``operation_results`` evita que um tópico residual já terminal conte de novo.
+        """
+        operation_results = state.get("operation_results") or {}
+        if not isinstance(operation_results, Mapping):
+            operation_results = {}
+
+        pending_topics = state.get("pending_topics")
+        if not isinstance(pending_topics, (list, tuple)):
+            return False
+        for topic in pending_topics:
+            if not isinstance(topic, Mapping):
+                continue
+            op_id = str(topic.get("operation_id") or "").strip()
+            stored = operation_results.get(op_id) if op_id else None
+            if cls._operation_result_is_terminal(stored):
+                continue
+            status = str(topic.get("status") or "pending").strip().lower()
+            if status not in {"completed", "failed"}:
+                return True
+        return False
+
+    @classmethod
+    def _has_unresolved_knowledge_operation_for_rag(cls, state: dict[str, Any]) -> bool:
+        """Detecta operação de knowledge ainda sem resultado terminal.
+
+        O framework aceita marcadores explícitos (``knowledge``/``requires_rag``)
+        e, para compatibilidade com os intents existentes, a convenção ``knowledge``
+        no nome do intent. Não há nomes de domínio ou de agentes hardcoded.
+        """
+        operation_results = state.get("operation_results") or {}
+        if not isinstance(operation_results, Mapping):
+            operation_results = {}
+
+        plan = state.get("multi_intent_plan")
+        if not isinstance(plan, Mapping):
+            route = state.get("route_decision")
+            if isinstance(route, Mapping):
+                metadata = route.get("metadata")
+                if isinstance(metadata, Mapping):
+                    plan = metadata.get("multi_intent_plan")
+        if not isinstance(plan, Mapping):
+            return False
+
+        for operation in plan.get("operations") or []:
+            if not isinstance(operation, Mapping):
+                continue
+            intent = str(operation.get("intent") or "").strip().lower()
+            is_knowledge = bool(
+                operation.get("knowledge")
+                or operation.get("requires_rag")
+                or "knowledge" in intent
+            )
+            if not is_knowledge:
+                continue
+            op_id = str(operation.get("operation_id") or "").strip()
+            stored = operation_results.get(op_id) if op_id else None
+            if cls._operation_result_is_terminal(stored):
+                continue
+            status = str(operation.get("status") or "pending").strip().lower()
+            if status not in {"completed", "failed"}:
+                return True
+        return False
+
+    @classmethod
     def _mcp_llm_composition_directive(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, list[str]]:
         """Lê instruções de composição declaradas por tools/workflows.
 
@@ -404,6 +517,33 @@ class AgentRuntimeMixin:
         mcp_results = state.get("mcp_results") or []
         requires_rag, rag_query_override = self._mcp_rag_directive(mcp_results)
         explicit_mcp_sufficient = self._mcp_rag_sufficient(mcp_results)
+        # Política de precedência para o skip pós-workflow:
+        # 1) trabalho pendente mantém o processamento normal;
+        # 2) requires_rag=true força retrieval;
+        # 3) knowledge ainda não resolvido força retrieval;
+        # 4) só então workflows COMPLETED/FAILED podem suprimir RAG.
+        has_pending_operations = self._has_pending_operations_for_rag(state)
+        has_unresolved_knowledge = self._has_unresolved_knowledge_operation_for_rag(state)
+        workflows_terminal, workflow_statuses = self._mcp_workflows_terminal_for_rag(mcp_results)
+        if (
+            not has_pending_operations
+            and not requires_rag
+            and not has_unresolved_knowledge
+            and workflows_terminal
+        ):
+            return "", {
+                "enabled": False,
+                "attempted": False,
+                "skipped": True,
+                "status": "skipped",
+                "reason": "all_turn_workflows_terminal",
+                "workflow_statuses": workflow_statuses,
+                "pending_operations": False,
+                "unresolved_knowledge_operation": False,
+                "required_by_tool": False,
+                "mcp_explicitly_sufficient": bool(explicit_mcp_sufficient),
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
+            }
         if (
             not requires_rag
             and bool(getattr(settings, "SKIP_RAG_WHEN_MCP_SUFFICIENT", True))
@@ -1466,6 +1606,153 @@ class AgentRuntimeMixin:
         cfg = self._tool_config(tool_name)
         return str(getattr(cfg, "description", "") or "") if cfg is not None else ""
 
+    @staticmethod
+    def _transaction_context_newest_first(context: Any) -> str:
+        """Normalize bounded conversation text into newest->oldest message blocks.
+
+        Role-labelled multi-line messages are kept intact.  This avoids reversing
+        individual lines inside an assistant explanation while still honoring the
+        temporal search order required by parameter reconciliation.
+        """
+        raw = str(context or "").strip()
+        if not raw:
+            return ""
+        blocks: list[str] = []
+        current: list[str] = []
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            low = stripped.lower()
+            starts_role = low.startswith(("user:", "assistant:", "system:", "cliente:", "agente:"))
+            if starts_role and current:
+                blocks.append(" ".join(current))
+                current = [stripped]
+            else:
+                current.append(stripped)
+        if current:
+            blocks.append(" ".join(current))
+        if not blocks:
+            blocks = [line.strip() for line in raw.splitlines() if line.strip()]
+        newest = list(reversed(blocks))
+        return "\n".join(f"history:{i+1}: {block}" for i, block in enumerate(newest))
+
+    async def _reconcile_transaction_parameters(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        parameter_names: list[str],
+        known_arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Reconcile a coherent required-parameter set from text and tool schema."""
+        # Compatibility/extensibility: if a domain/runtime subclass explicitly
+        # overrides the legacy extractor, honor that override and translate its
+        # candidates into reconciliation decisions. The base framework path below
+        # remains the coherent temporal reconciler.
+        override = getattr(type(self), "_extract_transaction_parameters", None)
+        if override is not None and override is not AgentRuntimeMixin._extract_transaction_parameters:
+            route_meta_compat = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+            compat_fields = list(parameter_names) if route_meta_compat.get("transaction_parameter_values") else [
+                name for name in parameter_names if (known_arguments or {}).get(name) in _EMPTY_VALUES
+            ]
+            extracted = await override(
+                self, state, tool_name=tool_name, missing_parameters=compat_fields,
+                known_arguments=dict(known_arguments or {}),
+            )
+            values = dict(extracted or {})
+            decisions = {name: ("resolved" if name in values else ("preserve" if (known_arguments or {}).get(name) not in _EMPTY_VALUES else "unresolved")) for name in parameter_names}
+            provenance = {name: ("current" if name in values else "state") for name in parameter_names if decisions[name] != "unresolved"}
+            return {"values": values, "decisions": decisions, "provenance": provenance, "clear_fields": []}
+
+        active = self._active_transaction(state) or {}
+        schema = active.get("parameter_schema") if isinstance(active.get("parameter_schema"), dict) else None
+        if not schema:
+            policy = self._resolve_tool_execution_policy(tool_name, known_arguments or {})
+            schema = self._transaction_parameter_schema(tool_name, policy)
+        description = str(active.get("tool_description") or self._transaction_tool_description(tool_name) or "")
+        route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+        contextual_reentry = bool(route_meta.get("contextual_reentry"))
+        text = (route_meta.get("original_input") if contextual_reentry else None) or state.get("sanitized_input") or state.get("user_text") or ""
+        conversational_context = route_meta.get("relevant_conversation_context") if contextual_reentry else None
+        if not str(conversational_context or "").strip():
+            conversational_context = active.get("parameter_conversational_context")
+        if contextual_reentry and not str(conversational_context or "").strip():
+            effective = str(route_meta.get("contextual_reentry_input") or "")
+            prefix = "CONTEXTO DA SOLICITAÇÃO IMEDIATAMENTE ANTERIOR:\n"
+            suffix = "\n\nCONTINUAÇÃO ATUAL DO CLIENTE:\n"
+            if prefix in effective and suffix in effective:
+                conversational_context = effective.split(prefix, 1)[1].split(suffix, 1)[0].strip()
+        ordered_context = self._transaction_context_newest_first(conversational_context)
+        cached = route_meta.get("transaction_parameter_values")
+        effective_known = dict(known_arguments or {})
+        if isinstance(cached, dict):
+            for key, value in cached.items():
+                if str(key) in set(str(x) for x in parameter_names) and value not in _EMPTY_VALUES:
+                    effective_known[str(key)] = value
+        return await reconcile_transaction_parameters(
+            getattr(self, "llm", None),
+            text=str(text),
+            tool_name=tool_name,
+            parameter_names=[str(x) for x in parameter_names],
+            known_arguments=effective_known,
+            parameter_schema=schema,
+            tool_description=description,
+            conversational_context=ordered_context,
+        )
+
+    async def _extract_transaction_parameters_current_only(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_name: str,
+        missing_parameters: list[str],
+        known_arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Collect pending parameters from the current utterance only.
+
+        This is the normal COLLECTING_PARAMETERS path. Temporal conversation
+        history is deliberately excluded here; `_reconcile_transaction_parameters`
+        is the fallback when this direct collection cannot satisfy or validate the
+        declarative parameter contract.
+        """
+        if not missing_parameters:
+            return {}
+
+        # Preserve the framework extension contract: domain/test runtimes that
+        # explicitly override the legacy collector remain the authoritative
+        # implementation of the *traditional* first pass. The temporal fallback
+        # is still owned by the base runtime and is invoked only after failure.
+        override = getattr(type(self), "_extract_transaction_parameters", None)
+        if override is not None and override is not AgentRuntimeMixin._extract_transaction_parameters:
+            return await override(
+                self,
+                state,
+                tool_name=tool_name,
+                missing_parameters=list(missing_parameters),
+                known_arguments=dict(known_arguments or {}),
+            )
+
+        active = self._active_transaction(state) or {}
+        schema = active.get("parameter_schema") if isinstance(active.get("parameter_schema"), dict) else None
+        if not schema:
+            policy = self._resolve_tool_execution_policy(tool_name, known_arguments or {})
+            schema = self._transaction_parameter_schema(tool_name, policy)
+        description = str(active.get("tool_description") or self._transaction_tool_description(tool_name) or "")
+        route_meta = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+        text = route_meta.get("original_input") if route_meta.get("contextual_reentry") else None
+        text = text or state.get("sanitized_input") or state.get("user_text") or ""
+        return await extract_transaction_parameters(
+            getattr(self, "llm", None),
+            text=str(text),
+            tool_name=tool_name,
+            missing_parameters=[str(x) for x in missing_parameters],
+            known_arguments=dict(known_arguments or {}),
+            parameter_schema=schema,
+            tool_description=description,
+            conversational_context="",
+        )
+
     async def _extract_transaction_parameters(
         self,
         state: dict[str, Any],
@@ -1535,6 +1822,7 @@ class AgentRuntimeMixin:
             suffix = "\n\nCONTINUAÇÃO ATUAL DO CLIENTE:\n"
             if prefix in effective and suffix in effective:
                 conversational_context = effective.split(prefix, 1)[1].split(suffix, 1)[0].strip()
+        ordered_context = self._transaction_context_newest_first(conversational_context)
         extracted = await extract_transaction_parameters(
             getattr(self, "llm", None),
             text=str(text),
@@ -1543,9 +1831,42 @@ class AgentRuntimeMixin:
             known_arguments={**dict(known_arguments or {}), **reused},
             parameter_schema=schema,
             tool_description=description,
-            conversational_context=str(conversational_context or ""),
+            conversational_context=ordered_context,
         )
-        return {**reused, **extracted}
+
+        # Compatibility/resilience fallback: if a provider returns only a partial
+        # flat extraction, scan bounded prior text source-by-source from newest to
+        # oldest for still-unresolved fields.  This preserves temporal order and
+        # remains schema-driven; the main COLLECTING_PARAMETERS path uses the
+        # coherent set reconciler above.
+        combined = {**reused, **extracted}
+        unresolved = [name for name in missing_parameters if name not in combined]
+        if unresolved and str(conversational_context or "").strip():
+            source_lines = self._transaction_context_newest_first(conversational_context).splitlines()
+            for source_line in source_lines:
+                if not unresolved:
+                    break
+                source_text = source_line.split(": ", 1)[1] if ": " in source_line else source_line
+                low_source = source_text.lower()
+                for role_prefix in ("user: ", "assistant: ", "cliente: ", "agente: ", "system: "):
+                    if low_source.startswith(role_prefix):
+                        source_text = source_text[len(role_prefix):]
+                        break
+                recovered = await extract_transaction_parameters(
+                    getattr(self, "llm", None),
+                    text=source_text,
+                    tool_name=tool_name,
+                    missing_parameters=list(unresolved),
+                    known_arguments={**dict(known_arguments or {}), **combined},
+                    parameter_schema=schema,
+                    tool_description=description,
+                    conversational_context="",
+                )
+                for key, value in recovered.items():
+                    if key in unresolved and value not in _EMPTY_VALUES:
+                        combined[key] = value
+                unresolved = [name for name in unresolved if name not in combined]
+        return combined
 
     def _transactional_action_match(self, text: str, tools: list[str] | None = None) -> str | None:
         """Detecta solicitação transacional usando metadados de tools.yaml.
@@ -1643,17 +1964,60 @@ class AgentRuntimeMixin:
         return descriptor
 
     @staticmethod
-    def _workflow_payload_from_tool_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    def _workflow_declares_final_response(workflow: dict[str, Any]) -> bool:
+        """Return True when the workflow payload itself declares a final response.
+
+        Some legacy/domain adapters can return ``status=PAUSED`` even after the
+        resumed workflow has reached a terminal node.  The authoritative signal
+        for conversation lifecycle is the domain contract
+        ``workflow_response_final=true``.  Treating that payload as still paused
+        would persist the old expected_input and resurrect it on the next turn.
+        """
+        if not isinstance(workflow, dict):
+            return False
+        candidates: list[dict[str, Any]] = []
+        output = workflow.get("output")
+        if isinstance(output, dict):
+            # Adapters may promote the final node payload directly to ``output``.
+            candidates.append(output)
+            state = workflow.get("state") if isinstance(workflow.get("state"), dict) else {}
+            current_node = str(state.get("current_node") or "").strip()
+            if current_node and isinstance(output.get(current_node), dict):
+                candidates.append(output[current_node])
+            # Other adapters keep node outputs under ``nodes``/``vars``.
+            for key in ("nodes", "vars"):
+                node_map = state.get(key) if isinstance(state.get(key), dict) else {}
+                if current_node and isinstance(node_map.get(current_node), dict):
+                    candidates.append(node_map[current_node])
+        candidates.append(workflow)
+        return any(item.get("workflow_response_final") is True for item in candidates)
+
+    @classmethod
+    def _workflow_payload_from_tool_result(cls, result: dict[str, Any]) -> dict[str, Any] | None:
         data = result.get("result") if isinstance(result, dict) else None
         if not isinstance(data, dict):
             return None
         # MCP HTTP envelope may contain another result layer.
         nested = data.get("result")
+        candidate = None
         if isinstance(nested, dict) and nested.get("status") in {"PAUSED", "COMPLETED", "FAILED"}:
-            return nested
-        if data.get("status") in {"PAUSED", "COMPLETED", "FAILED"}:
-            return data
-        return None
+            candidate = nested
+        elif data.get("status") in {"PAUSED", "COMPLETED", "FAILED"}:
+            candidate = data
+        if not isinstance(candidate, dict):
+            return None
+
+        # Normalize a stale PAUSED status when the domain has explicitly declared
+        # that its final user response was produced.  Work on a shallow copy so
+        # the raw MCP evidence remains untouched for telemetry/audit.
+        if candidate.get("status") == "PAUSED" and cls._workflow_declares_final_response(candidate):
+            candidate = dict(candidate)
+            candidate["status"] = "COMPLETED"
+            metadata = dict(candidate.get("metadata") or {})
+            metadata["status_normalized_from"] = "PAUSED"
+            metadata["status_normalized_reason"] = "workflow_response_final"
+            candidate["metadata"] = metadata
+        return candidate
 
     def _capture_pending_domain_workflow(self, state: dict[str, Any], tool_result: dict[str, Any]) -> None:
         workflow = self._workflow_payload_from_tool_result(tool_result)
@@ -1667,18 +2031,43 @@ class AgentRuntimeMixin:
                 executed.append(workflow_name)
             state["business_workflows_executed"] = executed
         if workflow.get("status") != "PAUSED":
-            # Clearing must be materialized in the graph-state patch. ``pop``/absence
-            # is not enough with LangGraph state merging: an older latch can survive
-            # into the next turn and incorrectly resume a workflow that already
-            # completed. Only clear the currently owned execution (or an unlabeled
-            # legacy latch); never clear a different concurrently tracked workflow.
+            # A completed/failed workflow is a terminal interaction lifecycle, but
+            # NOT a terminal user session. Materialize explicit tombstones so an old
+            # LangGraph checkpoint cannot resurrect ``expected_input``/pause on the
+            # next message in the same session. Only clear the execution currently
+            # owned by this latch (or an unlabeled legacy latch).
             pending = state.get("pending_domain_workflow")
             pending_execution = (pending or {}).get("execution_id") if isinstance(pending, dict) else None
             workflow_execution = metadata.get("workflow_execution_id") or workflow.get("execution_id")
-            if not pending_execution or not workflow_execution or str(pending_execution) == str(workflow_execution):
+            owns_latch = (
+                not pending_execution
+                or not workflow_execution
+                or str(pending_execution) == str(workflow_execution)
+            )
+            if owns_latch:
+                terminal_status = "COMPLETED" if workflow.get("status") == "COMPLETED" else "FAILED"
+                # Close any operational transaction created to own the paused
+                # workflow before changing transaction_status to a terminal value.
+                if self._active_transaction(state):
+                    self._finish_active_transaction(state, terminal_status, result=tool_result)
+                else:
+                    state["active_transaction"] = None
+                    state["selected_tool_call"] = {}
+                    state["pending_tool_call"] = {}
+                    state["missing_parameters"] = []
+                    state["confirmation_required"] = False
+                    state["confirmation_received"] = terminal_status == "COMPLETED"
+                    state["next_state"] = None
+                    state["transaction_status"] = terminal_status
                 state["pending_domain_workflow"] = None
-                if state.get("transaction_status") == "WORKFLOW_PAUSED":
-                    state["transaction_status"] = None
+                state["pending_tool_clarification"] = None
+                state["workflow_input_reprompt"] = None
+                # Conversation session remains the same, but the completed
+                # workflow defines an operational-context boundary.  The next
+                # user turn consumes this marker and starts with a clean
+                # short-term interaction context (history is still durable for
+                # audit/telemetry and long-term memory remains available).
+                state["operational_context_boundary_pending"] = True
             return
         state["pending_domain_workflow"] = {
             "workflow_name": metadata.get("workflow_name") or workflow.get("workflow_name"),
@@ -1855,7 +2244,15 @@ class AgentRuntimeMixin:
         transaction_id: str | None = None,
     ) -> dict[str, Any]:
         current = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
-        txid = transaction_id or current.get("transaction_id") or str(uuid.uuid4())
+        current_is_active = self._transaction_is_active(state) and bool(current.get("transaction_id"))
+        txid = transaction_id or (current.get("transaction_id") if current_is_active else None) or str(uuid.uuid4())
+        normalized_arguments = dict(arguments or {})
+        if not current_is_active and transaction_id is None:
+            # workflow_execution_id is transaction-scoped.  A value left by a
+            # completed/failed transaction must never seed a new one in the same
+            # session.  A paused workflow is resumed through pending_domain_workflow
+            # / retomar_workflow, not by opening a new transaction with this field.
+            normalized_arguments.pop("workflow_execution_id", None)
         if str(current.get("tool_name") or "") != str(tool_name):
             pre_validation = state.get("transaction_pre_validation")
             pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
@@ -1883,7 +2280,7 @@ class AgentRuntimeMixin:
         tx = {
             "transaction_id": txid,
             "tool_name": tool_name,
-            "arguments": dict(arguments or {}),
+            "arguments": normalized_arguments,
             "status": status,
             "started_from_intent": current.get("started_from_intent") or state.get("intent"),
             "requires": list(policy.get("requires") or getattr(cfg, "requires", []) or []),
@@ -1894,7 +2291,14 @@ class AgentRuntimeMixin:
             "parameter_conversational_context": parameter_context or "",
             "user_claims_are_evidence": False if parameter_context else current.get("user_claims_are_evidence", False),
         }
+        # Invariant: the operational transaction and the scalar lifecycle status
+        # must always describe the same interaction.  A previous terminal status
+        # (for example COMPLETED) must not survive after a new transaction is
+        # installed, otherwise the next input-boundary normalization may clear the
+        # newly created confirmation/parameter latches as if they belonged to the
+        # previous transaction.
         state["active_transaction"] = tx
+        state["transaction_status"] = status
         return tx
 
     @staticmethod
@@ -2050,6 +2454,11 @@ class AgentRuntimeMixin:
             state["confirmation_required"] = False
             state["confirmation_received"] = False
             state["next_state"] = None
+            # Defensive cleanup for checkpoints written by older versions: a
+            # terminal interaction must never retain a resumable workflow contract.
+            state["pending_domain_workflow"] = None
+            state["pending_tool_clarification"] = None
+            state["workflow_input_reprompt"] = None
             state.pop("transaction_confirmation_message_override", None)
             state.pop("transaction_parameter_message_override", None)
             return
@@ -2131,6 +2540,7 @@ class AgentRuntimeMixin:
             "transaction_evidence", "last_transaction_evidence", "relevant_transaction_evidence",
             "transaction_pre_validation", "tool_terminal_result", "transaction_confirmation_message_override",
             "transaction_parameter_message_override",
+            "operational_context_boundary_pending", "operational_context_reset",
         )
         return {key: state.get(key) for key in keys if key in state}
 
@@ -2612,6 +3022,9 @@ class AgentRuntimeMixin:
     def _clear_active_interaction_context_on_route_shift(self, state: dict[str, Any]) -> bool:
         """Invalidate active conversational latches when routing leaves their owner.
 
+        A semantic `explicit_abandonment` uses the same live-latch cleanup as a
+        route shift, but preserves a distinct audit reason/action.
+
         This is deliberately generic.  It compares the current route decision with
         the owner recorded by a paused workflow; it does not inspect domain, tool,
         workflow or intent names.  Durable checkpoints/history remain intact.
@@ -2635,10 +3048,12 @@ class AgentRuntimeMixin:
         if not (intent_changed or agent_changed):
             return False
 
+        interruption = str(route_metadata.get("transaction_interruption") or "").strip().lower()
+        explicit_abandonment = interruption == "explicit_abandonment"
         state["last_interrupted_domain_workflow"] = {
             **pending_workflow,
             "status": "CANCELLED",
-            "reason": "intent_shift",
+            "reason": "explicit_abandonment" if explicit_abandonment else "intent_shift",
         }
         state["pending_domain_workflow"] = None
 
@@ -2661,7 +3076,11 @@ class AgentRuntimeMixin:
         state["transaction_pre_validation"] = None
         state["pending_tool_clarification"] = None
         state["tool_policy_result"] = {
-            "action": "cleared_by_intent_shift",
+            "action": (
+                "cleared_by_explicit_abandonment"
+                if explicit_abandonment
+                else "cleared_by_intent_shift"
+            ),
             "workflow_execution_id": pending_workflow.get("execution_id"),
         }
         state["mcp_results"] = []
@@ -2694,17 +3113,21 @@ class AgentRuntimeMixin:
         self._normalize_transaction_lifecycle(state)
 
         # Uma transação em coleta/confirmação não pode aprisionar a sessão. O
-        # EnterpriseRouter é a única fonte para interrupção por mudança de intent.
-        # Não existe interpretação lexical de desistência no runtime: mudou a
-        # intent, a transação anterior é encerrada e seus latches são limpos.
+        # EnterpriseRouter é a única fonte para interrupção semântica: SHIFT ou
+        # ABANDON. Não existe interpretação lexical de desistência no runtime; o
+        # runtime apenas aplica a decisão do router e limpa os latches da ação.
         active_before_interruption = self._active_transaction(state)
         interruption = str(route_meta.get("transaction_interruption") or "").strip().lower()
-        if active_before_interruption and interruption == "intent_shift":
+        if active_before_interruption and interruption in {"intent_shift", "explicit_abandonment"}:
             interrupted_tool = active_before_interruption.get("tool_name")
             self._finish_active_transaction(state, "CANCELLED")
             state["transaction_pre_validation"] = None
             state["tool_policy_result"] = {
-                "action": "cancelled_by_intent_shift",
+                "action": (
+                    "cancelled_by_explicit_abandonment"
+                    if interruption == "explicit_abandonment"
+                    else "cancelled_by_intent_shift"
+                ),
                 "tool_name": interrupted_tool,
             }
 
@@ -2738,23 +3161,38 @@ class AgentRuntimeMixin:
                 policy = self._resolve_tool_execution_policy(tool_name, previous_args)
                 missing_before = self._missing_required_arguments(policy, previous_args)
 
-                # Parâmetros TRANSACIONAIS são interpretados exclusivamente pelo
-                # extrator LLM genérico. Durante COLLECTING_PARAMETERS, a fala atual
-                # também pode CORRIGIR um required field já coletado em turno anterior
-                # (ex.: valor=19,99 e o cliente diz "desculpa, é 14,99" enquanto
-                # subject ainda está pendente). Por isso o contrato editável do turno
-                # é o conjunto completo de ``requires``; somente as chaves realmente
-                # extraídas pela LLM sobrescrevem ``previous_args``. Campos não citados
-                # permanecem intactos. Isso preserva parameter-before-intent-shift sem
-                # tornar valores antigos imutáveis por acidente.
-                editable_required = [str(name) for name in (policy.get("requires") or [])]
-                extracted = await self._extract_transaction_parameters(
+                # Uma única fonte de verdade para parâmetros: o extractor recebe
+                # todos os required fields, valores já conhecidos e o contexto
+                # bounded da própria transação. Assim ele pode resolver referências
+                # e correções explícitas sem uma segunda máquina de reconciliação.
+                arguments = dict(previous_args)
+                required_fields = [str(name) for name in (policy.get("requires") or [])]
+                collector_override = getattr(type(self), "_extract_transaction_parameters", None)
+                collector_fields = (
+                    list(missing_before)
+                    if collector_override is not None and collector_override is not AgentRuntimeMixin._extract_transaction_parameters
+                    else required_fields
+                )
+                extracted_current = await self._extract_transaction_parameters(
                     state,
                     tool_name=tool_name,
-                    missing_parameters=editable_required,
+                    missing_parameters=collector_fields,
                     known_arguments=previous_args,
                 )
-                arguments = {**previous_args, **extracted}
+                arguments.update(dict(extracted_current or {}))
+                route_meta_collection = ((state.get("route_decision") or {}).get("metadata") or {}) if isinstance(state.get("route_decision"), dict) else {}
+                router_values = route_meta_collection.get("transaction_parameter_values")
+                router_fields = sorted(
+                    str(k) for k, v in (router_values.items() if isinstance(router_values, dict) else [])
+                    if v not in _EMPTY_VALUES
+                )
+                state["transaction_parameter_collection"] = {
+                    "tool_name": tool_name,
+                    "mode": "single_extractor",
+                    "resolved_fields": sorted(str(k) for k in (extracted_current or {}).keys()),
+                    "router_resolved_fields": router_fields,
+                }
+                state.pop("transaction_parameter_reconciliation", None)
 
                 # Argumentos estruturados já presentes no contexto são aceitos de
                 # forma genérica (não são parsing textual). Para required fields,
@@ -2801,6 +3239,10 @@ class AgentRuntimeMixin:
                     state, tool_name=tool_name, arguments=arguments, policy=policy, emit_events=emit_events
                 )
                 if pre_validation_result is not None:
+                    # A pre-validation é a fronteira autoritativa. Se pedir um
+                    # parâmetro novamente, o estado produzido por ela é preservado
+                    # e o próximo turno volta ao mesmo extractor. Não existe uma
+                    # segunda tentativa escondida de reconciliação no mesmo turno.
                     return [pre_validation_result]
 
                 tool_name, policy, force_confirmation = self._apply_prevalidated_transaction_decision(
@@ -3120,6 +3562,33 @@ class AgentRuntimeMixin:
         if not resolved_session_id:
             return None
 
+        # A completed workflow can keep the same session identifier while
+        # opening a fresh operational interaction.  On that first post-boundary
+        # turn, do not inject ConversationSummaryMemory/recent messages from the
+        # closed workflow. Durable message history is intentionally untouched.
+        # Long-term memory is loaded below as usual because identity/preferences
+        # are not short-term workflow state.
+        reset_short_term = bool(state.get("operational_context_reset"))
+        if reset_short_term:
+            memory_context = MemoryContext(
+                summary="",
+                recent_messages=[],
+                compressed=False,
+                metadata={"operational_context_reset": True, "session_id": resolved_session_id},
+            )
+            state["memory_context"] = memory_context
+            state["memory_context_metadata"] = memory_context.metadata
+            if bool(getattr(settings, "ENABLE_LONG_TERM_MEMORY", False)):
+                manager = getattr(self, "long_term_memory_manager", None)
+                if manager is None:
+                    from agent_framework.memory.long_term_memory import create_long_term_memory_manager
+                    manager = create_long_term_memory_manager(settings, telemetry=getattr(self, "telemetry", None))
+                    self.long_term_memory_manager = manager
+                items = await manager.load(state)
+                state["long_term_memories"] = [item.to_dict() for item in items]
+                state["long_term_memory_context"] = manager.render(items)
+            return memory_context
+
         summary_memory = getattr(self, "summary_memory", None)
         if summary_memory is None:
             from agent_framework.memory.message_history import create_memory
@@ -3212,6 +3681,119 @@ class AgentRuntimeMixin:
         return sections
 
     # ------------------------------------------------------------------
+    # LLM context compaction
+    # ------------------------------------------------------------------
+    _LLM_CONTEXT_DROP_KEYS = {
+        # Runtime/checkpoint internals are useful for audit/debug, but must not be
+        # recursively injected into an answering prompt. They frequently contain
+        # copies of the original request, session and previous workflow outputs.
+        "state", "vars", "session", "session_metadata", "original_context",
+        "agent_profile", "business_events", "trace", "nodes", "input",
+        # Provider / transport diagnostics do not add business grounding.
+        "raw_llm_answer", "headers", "request_kwargs", "response_headers",
+    }
+
+    def _compact_llm_value(
+        self,
+        value: Any,
+        *,
+        max_chars: int = 16000,
+        max_depth: int = 6,
+        max_items: int = 24,
+    ) -> str:
+        """Render structured context for an LLM without checkpoint explosions.
+
+        The operational state may intentionally retain complete workflow/MCP evidence
+        for auditability. Prompt context has a different contract: it contains the
+        business facts needed for the current answer, not recursive runtime objects.
+        This renderer therefore drops framework-internal recursive keys, bounds list
+        sizes/depth and finally enforces a hard character budget.
+        """
+        truncated = False
+
+        def compact(item: Any, depth: int = 0) -> Any:
+            nonlocal truncated
+            if depth >= max_depth:
+                if isinstance(item, (dict, list, tuple, set)):
+                    truncated = True
+                    return "[conteúdo aninhado omitido]"
+                return item
+            if isinstance(item, dict):
+                out: dict[str, Any] = {}
+                for idx, (key, raw) in enumerate(item.items()):
+                    if idx >= max_items:
+                        truncated = True
+                        out["_omitted_fields"] = max(0, len(item) - max_items)
+                        break
+                    key_s = str(key)
+                    if key_s.lower() in self._LLM_CONTEXT_DROP_KEYS:
+                        truncated = True
+                        continue
+                    out[key_s] = compact(raw, depth + 1)
+                return out
+            if isinstance(item, (list, tuple, set)):
+                seq = list(item)
+                if len(seq) > max_items:
+                    truncated = True
+                out = [compact(child, depth + 1) for child in seq[:max_items]]
+                if len(seq) > max_items:
+                    out.append(f"[+{len(seq) - max_items} itens omitidos]")
+                return out
+            if isinstance(item, str) and len(item) > 4000:
+                truncated = True
+                return item[:4000] + "…[texto truncado]"
+            return item
+
+        try:
+            rendered = json.dumps(compact(value), ensure_ascii=False, default=str, separators=(",", ":"))
+        except Exception:
+            rendered = str(value)
+        if len(rendered) > max_chars:
+            truncated = True
+            rendered = rendered[:max_chars] + "…[contexto truncado pelo framework]"
+        if truncated:
+            return rendered + "\n[observação: payload técnico/duplicado foi compactado; fatos preservados dentro do orçamento]"
+        return rendered
+
+    @staticmethod
+    def _is_context_length_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "maximum context length",
+            "max context length",
+            "context_length_exceeded",
+            "input length",
+            "too many tokens",
+        )
+        return any(marker in text for marker in markers)
+
+    def _compact_messages_for_retry(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_total_chars: int = 60000,
+    ) -> list[dict[str, str]]:
+        """Emergency second-pass budget used only after provider rejection."""
+        if not messages:
+            return messages
+        system_budget = min(20000, max_total_chars // 3)
+        remaining = max_total_chars - system_budget
+        compacted: list[dict[str, str]] = []
+        for index, message in enumerate(messages):
+            content = str(message.get("content") or "")
+            role = str(message.get("role") or "user")
+            if role == "system":
+                budget = system_budget
+            else:
+                non_system_left = max(1, sum(1 for m in messages[index:] if str(m.get("role") or "") != "system"))
+                budget = max(4000, remaining // non_system_left)
+                remaining = max(0, remaining - budget)
+            if len(content) > budget:
+                content = content[:budget] + "…[mensagem compactada após limite de contexto]"
+            compacted.append({"role": role, "content": content})
+        return compacted
+
+    # ------------------------------------------------------------------
     # Messages / LLM / cache
     # ------------------------------------------------------------------
     def build_messages(
@@ -3236,19 +3818,26 @@ class AgentRuntimeMixin:
             f"Intent/rota escolhidos pelo framework:\nintent={state.get('intent')} route={state.get('route')}",
         ])
         if include_business_context:
-            sections.append(f"BusinessContext canônico:\n{runtime.business_context or '[sem business_context]'}")
+            sections.append(
+                "BusinessContext canônico:\n"
+                + self._compact_llm_value(runtime.business_context or "[sem business_context]", max_chars=6000)
+            )
         if mcp_results is not None:
-            sections.append(f"Resultados MCP normalizados pelo framework:\n{mcp_results}")
+            sections.append(
+                "Resultados MCP normalizados pelo framework:\n"
+                + self._compact_llm_value(mcp_results, max_chars=18000)
+            )
         transaction_evidence = self.transaction_evidence_for_turn(state, mcp_results)
         if transaction_evidence:
             sections.append(
                 "Evidências operacionais de transações anteriores relevantes ao recurso atual "
-                f"(persistidas pelo framework, não inferidas pela memória conversacional):\n{transaction_evidence}"
+                "(persistidas pelo framework, não inferidas pela memória conversacional):\n"
+                + self._compact_llm_value(transaction_evidence, max_chars=12000)
             )
         if rag_context is not None:
             sections.append(f"Contexto de conhecimento (RAG):\n{rag_context or '[sem contexto RAG]'}")
         if rag_metadata is not None:
-            sections.append(f"Metadados RAG:\n{rag_metadata}")
+            sections.append("Metadados RAG:\n" + self._compact_llm_value(rag_metadata, max_chars=6000))
             provider = str(rag_metadata.get("provider") or getattr(getattr(self, "settings", None), "RAG_PROVIDER", "standard"))
             grounded_only = bool(getattr(getattr(self, "settings", None), "RAG_GROUNDED_ONLY", False))
             if provider == "kbdb":
@@ -3262,7 +3851,7 @@ class AgentRuntimeMixin:
                     "- Se o RAG estiver vazio, bloqueado ou com erro, ainda é permitido responder apenas a partes comprovadas por MCP/business context; não invente a parte documental ausente."
                 )
         for title, value in (extra_sections or {}).items():
-            sections.append(f"{title}:\n{value}")
+            sections.append(f"{title}:\n" + self._compact_llm_value(value, max_chars=10000))
         return MessageBuilder(state).system(system_prompt).user("\n\n".join(sections)).build()
 
     async def _cache_get(self, key: str):
@@ -3324,7 +3913,33 @@ class AgentRuntimeMixin:
             return cached
         if telemetry:
             await telemetry.event("cache.llm.miss", {"agent": agent_name, "key": key}, kind="cache")
-        answer = await self.llm.ainvoke(messages, profile_name=agent_name, component_name=agent_name, generation_name=f"llm.{agent_name}")
+        try:
+            answer = await self.llm.ainvoke(
+                messages,
+                profile_name=agent_name,
+                component_name=agent_name,
+                generation_name=f"llm.{agent_name}",
+            )
+        except Exception as exc:
+            if not self._is_context_length_error(exc):
+                raise
+            retry_messages = self._compact_messages_for_retry(messages)
+            if telemetry:
+                await telemetry.event(
+                    "llm.context.compacted_retry",
+                    {
+                        "agent": agent_name,
+                        "original_chars": sum(len(str(m.get("content") or "")) for m in messages),
+                        "retry_chars": sum(len(str(m.get("content") or "")) for m in retry_messages),
+                    },
+                    kind="llm",
+                )
+            answer = await self.llm.ainvoke(
+                retry_messages,
+                profile_name=agent_name,
+                component_name=agent_name,
+                generation_name=f"llm.{agent_name}.context_retry",
+            )
         await self._cache_set(key, answer, ttl)
         return answer
 

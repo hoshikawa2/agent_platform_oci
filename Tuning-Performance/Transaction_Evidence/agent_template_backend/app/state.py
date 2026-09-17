@@ -42,6 +42,8 @@ class AgentState(TypedDict, total=False):
     agent_responses: list[dict[str, Any]]
     pending_topics: list[dict[str, Any]]
     handled_topics: list[dict[str, Any]]
+    operation_results: dict[str, dict[str, Any]]
+    multi_intent_plan: dict[str, Any]
     active_agent: str
     route_bypassed: bool
     continuity_signal: dict[str, Any]

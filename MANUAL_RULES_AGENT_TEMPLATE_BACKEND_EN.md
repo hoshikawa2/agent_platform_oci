@@ -196,11 +196,44 @@ ROUTE_STICKINESS_MAX_TOKENS
 
 `CONTINUE` keeps the active agent; `ROUTE` goes back to EnterpriseRouter. Stickiness does not authorize transactions and does not replace tool policy.
 
-## P.7. Intent shift
+## P.7. Intent shift and explicit abandonment (`CONTINUE` / `SHIFT` / `ABANDON`)
 
-During `COLLECTING_PARAMETERS` or `AWAITING_CONFIRMATION`, the framework protects the current transaction from accidental topic changes. An explicit change of subject may, however, cancel/clear the transactional latch and return the turn to normal routing.
+During `COLLECTING_PARAMETERS` or `AWAITING_CONFIRMATION`, the framework protects the current transaction from accidental topic changes. Before assuming that every new utterance belongs to the open transaction, EnterpriseRouter may classify how the message relates to the active transactional goal using three semantic decisions:
 
-The current utterance also has precedence when filling pending fields. A response such as `PED-1001` while collecting `order_id` must not be reinterpreted as a new intent.
+```text
+CONTINUE
+SHIFT
+ABANDON
+```
+
+These decisions are not new persisted transactional states. They guide how the current state is handled. The operational terminal state remains, for example, `CANCELLED`.
+
+- `CONTINUE`: the message belongs to the transaction in progress. Parameter collection, confirmation, or execution continues normally.
+- `SHIFT`: the user temporarily moves to another goal. The framework releases the active transactional latch so the new intent can be routed, but **a shift is not interpreted as permission to erase all `pending_topics`**. Pending work from a multi-intent plan may remain available for later resumption.
+- `ABANDON`: the user explicitly gives up the active action/transaction. The router signals `transaction_interruption=explicit_abandonment`; the runtime terminates the related transaction as `CANCELLED` and clears its transactional latches.
+
+Conceptual examples:
+
+```text
+"PED-1001"
+→ CONTINUE
+→ fills order_id for the current collection
+
+"before that, I want to check my services"
+→ SHIFT
+→ handles the new goal
+→ previous pending_topics are not automatically erased
+
+"I don't want to cancel anymore"
+→ ABANDON
+→ terminates the active cancellation transaction as CANCELLED
+```
+
+When `ABANDON` occurs without a new goal to route, the framework may represent the turn with a state intent such as `state:TRANSACTION_ABANDONED`, without selecting again the tool that was just abandoned. This avoids the incorrect loop `ABANDON → detect the word cancel again → reopen cancelar_pedido`.
+
+`ABANDON` must also not be confused with a global cleanup of the multi-intent plan. By default, it terminates the correlated active action/transaction; other independent operations may remain in `pending_topics`. If the user explicitly abandons additional actions, that scope should be resolved by correlation rather than by an indiscriminate `pending_topics = []`.
+
+The current utterance still has precedence when filling pending fields when the decision is `CONTINUE`. A response such as `PED-1001` while collecting `order_id` must not be reinterpreted as a new intent.
 
 ## P.8. Parameter collection
 

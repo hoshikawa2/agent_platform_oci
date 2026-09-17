@@ -98,3 +98,191 @@ def test_kbdb_build_messages_injects_grounding_policy():
     user = next(m["content"] for m in messages if m["role"] == "user")
     assert "Política de grounding obrigatória" in user
     assert "Não complete lacunas usando conhecimento paramétrico" in user
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow_status", ["COMPLETED", "FAILED"])
+async def test_rag_skips_when_all_turn_workflows_are_terminal(workflow_status):
+    rt = _runtime()
+    state = {
+        "agent_id": "telecom_contas",
+        "user_text": "sim",
+        "sanitized_input": "sim",
+        "mcp_results": [
+            {
+                "ok": True,
+                "tool_name": "cancelar_vas_avulso",
+                "result": {
+                    "execution_id": "wf-1",
+                    "workflow_name": "cancelamento_vas_avulso",
+                    "status": workflow_status,
+                    "output": {"answer": "resultado operacional"},
+                },
+                "metadata": {
+                    "workflow_name": "cancelamento_vas_avulso",
+                    "workflow_status": workflow_status,
+                },
+            }
+        ],
+    }
+
+    context, metadata = await rt._retrieve_rag_context(state)
+
+    assert context == ""
+    assert not rt.rag_service.calls
+    assert metadata["status"] == "skipped"
+    assert metadata["reason"] == "all_turn_workflows_terminal"
+    assert metadata["workflow_statuses"] == [workflow_status]
+
+
+@pytest.mark.asyncio
+async def test_rag_still_runs_when_any_turn_workflow_is_not_terminal():
+    rt = _runtime()
+    state = {
+        "agent_id": "telecom_contas",
+        "user_text": "sim",
+        "sanitized_input": "sim",
+        "mcp_results": [
+            {
+                "ok": True,
+                "result": {"execution_id": "wf-1", "workflow_name": "w1", "status": "COMPLETED"},
+                "metadata": {"workflow_status": "COMPLETED"},
+            },
+            {
+                "ok": True,
+                "result": {"execution_id": "wf-2", "workflow_name": "w2", "status": "RUNNING"},
+                "metadata": {"workflow_status": "RUNNING"},
+            },
+        ],
+    }
+
+    context, metadata = await rt._retrieve_rag_context(state)
+
+    assert rt.rag_service.calls
+    assert "Tarifação documentada" in context
+    assert metadata["status"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_explicit_requires_rag_overrides_terminal_workflow_skip():
+    rt = _runtime()
+    state = {
+        "agent_id": "telecom_contas",
+        "user_text": "sim",
+        "sanitized_input": "sim",
+        "mcp_results": [
+            {
+                "ok": True,
+                "result": {
+                    "execution_id": "wf-1",
+                    "workflow_name": "w1",
+                    "status": "COMPLETED",
+                    "requires_rag": True,
+                    "rag_query": "explicar regra de negócio",
+                },
+                "metadata": {"workflow_status": "COMPLETED"},
+            }
+        ],
+    }
+
+    context, metadata = await rt._retrieve_rag_context(state)
+
+    assert rt.rag_service.calls
+    assert rt.rag_service.calls[0][0] == "explicar regra de negócio"
+    assert "Tarifação documentada" in context
+    assert metadata["required_by_tool"] is True
+
+
+@pytest.mark.asyncio
+async def test_terminal_workflow_does_not_skip_rag_when_operation_is_pending():
+    rt = _runtime()
+    state = {
+        "agent_id": "telecom_contas",
+        "user_text": "sim",
+        "sanitized_input": "sim",
+        "pending_topics": [
+            {"operation_id": "op-2", "intent": "invoice_query", "status": "pending"}
+        ],
+        "operation_results": {},
+        "mcp_results": [
+            {
+                "ok": True,
+                "result": {"execution_id": "wf-1", "workflow_name": "w1", "status": "COMPLETED"},
+                "metadata": {"workflow_status": "COMPLETED"},
+            }
+        ],
+    }
+
+    context, metadata = await rt._retrieve_rag_context(state)
+
+    assert rt.rag_service.calls
+    assert "Tarifação documentada" in context
+    assert metadata["status"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_terminal_workflow_does_not_skip_rag_when_knowledge_operation_is_unresolved():
+    rt = _runtime()
+    state = {
+        "agent_id": "telecom_contas",
+        "user_text": "sim",
+        "sanitized_input": "sim",
+        "multi_intent_plan": {
+            "plan_id": "mip-1",
+            "operations": [
+                {"operation_id": "op-1", "intent": "cancel", "status": "completed"},
+                {"operation_id": "op-2", "intent": "account_knowledge", "status": "pending"},
+            ],
+        },
+        # op-1 está resolvida, op-2 ainda não possui resultado terminal.
+        "operation_results": {"op-1": {"status": "completed"}},
+        "mcp_results": [
+            {
+                "ok": True,
+                "result": {"execution_id": "wf-1", "workflow_name": "w1", "status": "COMPLETED"},
+                "metadata": {"workflow_status": "COMPLETED"},
+            }
+        ],
+    }
+
+    context, metadata = await rt._retrieve_rag_context(state)
+
+    assert rt.rag_service.calls
+    assert "Tarifação documentada" in context
+    assert metadata["status"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_completed_operation_results_prevent_stale_plan_from_counting_as_pending():
+    rt = _runtime()
+    state = {
+        "agent_id": "telecom_contas",
+        "user_text": "sim",
+        "sanitized_input": "sim",
+        "multi_intent_plan": {
+            "plan_id": "mip-1",
+            "operations": [
+                {"operation_id": "op-1", "intent": "cancel", "status": "pending"},
+                {"operation_id": "op-2", "intent": "invoice_query", "status": "pending"},
+                {"operation_id": "op-3", "intent": "account_knowledge", "status": "pending"},
+            ],
+        },
+        "operation_results": {
+            "op-1": {"status": "completed"},
+            "op-2": {"status": "completed"},
+            "op-3": {"status": "completed"},
+        },
+        "mcp_results": [
+            {
+                "ok": True,
+                "result": {"execution_id": "wf-1", "workflow_name": "w1", "status": "COMPLETED"},
+                "metadata": {"workflow_status": "COMPLETED"},
+            }
+        ],
+    }
+
+    context, metadata = await rt._retrieve_rag_context(state)
+
+    assert context == ""
+    assert not rt.rag_service.calls
+    assert metadata["status"] == "skipped"
+    assert metadata["reason"] == "all_turn_workflows_terminal"

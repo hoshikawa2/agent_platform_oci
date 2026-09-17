@@ -366,6 +366,119 @@ class AgentRuntimeMixin:
 
 
     @classmethod
+    def _mcp_workflows_terminal_for_rag(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+        """Detecta workflows do turno já encerrados para evitar retrieval pós-execução.
+
+        A regra é intencionalmente estreita: somente resultados que se identificam
+        como workflow (``workflow_status`` em metadata ou ``workflow_name``/
+        ``execution_id`` junto de ``status`` no payload) participam da decisão.
+        ``COMPLETED`` e ``FAILED`` são tratados igualmente como terminais para RAG.
+        Se não houver workflow detectado, o comportamento normal de RAG permanece.
+        """
+        statuses: list[str] = []
+        for item in mcp_results or []:
+            if not isinstance(item, dict):
+                continue
+
+            metadata = item.get("metadata")
+            if isinstance(metadata, Mapping):
+                workflow_status = str(metadata.get("workflow_status") or "").strip().upper()
+                if workflow_status:
+                    statuses.append(workflow_status)
+                    continue
+
+            result = item.get("result")
+            for mapping in cls._iter_mapping_values(result):
+                if not isinstance(mapping, Mapping):
+                    continue
+                identifies_workflow = bool(mapping.get("workflow_name") or mapping.get("execution_id"))
+                status = str(mapping.get("status") or "").strip().upper()
+                if identifies_workflow and status:
+                    statuses.append(status)
+                    break
+
+        if not statuses:
+            return False, []
+        terminal = {"COMPLETED", "FAILED"}
+        return all(status in terminal for status in statuses), statuses
+
+    @staticmethod
+    def _operation_result_is_terminal(result: Any) -> bool:
+        if not isinstance(result, Mapping):
+            return False
+        return str(result.get("status") or "").strip().lower() in {"completed", "failed"}
+
+    @classmethod
+    def _has_pending_operations_for_rag(cls, state: dict[str, Any]) -> bool:
+        """Retorna True quando a fila executável ainda possui trabalho não terminal.
+
+        ``pending_topics`` é a fonte de trabalho pendente. O ``multi_intent_plan``
+        persistido é contexto/read-only e não pode ser reinterpretado como fila,
+        pois seus status originais podem permanecer ``pending`` após a conclusão.
+        ``operation_results`` evita que um tópico residual já terminal conte de novo.
+        """
+        operation_results = state.get("operation_results") or {}
+        if not isinstance(operation_results, Mapping):
+            operation_results = {}
+
+        pending_topics = state.get("pending_topics")
+        if not isinstance(pending_topics, (list, tuple)):
+            return False
+        for topic in pending_topics:
+            if not isinstance(topic, Mapping):
+                continue
+            op_id = str(topic.get("operation_id") or "").strip()
+            stored = operation_results.get(op_id) if op_id else None
+            if cls._operation_result_is_terminal(stored):
+                continue
+            status = str(topic.get("status") or "pending").strip().lower()
+            if status not in {"completed", "failed"}:
+                return True
+        return False
+
+    @classmethod
+    def _has_unresolved_knowledge_operation_for_rag(cls, state: dict[str, Any]) -> bool:
+        """Detecta operação de knowledge ainda sem resultado terminal.
+
+        O framework aceita marcadores explícitos (``knowledge``/``requires_rag``)
+        e, para compatibilidade com os intents existentes, a convenção ``knowledge``
+        no nome do intent. Não há nomes de domínio ou de agentes hardcoded.
+        """
+        operation_results = state.get("operation_results") or {}
+        if not isinstance(operation_results, Mapping):
+            operation_results = {}
+
+        plan = state.get("multi_intent_plan")
+        if not isinstance(plan, Mapping):
+            route = state.get("route_decision")
+            if isinstance(route, Mapping):
+                metadata = route.get("metadata")
+                if isinstance(metadata, Mapping):
+                    plan = metadata.get("multi_intent_plan")
+        if not isinstance(plan, Mapping):
+            return False
+
+        for operation in plan.get("operations") or []:
+            if not isinstance(operation, Mapping):
+                continue
+            intent = str(operation.get("intent") or "").strip().lower()
+            is_knowledge = bool(
+                operation.get("knowledge")
+                or operation.get("requires_rag")
+                or "knowledge" in intent
+            )
+            if not is_knowledge:
+                continue
+            op_id = str(operation.get("operation_id") or "").strip()
+            stored = operation_results.get(op_id) if op_id else None
+            if cls._operation_result_is_terminal(stored):
+                continue
+            status = str(operation.get("status") or "pending").strip().lower()
+            if status not in {"completed", "failed"}:
+                return True
+        return False
+
+    @classmethod
     def _mcp_llm_composition_directive(cls, mcp_results: list[dict[str, Any]]) -> tuple[bool, list[str]]:
         """Lê instruções de composição declaradas por tools/workflows.
 
@@ -404,6 +517,33 @@ class AgentRuntimeMixin:
         mcp_results = state.get("mcp_results") or []
         requires_rag, rag_query_override = self._mcp_rag_directive(mcp_results)
         explicit_mcp_sufficient = self._mcp_rag_sufficient(mcp_results)
+        # Política de precedência para o skip pós-workflow:
+        # 1) trabalho pendente mantém o processamento normal;
+        # 2) requires_rag=true força retrieval;
+        # 3) knowledge ainda não resolvido força retrieval;
+        # 4) só então workflows COMPLETED/FAILED podem suprimir RAG.
+        has_pending_operations = self._has_pending_operations_for_rag(state)
+        has_unresolved_knowledge = self._has_unresolved_knowledge_operation_for_rag(state)
+        workflows_terminal, workflow_statuses = self._mcp_workflows_terminal_for_rag(mcp_results)
+        if (
+            not has_pending_operations
+            and not requires_rag
+            and not has_unresolved_knowledge
+            and workflows_terminal
+        ):
+            return "", {
+                "enabled": False,
+                "attempted": False,
+                "skipped": True,
+                "status": "skipped",
+                "reason": "all_turn_workflows_terminal",
+                "workflow_statuses": workflow_statuses,
+                "pending_operations": False,
+                "unresolved_knowledge_operation": False,
+                "required_by_tool": False,
+                "mcp_explicitly_sufficient": bool(explicit_mcp_sufficient),
+                "provider": getattr(settings, "RAG_PROVIDER", "standard"),
+            }
         if (
             not requires_rag
             and bool(getattr(settings, "SKIP_RAG_WHEN_MCP_SUFFICIENT", True))
@@ -2882,6 +3022,9 @@ class AgentRuntimeMixin:
     def _clear_active_interaction_context_on_route_shift(self, state: dict[str, Any]) -> bool:
         """Invalidate active conversational latches when routing leaves their owner.
 
+        A semantic `explicit_abandonment` uses the same live-latch cleanup as a
+        route shift, but preserves a distinct audit reason/action.
+
         This is deliberately generic.  It compares the current route decision with
         the owner recorded by a paused workflow; it does not inspect domain, tool,
         workflow or intent names.  Durable checkpoints/history remain intact.
@@ -2905,10 +3048,12 @@ class AgentRuntimeMixin:
         if not (intent_changed or agent_changed):
             return False
 
+        interruption = str(route_metadata.get("transaction_interruption") or "").strip().lower()
+        explicit_abandonment = interruption == "explicit_abandonment"
         state["last_interrupted_domain_workflow"] = {
             **pending_workflow,
             "status": "CANCELLED",
-            "reason": "intent_shift",
+            "reason": "explicit_abandonment" if explicit_abandonment else "intent_shift",
         }
         state["pending_domain_workflow"] = None
 
@@ -2931,7 +3076,11 @@ class AgentRuntimeMixin:
         state["transaction_pre_validation"] = None
         state["pending_tool_clarification"] = None
         state["tool_policy_result"] = {
-            "action": "cleared_by_intent_shift",
+            "action": (
+                "cleared_by_explicit_abandonment"
+                if explicit_abandonment
+                else "cleared_by_intent_shift"
+            ),
             "workflow_execution_id": pending_workflow.get("execution_id"),
         }
         state["mcp_results"] = []
@@ -2964,17 +3113,21 @@ class AgentRuntimeMixin:
         self._normalize_transaction_lifecycle(state)
 
         # Uma transação em coleta/confirmação não pode aprisionar a sessão. O
-        # EnterpriseRouter é a única fonte para interrupção por mudança de intent.
-        # Não existe interpretação lexical de desistência no runtime: mudou a
-        # intent, a transação anterior é encerrada e seus latches são limpos.
+        # EnterpriseRouter é a única fonte para interrupção semântica: SHIFT ou
+        # ABANDON. Não existe interpretação lexical de desistência no runtime; o
+        # runtime apenas aplica a decisão do router e limpa os latches da ação.
         active_before_interruption = self._active_transaction(state)
         interruption = str(route_meta.get("transaction_interruption") or "").strip().lower()
-        if active_before_interruption and interruption == "intent_shift":
+        if active_before_interruption and interruption in {"intent_shift", "explicit_abandonment"}:
             interrupted_tool = active_before_interruption.get("tool_name")
             self._finish_active_transaction(state, "CANCELLED")
             state["transaction_pre_validation"] = None
             state["tool_policy_result"] = {
-                "action": "cancelled_by_intent_shift",
+                "action": (
+                    "cancelled_by_explicit_abandonment"
+                    if interruption == "explicit_abandonment"
+                    else "cancelled_by_intent_shift"
+                ),
                 "tool_name": interrupted_tool,
             }
 

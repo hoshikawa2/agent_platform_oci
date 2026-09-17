@@ -6,10 +6,12 @@ import re
 import unicodedata
 from typing import Any
 
-from .config_loader import load_intents, load_router_defaults, load_state_policies
+from .config_loader import load_intents, load_multi_intent_config, load_router_defaults, load_state_policies
+from .multi_intent import MultiIntentPlanner
 from .continuity import SemanticRouteContinuity
 from .models import IntentDefinition, RouteDecision, RouterStatePolicy
 from agent_framework.llm.structured_output import parse_json_object
+from agent_framework.mcp.tool_policy import ToolPolicyRegistry
 from agent_framework.runtime.transaction_parameters import extract_transaction_parameters, parse_transaction_confirmation
 from agent_framework.workflows.input_contract import (
     expected_input_reprompt,
@@ -44,6 +46,16 @@ class EnterpriseRouter:
         self.intents: list[IntentDefinition] = load_intents(self.config_path)
         self.state_policies: list[RouterStatePolicy] = load_state_policies(self.config_path)
         self.defaults = load_router_defaults(self.config_path)
+        tool_policies = ToolPolicyRegistry(getattr(settings, "TOOL_POLICIES_PATH", None))
+        transactional_tools = {
+            name for name, policy in tool_policies.policies.items()
+            if policy.operation_type == "transactional" or policy.require_confirmation
+        }
+        self.multi_intent_planner = MultiIntentPlanner(
+            self.intents,
+            load_multi_intent_config(self.config_path),
+            transactional_tools=transactional_tools,
+        )
         self.fallback_agent = self.defaults.get("fallback_agent", "billing_agent")
         self.intent_shift_threshold = float(self.defaults.get("confidence_threshold", 0.7))
         self.transaction_confirmation = dict(self.defaults.get("transaction_confirmation") or {})
@@ -337,7 +349,19 @@ class EnterpriseRouter:
         # Prefer the configured LLM router when available; deterministic routing
         # remains the fallback for deployments that disable semantic routing.
         if self.enable_llm_router and self.llm is not None:
-            decision = await self._route_by_llm(contextual_input, reentry_state)
+            try:
+                decision = await self._route_by_llm(contextual_input, reentry_state)
+            except Exception as exc:
+                logger.exception("Falha no roteamento LLM durante reentrada contextual; usando fallback: %s", exc)
+                decision = self._route_by_keyword(contextual_input) or RouteDecision(
+                    route=self.fallback_agent,
+                    agent=self.fallback_agent,
+                    intent="fallback",
+                    confidence=0.1,
+                    reason="Falha no classificador semântico durante reentrada contextual; usando fallback configurado.",
+                    method="fallback",
+                    metadata={"contextual_reentry_llm_failed": True},
+                )
         else:
             decision = self._route_by_keyword(contextual_input) or RouteDecision(
                 route=self.fallback_agent,
@@ -367,6 +391,15 @@ class EnterpriseRouter:
         explicit_next_state = state.get("next_state")
         tx_status_at_route = str(state.get("transaction_status") or "").strip().upper()
         terminal_tx = tx_status_at_route in {"COMPLETED", "FAILED", "CANCELLED", "BLOCKED", "OUT_OF_SCOPE"}
+        operational_context_reset = bool(state.get("operational_context_reset"))
+        if terminal_tx:
+            # Same conversation/session, new interaction: a terminal workflow may
+            # remain in durable history, but it must not own the next turn. This is
+            # also a compatibility guard for checkpoints created before terminal
+            # workflow tombstones were persisted.
+            state["pending_domain_workflow"] = None
+            state["pending_tool_clarification"] = None
+            state["workflow_input_reprompt"] = None
 
         # Um status transacional terminal é a fonte de verdade sobre o latch. Se
         # um checkpoint legado/parcial ainda trouxer ``next_state`` da transação
@@ -374,7 +407,9 @@ class EnterpriseRouter:
         # de estado. O workflow_state da sessão continua disponível porque pode
         # representar um workflow conversacional independente da transação já
         # encerrada.
-        if terminal_tx and explicit_next_state:
+        if operational_context_reset:
+            current_state = None
+        elif terminal_tx and explicit_next_state:
             current_state = session.get("metadata", {}).get("workflow_state")
         else:
             current_state = explicit_next_state or session.get("metadata", {}).get("workflow_state")
@@ -423,6 +458,26 @@ class EnterpriseRouter:
                 )
                 await self._emit(decision, state)
                 return decision
+
+            # An explicit human-handoff request is a global conversation control,
+            # not an intent shift and not a value of the paused workflow contract.
+            # It must therefore preempt the workflow semantic classifier *after*
+            # deterministic expected_input matching (so "sim"/"não" keep their
+            # absolute contract precedence) but *before* unmatched semantic resume.
+            # CONTINUE/ROUTE/END_SESSION decisions from this probe are ignored here;
+            # the workflow remains authoritative for every non-handoff message.
+            global_control = await self.continuity.evaluate_global_control(
+                state, intents=self.intents, allowed_controls={"HUMAN_HANDOFF"}
+            )
+            if global_control is not None:
+                global_control.metadata = {
+                    **dict(global_control.metadata or {}),
+                    "interrupted_workflow_name": pending_workflow.get("workflow_name"),
+                    "interrupted_workflow_execution_id": pending_workflow.get("execution_id"),
+                    "workflow_interruption": "human_handoff",
+                }
+                await self._emit(global_control, state)
+                return global_control
 
             # Enumerated contracts retain workflow ownership for unmatched
             # replies. A workflow may explicitly opt in to semantic handling:
@@ -684,6 +739,49 @@ class EnterpriseRouter:
         # intent/agente ativos devem prevalecer sobre a route stickiness. Isso
         # evita manter um fluxo read-only (por exemplo, tracking) quando o usuário
         # muda para uma ação transacional (por exemplo, devolução).
+        planner = getattr(self, "multi_intent_planner", None)
+        multi_intent_plan = planner.plan(str(text)) if planner is not None else None
+        multi_intent_method = "keyword"
+        if (
+            planner is not None
+            and planner.looks_compound(str(text))
+            and planner.needs_semantic_fallback(multi_intent_plan)
+            and self.enable_llm_router
+            and self.llm is not None
+        ):
+            try:
+                semantic_plan = await self._plan_multi_intent_by_llm(str(text), state)
+                if semantic_plan is not None:
+                    multi_intent_plan = semantic_plan
+                    multi_intent_method = "llm"
+            except Exception as exc:
+                # O fallback semântico é fail-safe: um plano determinístico
+                # parcial continua válido se o provedor estiver indisponível.
+                logger.exception("Falha no classificador LLM multi-intent: %s", exc)
+        if multi_intent_plan is not None:
+            primary = multi_intent_plan.operations[0]
+            decision = RouteDecision(
+                route=primary.agent,
+                agent=primary.agent,
+                intent=primary.intent,
+                confidence=1.0,
+                reason=(
+                    "Plano multi-intent classificado semanticamente e validado contra intents configuradas."
+                    if multi_intent_method == "llm"
+                    else "Plano multi-intent validado a partir de intents configuradas."
+                ),
+                method=multi_intent_method,
+                metadata={
+                    "multi_intent": True,
+                    "multi_intent_classifier": multi_intent_method,
+                    "multi_intent_plan": multi_intent_plan.model_dump(mode="json"),
+                },
+                domain=primary.domain,
+                mcp_tools=primary.tools,
+            )
+            await self._emit(decision, state)
+            return decision
+
         keyword_candidate = self._route_by_keyword(text)
         active_agent = str(state.get("active_agent") or "").strip()
         previous = state.get("route_decision") or {}
@@ -708,7 +806,7 @@ class EnterpriseRouter:
         # anterior não pode capturar uma nova mensagem depois de COMPLETED,
         # FAILED, CANCELLED, BLOCKED ou OUT_OF_SCOPE. Nesses casos a mensagem
         # volta ao roteamento normal (keyword/LLM/fallback).
-        if not terminal_tx:
+        if not terminal_tx and not operational_context_reset:
             decision = await self.continuity.evaluate(state, intents=self.intents)
             if decision:
                 await self._emit(decision, state)
@@ -756,7 +854,33 @@ class EnterpriseRouter:
         """
         tx_status = str(state.get("transaction_status") or "").strip().upper()
         if tx_status == "AWAITING_CONFIRMATION":
-            confirmation = parse_transaction_confirmation(text)
+            active = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+            previous = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+            owner_intent = str(active.get("started_from_intent") or previous.get("intent") or state.get("intent") or "")
+            compound_plan = self.multi_intent_planner.plan_confirmation_secondary(
+                text, primary_intent=owner_intent, primary_agent=state_decision.agent
+            )
+            remainder = self.multi_intent_planner.confirmation_remainder(text)
+            if (
+                remainder
+                and self.multi_intent_planner.needs_semantic_fallback(compound_plan)
+                and self.enable_llm_router
+                and self.llm is not None
+            ):
+                try:
+                    semantic_plan = await self._plan_multi_intent_by_llm(
+                        remainder,
+                        state,
+                        confirmation_primary=(owner_intent, state_decision.agent),
+                    )
+                    if semantic_plan is not None:
+                        compound_plan = semantic_plan
+                except Exception as exc:
+                    logger.exception(
+                        "Falha no classificador LLM multi-intent após confirmação: %s",
+                        exc,
+                    )
+            confirmation = "confirm" if compound_plan is not None else parse_transaction_confirmation(text)
             source = "deterministic"
             classifier_output = None
             raw_classifier = None
@@ -785,6 +909,12 @@ class EnterpriseRouter:
                 "transaction_confirmation_decision": confirmation,
                 "transaction_confirmation_source": source,
             }
+            if compound_plan is not None:
+                state_decision.metadata.update({
+                    "multi_intent": True,
+                    "multi_intent_confirmation": True,
+                    "multi_intent_plan": compound_plan.model_dump(mode="json"),
+                })
             if source == "semantic":
                 state_decision.metadata.update({
                     "transaction_confirmation_classifier_output": classifier_output,
@@ -863,7 +993,8 @@ class EnterpriseRouter:
             # a perfectly valid parameter answer (for example an order identifier
             # utterance containing the generic word "pedido").  When semantic
             # classification is available, use the configured route only as a
-            # candidate hint and let the LLM decide CONTINUE vs SHIFT.  This avoids
+            # candidate hint and let the LLM decide CONTINUE, SHIFT or ABANDON.
+            # This avoids
             # both failure modes: parameter extraction cannot hide a real new goal,
             # and a broad keyword cannot steal a legitimate parameter turn.
             if not (self.enable_llm_router and self.llm is not None):
@@ -912,7 +1043,11 @@ class EnterpriseRouter:
             "Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
             "A extração dos parâmetros pendentes já foi tentada antes desta etapa e não consumiu o turno. "
             "Se ainda assim a mensagem for apenas uma resposta referencial/valor/nome ao dado pendente, retorne CONTINUE. "
-            "Se o usuário passou claramente a perseguir outro objetivo, retorne SHIFT e a nova intent permitida. "
+            "Se o usuário passou claramente a perseguir outro objetivo sem desistir explicitamente da ação atual, "
+            "retorne SHIFT e a nova intent permitida. "
+            "Se o usuário desistiu explicitamente da ação/transação atual, retorne ABANDON. "
+            "Quando ABANDON vier acompanhado de um novo objetivo, também informe intent e agent desse novo objetivo. "
+            "Quando for apenas abandono sem novo objetivo, intent e agent podem ser nulos. "
             "Retorne somente JSON válido com decision, intent, agent, confidence, reason."
         )
         user = {
@@ -938,16 +1073,61 @@ class EnterpriseRouter:
             logger.warning("Falha ao avaliar mudança semântica de intent transacional via LLM: %s", exc)
             return None
 
-        if str(data.get("decision") or "").strip().upper() != "SHIFT":
+        decision_kind = str(data.get("decision") or "").strip().upper()
+        if decision_kind not in {"SHIFT", "ABANDON"}:
             return None
         confidence = float(data.get("confidence") or 0.0)
         if confidence < self.intent_shift_threshold:
             return None
 
         intent_name = str(data.get("intent") or "").strip()
+        agent = str(data.get("agent") or "").strip()
+
+        if decision_kind == "ABANDON":
+            # ABANDON encerra explicitamente apenas a interação/transação ativa.
+            # Pending topics de outros objetivos não são apagados aqui. Quando a
+            # desistência também traz um novo objetivo, roteamos diretamente para
+            # ele; em abandono puro, usamos um intent de estado sem tools para que
+            # o agente atual apenas confirme o encerramento, sem rearmar a ação.
+            if intent_name:
+                agent = agent or str(self._agent_for_intent(intent_name) or "").strip()
+                if not agent:
+                    return None
+                domain = self._domain_for_intent(intent_name)
+                mcp_tools = self._tools_for_intent(intent_name)
+            else:
+                agent = str(state_decision.agent or state_decision.route or "").strip()
+                if not agent:
+                    return None
+                intent_name = "state:TRANSACTION_ABANDONED"
+                domain = None
+                mcp_tools = []
+
+            return RouteDecision(
+                route=agent,
+                agent=agent,
+                intent=intent_name,
+                confidence=confidence,
+                reason=str(data.get("reason") or "Abandono explícito da transação ativa."),
+                method="llm",
+                metadata={
+                    "transaction_interruption": "explicit_abandonment",
+                    "interrupted_state": state_decision.next_state,
+                    "interrupted_agent": state_decision.agent,
+                    "interrupted_intent": started_intent or previous_intent,
+                    "interruption_source": "semantic_classifier",
+                    "configured_routing_hint": (
+                        configured_candidate.intent if configured_candidate is not None else None
+                    ),
+                    "raw_llm_answer": answer[:1000],
+                },
+                domain=domain,
+                mcp_tools=mcp_tools,
+            )
+
         if not intent_name or intent_name == (started_intent or previous_intent):
             return None
-        agent = str(data.get("agent") or self._agent_for_intent(intent_name) or "").strip()
+        agent = agent or str(self._agent_for_intent(intent_name) or "").strip()
         if not agent:
             return None
 
@@ -1086,7 +1266,12 @@ class EnterpriseRouter:
                 kw_normalized = kw.casefold()
                 strategy = None
                 # Exato primeiro para preservar o comportamento existente.
-                if kw_normalized in normalized:
+                keyword_tokens = self._keyword_tokens(kw)
+                text_tokens = self._keyword_tokens(text)
+                if (
+                    (len(keyword_tokens) == 1 and keyword_tokens[0] in text_tokens)
+                    or (len(keyword_tokens) > 1 and kw_normalized in normalized)
+                ):
                     strategy = "exact"
                 elif self._ordered_keyword_match(kw, text):
                     strategy = "ordered_tokens"
@@ -1130,6 +1315,76 @@ class EnterpriseRouter:
             mcp_tools=intent.mcp_tools,
         )
 
+    async def _plan_multi_intent_by_llm(
+        self,
+        text: str,
+        state: dict[str, Any],
+        *,
+        confirmation_primary: tuple[str, str] | None = None,
+    ):
+        """Classify compound requests and validate them through the planner.
+
+        The model returns only intent names and source fragments. Agent, domain
+        and tool ownership always come from the loaded routing catalog.
+        """
+        allowed = [intent for intent in self.intents if intent.enabled]
+        allowed_payload = [
+            {
+                "intent": intent.name,
+                "description": intent.description,
+                "examples": intent.examples[:3],
+            }
+            for intent in allowed
+        ]
+        secondary_only = confirmation_primary is not None
+        system = (
+            "Você é um classificador multi-intent. Identifique objetivos independentes "
+            "expressos explicitamente pelo usuário. Não execute ações e não responda ao "
+            "usuário. Use somente nomes presentes em allowed_intents. Para um pedido "
+            "explícito que não pertença a nenhuma intent permitida, use intent=null e "
+            "unsupported=true. Não transforme detalhes, parâmetros ou objetos de uma "
+            "mesma solicitação em novas intents. "
+            + (
+                "A confirmação da transação já foi consumida; classifique somente o pedido "
+                "secundário fornecido e retorne exatamente uma operação. "
+                if secondary_only else
+                "Retorne pelo menos duas operações somente quando houver múltiplos objetivos. "
+            )
+            + "Retorne somente JSON válido no formato: "
+            '{"confidence":0.0,"operations":[{"intent":"nome_ou_null",'
+            '"source_text":"trecho literal","unsupported":false}]}.'
+        )
+        active_tx = state.get("active_transaction") if isinstance(state.get("active_transaction"), dict) else {}
+        payload = {
+            "message": text,
+            "allowed_intents": allowed_payload,
+            "secondary_only": secondary_only,
+            "transaction_context": ({
+                "status": state.get("transaction_status"),
+                "started_from_intent": active_tx.get("started_from_intent"),
+                "tool_name": active_tx.get("tool_name"),
+            } if active_tx else None),
+        }
+        answer = await self.llm.ainvoke(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.0,
+            max_tokens=768,
+            profile_name="router",
+            component_name="router.multi_intent",
+            generation_name="llm.router.multi_intent",
+        )
+        data = self._parse_json(answer)
+        if confirmation_primary is not None:
+            return self.multi_intent_planner.plan_confirmation_from_semantic(
+                data,
+                primary_intent=confirmation_primary[0],
+                primary_agent=confirmation_primary[1],
+            )
+        return self.multi_intent_planner.plan_from_semantic(data)
+
     async def _route_by_llm(self, text: str, state: dict[str, Any]) -> RouteDecision:
         allowed = [i for i in self.intents if i.enabled]
         allowed_payload = [
@@ -1163,7 +1418,7 @@ class EnterpriseRouter:
         user = {
             "message": text,
             "allowed_intents": allowed_payload,
-            "session_context": (state.get("context") or {}).get("session", {}),
+            "session_context": ({} if state.get("operational_context_reset") else (state.get("context") or {}).get("session", {})),
             "transaction_context": transaction_context,
         }
         answer = await self.llm.ainvoke(

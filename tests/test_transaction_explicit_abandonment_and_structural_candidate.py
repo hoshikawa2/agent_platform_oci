@@ -13,6 +13,14 @@ class _RouterLLM:
         prompt = messages[-1]["content"] if isinstance(messages[-1], dict) else str(messages[-1])
         if kwargs.get("profile_name") == "transaction_parameter_extraction" or "pending_parameters:" in prompt:
             return json.dumps({"subject": None, "valor": None})
+        if "nao quero mais cancelar" in prompt.lower() or "não quero mais cancelar" in prompt.lower():
+            return json.dumps({
+                "decision": "ABANDON",
+                "intent": None,
+                "agent": None,
+                "confidence": 0.99,
+                "reason": "abandono explícito sem novo objetivo",
+            })
         if "esquece" in prompt.lower():
             return json.dumps({
                 "decision": "ABANDON",
@@ -101,7 +109,18 @@ async def test_generic_shift_does_not_interrupt_active_transaction(tmp_path):
 async def test_explicit_abandonment_can_leave_active_transaction(tmp_path):
     decision = await _router(tmp_path).route(_active_state("esquece isso, quero ver minha fatura"))
     assert decision.intent == "billing_invoice_explanation"
+    assert decision.agent == "billing_agent"
     assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+
+
+@pytest.mark.asyncio
+async def test_explicit_abandonment_without_new_goal_does_not_rearm_tool(tmp_path):
+    decision = await _router(tmp_path).route(_active_state("nao quero mais cancelar"))
+    assert decision.intent == "state:TRANSACTION_ABANDONED"
+    assert decision.agent == "contestacao_agent"
+    assert decision.mcp_tools == []
+    assert decision.metadata["transaction_interruption"] == "explicit_abandonment"
+    assert decision.metadata["interrupted_intent"] == "contas_contestation"
 
 
 class _PolicyRouter:
@@ -296,3 +315,42 @@ async def test_initially_missing_subject_clear_still_allows_unique_anchored_cand
     assert rec["candidate_provenance"] == {
         "subject": "unique_anchored_evidence_block"
     }
+
+
+class _AbandonRuntime(AgentRuntimeMixin):
+    def __init__(self):
+        self.tool_router = None
+        self.llm = None
+
+
+@pytest.mark.asyncio
+async def test_runtime_abandon_cancels_only_active_transaction_without_rearming_tool():
+    runtime = _AbandonRuntime()
+    state = {
+        "sanitized_input": "nao quero mais cancelar",
+        "route_decision": {
+            "intent": "state:TRANSACTION_ABANDONED",
+            "agent": "orders_agent",
+            "metadata": {"transaction_interruption": "explicit_abandonment"},
+        },
+        "transaction_status": "COLLECTING_PARAMETERS",
+        "missing_parameters": ["order_id"],
+        "active_transaction": {
+            "tool_name": "cancelar_pedido",
+            "arguments": {},
+            "status": "COLLECTING_PARAMETERS",
+            "started_from_intent": "retail_order_cancel",
+        },
+        "selected_tool_call": {"tool_name": "cancelar_pedido", "arguments": {}},
+        "pending_topics": [{"operation_id": "op-x", "intent": "other_pending_intent"}],
+    }
+
+    results = await runtime.execute_tools_for_intent(state, tools=[])
+
+    assert results == []
+    assert state["transaction_status"] == "CANCELLED"
+    assert state["active_transaction"] is None
+    assert state["selected_tool_call"] == {}
+    assert state["tool_policy_result"]["action"] == "cancelled_by_explicit_abandonment"
+    # ABANDON encerra a ação ativa; não apaga outras ações pendentes por efeito colateral.
+    assert state["pending_topics"] == [{"operation_id": "op-x", "intent": "other_pending_intent"}]

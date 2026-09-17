@@ -448,6 +448,13 @@ class AgentWorkflow:
                     if (decision.metadata or {}).get("multi_intent_plan")
                     else list(state.get("pending_topics") or [])
                 ),
+                # Durable correlation for the primary operation. route_decision
+                # is replaced by state routing on confirmation/resume turns.
+                "multi_intent_plan": (
+                    (decision.metadata or {}).get("multi_intent_plan")
+                    or state.get("multi_intent_plan")
+                    or {}
+                ),
             }
 
     async def billing_agent(self, state):
@@ -605,6 +612,7 @@ class AgentWorkflow:
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
                 "agent_responses": drained.agent_responses,
+                "operation_results": drained.operation_results,
                 "mcp_results": drained.mcp_results,
                 "rag_results": drained.rag_results,
                 "output_guardrails_already_applied": False,
@@ -688,6 +696,7 @@ class AgentWorkflow:
                 "pending_topics": drained.pending_topics,
                 "handled_topics": drained.handled_topics,
                 "agent_responses": drained.agent_responses,
+                "operation_results": drained.operation_results,
                 "mcp_results": drained.mcp_results,
                 "rag_results": drained.rag_results,
                 **drained.state_patch,

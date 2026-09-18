@@ -53,6 +53,7 @@ src/agent_framework/guardrails/__init__.py
 src/agent_framework/guardrails/base.py
 src/agent_framework/guardrails/config_loader.py
 src/agent_framework/guardrails/custom_rails.py
+src/agent_framework/guardrails/dlex_sanitizer.py
 src/agent_framework/guardrails/executor.py
 src/agent_framework/guardrails/framework_llm_client.py
 src/agent_framework/guardrails/langgraph_adapters.py

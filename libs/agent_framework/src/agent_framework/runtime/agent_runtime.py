@@ -3113,21 +3113,33 @@ class AgentRuntimeMixin:
         self._normalize_transaction_lifecycle(state)
 
         # Uma transação em coleta/confirmação não pode aprisionar a sessão. O
-        # EnterpriseRouter é a única fonte para interrupção semântica: SHIFT ou
-        # ABANDON. Não existe interpretação lexical de desistência no runtime; o
-        # runtime apenas aplica a decisão do router e limpa os latches da ação.
+        # EnterpriseRouter é a única fonte para interrupção semântica: SHIFT,
+        # ABANDON ou replacement da instância transacional na mesma intent. Não
+        # existe interpretação lexical de desistência no runtime; o runtime apenas
+        # aplica a decisão do router e limpa os latches da ação.
         active_before_interruption = self._active_transaction(state)
         interruption = str(route_meta.get("transaction_interruption") or "").strip().lower()
-        if active_before_interruption and interruption in {"intent_shift", "explicit_abandonment"}:
+        if active_before_interruption and interruption in {
+            "intent_shift",
+            "explicit_abandonment",
+            "same_intent_replacement",
+        }:
             interrupted_tool = active_before_interruption.get("tool_name")
             self._finish_active_transaction(state, "CANCELLED")
             state["transaction_pre_validation"] = None
+            # Generic framework boundary: consumers do not need to know why the
+            # previous transactional context was invalidated.  This deliberately
+            # avoids leaking same_intent_replacement (or any other interruption
+            # subtype) into domain agents/workflows.
+            state["operational_context_reset"] = True
+            if interruption == "explicit_abandonment":
+                action = "cancelled_by_explicit_abandonment"
+            elif interruption == "same_intent_replacement":
+                action = "cancelled_by_same_intent_replacement"
+            else:
+                action = "cancelled_by_intent_shift"
             state["tool_policy_result"] = {
-                "action": (
-                    "cancelled_by_explicit_abandonment"
-                    if interruption == "explicit_abandonment"
-                    else "cancelled_by_intent_shift"
-                ),
+                "action": action,
                 "tool_name": interrupted_tool,
             }
 

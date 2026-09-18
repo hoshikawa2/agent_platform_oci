@@ -25,6 +25,7 @@ from .calibrated.output_sanitization import mascarar_pii_output, sanitizar_toxic
 from .calibrated.rules.pinj_patterns import _PINJ_PATTERNS, is_obvious_injection
 from .calibrated.rules.tox_blocklist import _EXPLICIT_TERMS, _THREAT_PATTERNS, is_obvious_toxic
 from .framework_llm_client import classify_with_framework_llm
+from .dlex_sanitizer import sanitize_dlex_output
 from agent_framework.workflows.input_contract import has_meaningful_unmatched_policy, has_semantic_classifier
 
 
@@ -323,10 +324,28 @@ class CoherenceRail(Guardrail):
                     "data": out,
                 },
             )
-        out = await classify_with_framework_llm(
-            _llm(ctx), "COER", {"text": text or "", "context": ctx},
-            profile_name="guardrail", component_name="guardrail.coer", generation_name="guardrail.coer",
-        )
+        try:
+            out = await classify_with_framework_llm(
+                _llm(ctx), "COER", {"text": text or "", "context": ctx},
+                profile_name="guardrail", component_name="guardrail.coer", generation_name="guardrail.coer",
+            )
+        except Exception as exc:
+            # COER is a conversational-coherence rail, not a security boundary.
+            # If its semantic classifier/provider is unavailable, the graph must
+            # continue and let the normal router/workflow clarification logic own
+            # the turn instead of surfacing an infrastructure exception.
+            return RailDecision(
+                code=self.code,
+                allowed=True,
+                reason="Classificador de coerência indisponível; continuidade delegada ao runtime",
+                sanitized_text=text,
+                metadata={
+                    "mechanism": "infrastructure_fail_open",
+                    "calibrated": True,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                },
+            )
         return RailDecision(
             code=self.code, allowed=bool(out.get("allowed", True)),
             reason=str(out.get("reason") or out.get("label") or "COER avaliado"),
@@ -344,6 +363,9 @@ class LoopRail(Guardrail):
             "COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION", "EXECUTING",
             "PAUSED", "WAITING_INPUT",
         }
+        # A queued multi-intent transaction may be promoted immediately after
+        # the previous one completed. Prefer the newest live MCP evidence over
+        # a stale top-level COMPLETED status left by checkpoint merge order.
         for result in reversed(list(ctx.get("mcp_results") or [])):
             if isinstance(result, dict):
                 result_status = str(result.get("transaction_status") or "").strip().upper()
@@ -359,6 +381,11 @@ class LoopRail(Guardrail):
     async def evaluate(self, text: str, context: dict[str, Any]) -> RailDecision:
         ctx = _ctx(context)
         transaction_status = self._transaction_status(ctx)
+
+        # Parameter values and short confirmations may legitimately repeat in
+        # the same session. VLOOP must not consume input owned by the active
+        # transaction contract; extraction/confirmation remains responsible
+        # for deciding whether the value is valid.
         if transaction_status in {"COLLECTING_PARAMETERS", "AWAITING_CONFIRMATION"}:
             return RailDecision(
                 code=self.code,
@@ -373,6 +400,7 @@ class LoopRail(Guardrail):
                     "calibrated": True,
                 },
             )
+
         normalized = _lower(text).strip()
         history = [_lower(h).strip() for h in ctx.get("history_texts", [])[-6:]]
         repeated = history.count(normalized) >= 2 if normalized else False
@@ -805,11 +833,64 @@ class DataLeakageOutputRail(Guardrail):
                 }
                 protocol_authorization_verified = True
 
+        # DLEX_OUT is permissive for recoverable leakage: when classification
+        # rejects the candidate, mask only generic sensitive values and re-run
+        # the same classifier. The agent/domain remains unaware of this detail.
+        # If sanitization cannot change the candidate, or the sanitized version
+        # is still unsafe, the original blocking behavior is preserved.
+        dlex_sanitized_text = None
+        dlex_findings: list[dict[str, Any]] = []
+        sanitization_recheck = None
+        original_dlex_result = dict(out)
+        if not bool(out.get("allowed", True)):
+            policy = dict(getattr(self, "_guardrail_policy", {}) or {})
+            candidate_sanitized, dlex_findings = sanitize_dlex_output(
+                original_text,
+                policy=policy,
+                exclude_values=matched_expected_protocols,
+            )
+            if candidate_sanitized != original_text:
+                sanitized_classifier_text = candidate_sanitized
+                sanitized_classifier_ctx: dict[str, Any] = ctx
+                if matched_expected_protocols:
+                    sanitized_classifier_text = _mask_authorized_protocol_values(
+                        sanitized_classifier_text, matched_expected_protocols
+                    )
+                    sanitized_classifier_ctx = _mask_authorized_protocol_values(
+                        ctx, matched_expected_protocols
+                    )
+                sanitization_recheck = await classify_with_framework_llm(
+                    _llm(ctx),
+                    "DLEX_OUT",
+                    {"text": sanitized_classifier_text, "context": sanitized_classifier_ctx},
+                    profile_name="grl",
+                    component_name="guardrail.dlex_out.sanitization_recheck",
+                    generation_name="guardrail.dlex_out.sanitization_recheck",
+                )
+                if bool(sanitization_recheck.get("allowed", True)):
+                    dlex_sanitized_text = candidate_sanitized
+                    out = {
+                        "allowed": True,
+                        "label": "SANITIZED",
+                        "reason": "DLEX_OUT sanitizado e revalidado com segurança",
+                        "original_reason": original_dlex_result.get("reason"),
+                    }
+
         metadata = {
             "mechanism": "llm_rail",
             "data": out,
             "calibrated": True,
         }
+        if dlex_findings:
+            metadata.update(
+                {
+                    "action": "sanitize" if dlex_sanitized_text is not None else "block",
+                    "sanitized": dlex_sanitized_text is not None,
+                    "findings": dlex_findings,
+                    "original_decision": original_dlex_result,
+                    "sanitization_recheck": sanitization_recheck,
+                }
+            )
         if matched_expected_protocols:
             metadata.update(
                 {
@@ -823,7 +904,7 @@ class DataLeakageOutputRail(Guardrail):
             code=self.code,
             allowed=bool(out.get("allowed", True)),
             reason=str(out.get("reason") or out.get("label") or "DLEX_OUT avaliado"),
-            sanitized_text=text,
+            sanitized_text=dlex_sanitized_text,
             metadata=metadata,
         )
 

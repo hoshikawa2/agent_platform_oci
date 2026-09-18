@@ -1218,7 +1218,17 @@ class EnterpriseRouter:
                 or (started_intent and configured_candidate.intent != started_intent)
                 or (previous_intent and not previous_intent.startswith("state:") and configured_candidate.intent != previous_intent)
             )
-            if not different:
+
+            # A configured candidate that resolves to the same intent/agent is not
+            # sufficient to conclude that the active transaction continues.  The
+            # user may be starting a *new instance of the same intent* with a
+            # different transactional target (for example cancelling TIM Fashion
+            # while Tamboro is awaiting confirmation).  In LLM mode keep the
+            # candidate only as a semantic hint and let the transaction classifier
+            # decide CONTINUE/REPLACE/ABANDON.  Without semantic classification we
+            # retain the legacy state lock because guessing replacement from a
+            # keyword alone would be unsafe.
+            if not different and not (self.enable_llm_router and self.llm is not None):
                 return None
 
             # During parameter collection, a configured keyword may be present in
@@ -1259,6 +1269,11 @@ class EnterpriseRouter:
             "current_intent": started_intent or previous_intent,
             "transaction_status": state.get("transaction_status"),
             "tool_name": active_tx.get("tool_name"),
+            # Structured arguments are part of the identity of the active
+            # transaction.  They let the semantic classifier distinguish a new
+            # instance of the same intent from a continuation without relying on
+            # domain keywords or hard-coded product names.
+            "active_arguments": dict(active_tx.get("arguments") or {}),
             "missing_parameters": list(state.get("missing_parameters") or []),
             "configured_candidate": (
                 {
@@ -1285,11 +1300,15 @@ class EnterpriseRouter:
             )
         else:
             system = (
-                "Você decide apenas se o turno atual continua a transação ativa ou muda de intenção. "
-                "Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
+                "Você decide apenas se o turno atual continua a transação ativa, substitui a instância transacional ativa, "
+                "ou muda de intenção. Use o significado da mensagem e o contexto transacional; não use palavras isoladas como regra. "
                 "A extração dos parâmetros pendentes já foi tentada antes desta etapa e não consumiu o turno. "
                 "Se ainda assim a mensagem for apenas uma resposta referencial/valor/nome ao dado pendente, retorne CONTINUE. "
-                "Se o usuário passou claramente a perseguir outro objetivo sem desistir explicitamente da ação atual, "
+                "Se o usuário continua com a MESMA intent, mas claramente inicia outra instância da operação com alvo/argumentos diferentes, "
+                "retorne REPLACE e informe a mesma intent e agent. REPLACE significa substituir a transação ativa; não significa estado novo. "
+                "Não use REPLACE quando o usuário apenas complementa/adiciona itens à mesma operação (por exemplo 'também', 'além desses'), "
+                "nem quando apenas reformula ou confirma o mesmo alvo: nesses casos retorne CONTINUE. "
+                "Se o usuário passou claramente a perseguir outro objetivo/intent sem desistir explicitamente da ação atual, "
                 "retorne SHIFT e a nova intent permitida. "
                 "Se o usuário desistiu explicitamente da ação/transação atual, retorne ABANDON. "
                 "Quando ABANDON vier acompanhado de um novo objetivo, também informe intent e agent desse novo objetivo. "
@@ -1323,7 +1342,7 @@ class EnterpriseRouter:
         if abandon_only:
             if decision_kind != "ABANDON":
                 return None
-        elif decision_kind not in {"SHIFT", "ABANDON"}:
+        elif decision_kind not in {"SHIFT", "REPLACE", "ABANDON"}:
             return None
         confidence = float(data.get("confidence") or 0.0)
         if confidence < self.intent_shift_threshold:
@@ -1374,7 +1393,42 @@ class EnterpriseRouter:
                 mcp_tools=mcp_tools,
             )
 
-        if not intent_name or intent_name == (started_intent or previous_intent):
+        current_intent = started_intent or previous_intent
+        if not intent_name:
+            return None
+
+        # Same-intent replacement is a transaction lifecycle event, not a new
+        # conversation state.  It cancels only the active transaction instance
+        # and re-enters normal routing for the same configured intent.
+        if decision_kind == "REPLACE":
+            if not current_intent or intent_name != current_intent:
+                return None
+            agent = agent or str(self._agent_for_intent(intent_name) or "").strip()
+            if not agent:
+                return None
+            return RouteDecision(
+                route=agent,
+                agent=agent,
+                intent=intent_name,
+                confidence=confidence,
+                reason=str(data.get("reason") or "Nova instância transacional da mesma intenção."),
+                method="llm",
+                metadata={
+                    "transaction_interruption": "same_intent_replacement",
+                    "interrupted_state": state_decision.next_state,
+                    "interrupted_agent": state_decision.agent,
+                    "interrupted_intent": current_intent,
+                    "interruption_source": "semantic_classifier",
+                    "configured_routing_hint": (
+                        configured_candidate.intent if configured_candidate is not None else None
+                    ),
+                    "raw_llm_answer": answer[:1000],
+                },
+                domain=self._domain_for_intent(intent_name),
+                mcp_tools=self._tools_for_intent(intent_name),
+            )
+
+        if intent_name == current_intent:
             return None
         agent = agent or str(self._agent_for_intent(intent_name) or "").strip()
         if not agent:

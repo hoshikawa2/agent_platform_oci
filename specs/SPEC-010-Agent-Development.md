@@ -230,6 +230,23 @@ Durante uma transação ativa, parâmetros já coletados são preservados e novo
 Antes de publicar um novo template/host, execute os cenários multi-turno descritos no [`Transaction State Developer Guide`](../docs/TRANSACTION_STATE_DEVELOPER_GUIDE.md).
 
 
+## Contrato MCP Multi-item
+
+Para uma intenção que opere sobre múltiplos itens homogêneos, o agente **não deve implementar fan-out/loop de chamadas MCP por conta própria**. Deve reutilizar o runtime e declarar a coleção no schema da tool (`type: array` ou `type: list`).
+
+Regras:
+
+1. canonicalização de itens pertence ao MCP/pre-validation e pode usar `transaction_decision.resolved_arguments`;
+2. confirmação transacional deve representar o conjunto efetivo de itens;
+3. a tool primária deve retornar `results[]` com dois ou mais itens contendo `success` ou `ok` booleano por item;
+4. para workflow-backed tools, a fonte preferencial é `workflow.output[tool_name].results`;
+5. o runtime normaliza o agregado para `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`;
+6. falha em etapa auxiliar posterior não pode apagar evidência terminal de itens concluídos;
+7. um `eligible=false` global em pre-validation encerra toda a transação; para processamento parcial, mantenha `eligible=true` quando houver ao menos um item acionável e deixe a tool primária materializar o resultado por item.
+
+Referência de implementação: [`MCP Multi-item — Guia do Desenvolvedor`](../docs/MCP_MULTI_ITEM_DEVELOPER_GUIDE.md).
+
+
 ## Testes
 
 | Teste | Escopo |
@@ -292,6 +309,7 @@ Antes de publicar um novo template/host, execute os cenários multi-turno descri
 - [ ] Configuração ocorre por YAML e `.env`.
 - [ ] Agente usa BusinessContext.
 - [ ] Agente acessa MCP por router/gateway.
+- [ ] Casos multi-item usam array/list + resultado por item, sem loop MCP de negócio dentro do agente.
 - [ ] Agente não conhece payload bruto de canal.
 - [ ] Guardrails e judges são configurados.
 - [ ] Dataset de eval existe.

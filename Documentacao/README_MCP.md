@@ -77,3 +77,12 @@ No compose, o backend usa `config/mcp_servers.docker.yaml` para apontar para `te
 ## Operações read-only e transacionais
 
 Use `config/tool_policies.yaml` no backend para classificar somente as operações que precisam de tratamento adicional. A validação é aplicada no roteador central antes do MCP Gateway/Server. O arquivo é opcional e templates antigos continuam usando as políticas já presentes em `tools.yaml`. A configuração completa e o roteiro de migração estão em [README_TOOL_POLICIES.md](README_TOOL_POLICIES.md).
+
+
+## Chamadas MCP multi-item
+
+Para operações com listas de produtos, pedidos, ativos ou outros recursos, **não implemente loops de chamadas MCP dentro do agente**. O framework possui contrato genérico para parâmetros `array/list`, pre-validation, confirmação e resultado por item (`SUCCESS`, `PARTIAL_SUCCESS`, `FAILED`).
+
+Guia completo: [MCP Multi-item — Guia do Desenvolvedor](../docs/MCP_MULTI_ITEM_DEVELOPER_GUIDE.md).
+
+A tool primária deve retornar `results[]` com `success` ou `ok` booleano por item. Em workflows, use preferencialmente `output[tool_name].results`.

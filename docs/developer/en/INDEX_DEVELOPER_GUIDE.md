@@ -27,6 +27,7 @@ If something is not working, use **Search by problem** below.
 | A tool does not appear or cannot be found | `tools.yaml`, MCP catalog, discovery | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
 | MCP Server does not appear in the catalog | registration, manifest/discovery, MCP Gateway | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) and [Gateways](docs/developer/en/05_agent_gateway_mcp_gateway_and_auth.md) |
 | Parameters sent to the tool are wrong | schema, mapping, BusinessContext, extractor | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
+| I need to run one operation for multiple products/orders/items | array/list parameter, pre-validation, single confirmation, per-item outcome | [MCP Multi-item](../../MCP_MULTI_ITEM_DEVELOPER_GUIDE_en.md) and [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
 | A transactional operation executes without confirmation | tool policy, `require_confirmation` | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
 | A name search requires an overly exact match | parameter extraction/mapping and agent logic | [MCP/Tools](docs/developer/en/04_mcp_integration_tools_and_policies.md) |
 | I receive 401 between gateway/backend/MCP | Basic Auth, credentials per hop | [Gateways and Auth](docs/developer/en/05_agent_gateway_mcp_gateway_and_auth.md) |
@@ -73,9 +74,9 @@ If something is not working, use **Search by problem** below.
 
 ### [04 — MCP, Tools, Policies, and Parameter Extraction](docs/developer/en/04_mcp_integration_tools_and_policies.md)
 
-**What it is:** reference for tools, MCP Servers, mappings, policies, and parameter extraction.
+**What it is:** reference for tools, MCP Servers, mappings, policies, parameter extraction, and multi-item calls.
 
-**Use when:** tool integration/execution is incorrect or needs to be created.
+**Use when:** tool integration/execution is incorrect, needs to be created, or must process item lists without parallel logic in the agent.
 
 ### [05 — Agent Gateway, MCP Gateway, and Authentication](docs/developer/en/05_agent_gateway_mcp_gateway_and_auth.md)
 

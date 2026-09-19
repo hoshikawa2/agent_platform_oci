@@ -28,6 +28,7 @@ Se algo não está funcionando, use **Buscar pelo problema** abaixo.
 | Uma tool não aparece ou não é encontrada | `tools.yaml`, catálogo MCP, discovery | [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
 | MCP Server não aparece no catálogo | registration, manifest/discovery, MCP Gateway | [MCP/Tools](./04_mcp_integration_tools_and_policies.md) e [Gateways](./05_agent_gateway_mcp_gateway_and_auth.md) |
 | Parâmetros enviados à tool estão errados | schema, mapping, BusinessContext, extractor | [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
+| Preciso chamar a mesma operação para vários produtos/pedidos/itens | parâmetro array/list, pre-validation, confirmação única, resultado por item | [MCP Multi-item](../../MCP_MULTI_ITEM_DEVELOPER_GUIDE.md) e [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
 | Uma operação transacional executa sem confirmação | tool policy, `require_confirmation` | [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
 | Uma busca por nome exige correspondência exata demais | extração/mapeamento de parâmetros e lógica do agente | [MCP/Tools](./04_mcp_integration_tools_and_policies.md) |
 | Recebo 401 entre gateway/backend/MCP | Basic Auth, credenciais por hop | [Gateways e Auth](./05_agent_gateway_mcp_gateway_and_auth.md) |
@@ -74,9 +75,9 @@ Se algo não está funcionando, use **Buscar pelo problema** abaixo.
 
 ### [04 — MCP, Tools, Policies e Extração de Parâmetros](./04_mcp_integration_tools_and_policies.md)
 
-**O que é:** referência de tools, MCP Servers, mappings, policies e parameter extraction.
+**O que é:** referência de tools, MCP Servers, mappings, policies, parameter extraction e chamadas multi-item.
 
-**Use quando:** integração/execução de tool está incorreta ou precisa ser criada.
+**Use quando:** integração/execução de tool está incorreta, precisa ser criada ou deve processar listas de itens sem lógica paralela no agente.
 
 ### [05 — Agent Gateway, MCP Gateway e Autenticação](./05_agent_gateway_mcp_gateway_and_auth.md)
 

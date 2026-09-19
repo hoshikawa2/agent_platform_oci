@@ -1351,6 +1351,101 @@ class AgentRuntimeMixin:
         # Compatibilidade com versões antigas do router.
         return None, arguments or {}, None
 
+    @staticmethod
+    def _primary_multi_item_outcomes(tool_name: str, result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return explicit per-item outcomes for the requested tool, when present.
+
+        The contract is intentionally structural and domain-agnostic: the framework
+        only recognizes an array named ``results`` whose entries expose an explicit
+        boolean ``success``/``ok`` signal.  For workflow-backed tools, preference is
+        given to ``workflow.output[tool_name].results`` so a later auxiliary/composite
+        step cannot overwrite the already executed primary operation.
+        """
+        if not isinstance(result, dict):
+            return []
+
+        body = result.get("result") if isinstance(result.get("result"), dict) else result
+        candidates: list[Any] = []
+
+        if isinstance(body, dict):
+            output = body.get("output")
+            if isinstance(output, dict):
+                primary = output.get(tool_name)
+                if isinstance(primary, dict):
+                    candidates.append(primary.get("results"))
+            candidates.append(body.get("results"))
+
+        candidates.append(result.get("results"))
+
+        for candidate in candidates:
+            if not isinstance(candidate, list) or len(candidate) < 2:
+                continue
+            normalized: list[dict[str, Any]] = []
+            valid = True
+            for item in candidate:
+                if not isinstance(item, dict):
+                    valid = False
+                    break
+                signal = item.get("success") if isinstance(item.get("success"), bool) else item.get("ok")
+                if not isinstance(signal, bool):
+                    valid = False
+                    break
+                normalized.append(dict(item))
+            if valid and normalized:
+                return normalized
+        return []
+
+    @classmethod
+    def _normalize_multi_item_tool_result(cls, tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Preserve partial/full success of a multi-item primary operation.
+
+        Some composite workflows execute the requested tool successfully for one or
+        more items and then fail in a secondary validation/post-processing step.  A
+        wrapper-level ``ok=false`` must not erase those terminal item outcomes.
+
+        This normalizer never invents business semantics.  It activates only when
+        the requested tool itself exposes two or more explicit item outcomes with a
+        boolean success signal.
+        """
+        if not isinstance(result, dict):
+            return result
+        outcomes = cls._primary_multi_item_outcomes(tool_name, result)
+        if not outcomes:
+            return result
+
+        succeeded = sum(1 for item in outcomes if bool(item.get("success") if isinstance(item.get("success"), bool) else item.get("ok")))
+        failed = len(outcomes) - succeeded
+        if succeeded and failed:
+            status = "PARTIAL_SUCCESS"
+        elif succeeded:
+            status = "SUCCESS"
+        else:
+            status = "FAILED"
+
+        normalized = dict(result)
+        metadata = dict(normalized.get("metadata") or {})
+        metadata["multi_item"] = {
+            "status": status,
+            "items_count": len(outcomes),
+            "items_succeeded_count": succeeded,
+            "items_failed_count": failed,
+            "primary_tool": tool_name,
+        }
+        normalized["metadata"] = metadata
+        normalized["multi_item_status"] = status
+        normalized["partial_success"] = status == "PARTIAL_SUCCESS"
+
+        # The requested action is considered operationally successful whenever at
+        # least one explicitly identified item completed.  Preserve the original
+        # wrapper status/error for audit instead of discarding it.
+        if succeeded > 0 and normalized.get("ok") is False:
+            normalized["original_ok"] = False
+            normalized["ok"] = True
+            if normalized.get("error"):
+                normalized["secondary_error"] = normalized.get("error")
+
+        return normalized
+
     async def _call_mcp_tool_uncached(
         self,
         tool_name: str,
@@ -1384,6 +1479,7 @@ class AgentRuntimeMixin:
             )
         result = res.model_dump(mode="json") if hasattr(res, "model_dump") else dict(res)
         if isinstance(result, dict):
+            result = self._normalize_multi_item_tool_result(tool_name, result)
             result.setdefault("cached", False)
         await self._emit_ic(
             "IC.MCP_TOOL_EXECUTED",
@@ -3839,6 +3935,21 @@ class AgentRuntimeMixin:
                 "Resultados MCP normalizados pelo framework:\n"
                 + self._compact_llm_value(mcp_results, max_chars=18000)
             )
+            multi_item_summaries = []
+            for item in mcp_results:
+                metadata = item.get("metadata") if isinstance(item, dict) else None
+                summary = metadata.get("multi_item") if isinstance(metadata, dict) else None
+                if isinstance(summary, dict):
+                    multi_item_summaries.append(summary)
+            if multi_item_summaries:
+                sections.append(
+                    "Semântica operacional multi-item do framework:\n"
+                    + self._compact_llm_value(multi_item_summaries, max_chars=4000)
+                    + "\nOs resultados explícitos por item da operação primária são evidência terminal e "
+                      "devem ser relatados individualmente. Um erro de etapa auxiliar/pós-processamento "
+                      "não pode converter itens já concluídos com sucesso em falha, nem omiti-los. "
+                      "Quando houver sucessos e falhas, descreva o resultado como parcial e informe ambos."
+                )
         transaction_evidence = self.transaction_evidence_for_turn(state, mcp_results)
         if transaction_evidence:
             sections.append(

@@ -87,3 +87,8 @@ Esses arquivos são o esqueleto de execução usando o framework.
 # Política opcional de tools
 
 O arquivo `config/tool_policies.yaml` classifica tools como `read_only` ou `transactional`. Para uma transação real, ative `require_confirmation: true`; chamadas sem `confirmed: true` ou `confirmation: true` serão bloqueadas antes do MCP. A ausência do arquivo preserva o comportamento de templates anteriores.
+
+
+## MCP multi-item
+
+Para listas de produtos/pedidos/itens, não crie loop MCP no agente. O runtime aceita parâmetros `array/list` e normaliza `results[]` por item em `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`. Consulte [`docs/MCP_MULTI_ITEM.md`](docs/MCP_MULTI_ITEM.md) antes de criar qualquer mecanismo próprio de lote.

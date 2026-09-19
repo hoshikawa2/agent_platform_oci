@@ -82,6 +82,31 @@ projeto_multi_agent_isolado/
 ### Main components
 
 
+
+
+### MCP multi-item: product, order, and resource lists
+
+When one intent must operate on several items, **do not create an MCP loop inside the agent**. The framework supports `array/list` parameters, pre-validation with `resolved_arguments`, set-level transaction confirmation, and automatic normalization of per-item `results[]` into `SUCCESS`, `PARTIAL_SUCCESS`, or `FAILED`.
+
+The complete contract, `tools.yaml` / `tool_policies.yaml` examples, MCP payloads, per-item output, workflow behavior, partial validation, and anti-patterns are documented in:
+
+- [MCP Multi-item — Developer Guide](../../MCP_MULTI_ITEM_DEVELOPER_GUIDE_en.md)
+
+Minimum structural result from the primary tool:
+
+```json
+{
+  "result": {
+    "results": [
+      {"subject": "A", "success": true},
+      {"subject": "B", "success": false, "reason": "not_found"}
+    ]
+  }
+}
+```
+
+Every item must expose boolean `success` or `ok`. For workflow-backed tools, prefer `workflow.output[tool_name].results`. A later auxiliary failure must not erase terminal item outcomes.
+
 ### Simplified HTTP contract used by the project
 
 ```

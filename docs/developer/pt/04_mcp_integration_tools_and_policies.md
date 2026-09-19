@@ -83,6 +83,31 @@ projeto_multi_agent_isolado/
 ### Componentes principais
 
 
+
+
+### MCP multi-item: listas de produtos, pedidos e outros recursos
+
+Quando uma única intenção precisa operar sobre vários itens, **não crie um loop MCP dentro do agente**. O framework suporta parâmetros `array/list`, pre-validation com `resolved_arguments`, confirmação transacional do conjunto e normalização de `results[]` por item em `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`.
+
+O contrato completo, exemplos de `tools.yaml`, `tool_policies.yaml`, payload MCP, retorno por item, workflows, validação parcial e anti-patterns estão em:
+
+- [MCP Multi-item — Guia do Desenvolvedor](../../MCP_MULTI_ITEM_DEVELOPER_GUIDE.md)
+
+Regra estrutural mínima do retorno da tool primária:
+
+```json
+{
+  "result": {
+    "results": [
+      {"subject": "A", "success": true},
+      {"subject": "B", "success": false, "reason": "not_found"}
+    ]
+  }
+}
+```
+
+Cada item deve expor `success` ou `ok` booleano. Para tool baseada em workflow, prefira `workflow.output[tool_name].results`. Uma falha auxiliar posterior não deve apagar resultados terminais já executados.
+
 ### Contrato HTTP simplificado usado no projeto
 
 ```

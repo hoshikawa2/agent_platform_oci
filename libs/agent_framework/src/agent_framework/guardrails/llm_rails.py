@@ -49,7 +49,7 @@ class LLMGuardrailRail(Guardrail):
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
-                max_tokens=600,
+                fallback_max_tokens=600,
                 profile_name=self.profile_name,
                 component_name=self.profile_name,
                 generation_name=f"llm.{self.profile_name}",

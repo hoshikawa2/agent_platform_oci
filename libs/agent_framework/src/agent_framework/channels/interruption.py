@@ -58,7 +58,7 @@ async def classify_processing_interruption(
         response = await llm.ainvoke(
             [{"role": "system", "content": prompt}],
             temperature=0,
-            max_tokens=8,
+            fallback_max_tokens=8,
             profile_name=profile_name,
             component_name=profile_name,
             generation_name=f"llm.{profile_name}",

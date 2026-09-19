@@ -849,7 +849,7 @@ class AgentRuntimeMixin:
                         component_name="mcp_parameter_extraction",
                         generation_name="llm.mcp_parameter_extraction",
                         temperature=0.0,
-                        max_tokens=80,
+                        fallback_max_tokens=80,
                     )
                     raw = self._llm_response_text(response).strip()
                     payload = parse_json_object(raw)

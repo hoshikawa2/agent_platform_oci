@@ -370,6 +370,14 @@ class OCICompatibleOpenAIProvider(LLMProvider):
         profile_name = kwargs.pop("profile_name", None)
         component_name = kwargs.pop("component_name", None) or kwargs.pop("component", None) or profile_name or "default"
         generation_name = kwargs.pop("generation_name", None) or f"llm.{component_name}"
+        fallback_max_tokens = kwargs.pop("fallback_max_tokens", None)
+        if fallback_max_tokens is not None:
+            kwargs["max_tokens"] = self.profile_resolver.resolve_configured_value(
+                profile_name,
+                "max_tokens",
+                env_var="LLM_MAX_TOKENS",
+                fallback=fallback_max_tokens,
+            )
         generation_name, generation_mapping_meta = _normalize_generation_name(self.telemetry, generation_name)
         effective = self.profile_resolver.resolve(profile_name, **kwargs)
         provider = str(effective.get("provider") or self.provider_name)

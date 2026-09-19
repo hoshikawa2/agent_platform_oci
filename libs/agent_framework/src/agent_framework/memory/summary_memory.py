@@ -167,7 +167,7 @@ class ConversationSummaryMemory:
             summary = await self.llm.ainvoke([
                 {"role": "system", "content": "Você resume memória conversacional para agentes corporativos."},
                 {"role": "user", "content": prompt},
-            ], max_tokens=max(256, max_summary_chars // 4), temperature=0.1, profile_name="summary_memory", component_name="summary_memory", generation_name="llm.summary_memory")
+            ], fallback_max_tokens=max(256, max_summary_chars // 4), temperature=0.1, profile_name="summary_memory", component_name="summary_memory", generation_name="llm.summary_memory")
             summary = (summary or "").strip()
             if not summary:
                 return self._deterministic_summary(previous_summary=previous_summary, messages=messages, max_chars=max_summary_chars)

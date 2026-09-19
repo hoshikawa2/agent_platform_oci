@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,66 @@ class LLMProfileResolver:
                 effective[key] = value
 
         return effective
+
+    def resolve_configured_value(
+        self,
+        profile_name: str | None,
+        key: str,
+        *,
+        env_var: str | None = None,
+        fallback: Any = None,
+    ) -> Any:
+        """Resolve one configuration value with an explicit compatibility fallback.
+
+        Precedence is intentionally aligned with the framework configuration model:
+        1. specific ``llm_profiles.yaml`` profile;
+        2. YAML ``default`` profile;
+        3. explicitly configured general environment variable;
+        4. the caller-provided legacy fallback.
+
+        The last step is important for old inference points that historically had a
+        local constant.  Pydantic's Settings object always has framework defaults, so
+        checking only ``settings.LLM_MAX_TOKENS`` would make an *unset* environment
+        indistinguishable from the global default.
+        """
+        selected_name = self.normalize_profile_name(profile_name)
+        if self.enabled:
+            specific_profile = self._profiles.get(selected_name) or {}
+            default_profile = self._profiles.get("default") or {}
+            if key in specific_profile and specific_profile.get(key) is not None:
+                return specific_profile.get(key)
+            if key in default_profile and default_profile.get(key) is not None:
+                return default_profile.get(key)
+
+        if env_var:
+            raw = os.getenv(env_var)
+            if raw is not None and str(raw).strip() != "":
+                raw = str(raw).strip()
+                try:
+                    if isinstance(fallback, bool):
+                        return raw.lower() in {"1", "true", "yes", "on"}
+                    if isinstance(fallback, int) and not isinstance(fallback, bool):
+                        return int(raw)
+                    if isinstance(fallback, float):
+                        return float(raw)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid %s=%r for profile=%s key=%s; using legacy fallback=%r",
+                        env_var, raw, selected_name, key, fallback,
+                    )
+                    return fallback
+                return raw
+
+        # Also honor a value explicitly supplied when Settings was instantiated
+        # programmatically, without treating the class default as configuration.
+        field_name = env_var or ""
+        fields_set = getattr(self.settings, "model_fields_set", set()) or set()
+        if field_name and field_name in fields_set:
+            value = getattr(self.settings, field_name, None)
+            if value is not None:
+                return value
+
+        return fallback
 
     def normalize_profile_name(self, profile_name: str | None) -> str:
         return _canonical_profile_name(profile_name)

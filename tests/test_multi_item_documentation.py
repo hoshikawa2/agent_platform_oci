@@ -6,7 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_multi_item_guide_documents_runtime_contract():
     text = (ROOT / "docs" / "MCP_MULTI_ITEM_DEVELOPER_GUIDE.md").read_text(encoding="utf-8")
     for token in (
-        "type: array",
+        "não exige `array/list`",
+        "subject",
         "resolved_arguments",
         "results[]",
         "PARTIAL_SUCCESS",

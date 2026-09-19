@@ -87,7 +87,7 @@ projeto_multi_agent_isolado/
 
 ### MCP multi-item: listas de produtos, pedidos e outros recursos
 
-Quando uma única intenção precisa operar sobre vários itens, **não crie um loop MCP dentro do agente**. O framework suporta parâmetros `array/list`, pre-validation com `resolved_arguments`, confirmação transacional do conjunto e normalização de `results[]` por item em `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`.
+Quando uma única intenção precisa operar sobre vários itens, **não crie um loop MCP dentro do agente**. O framework suporta contratos escalares ou `array/list`, pre-validation com `resolved_arguments`, confirmação transacional do conjunto e normalização de `results[]` por item em `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`. Multi-item não depende do tipo do parâmetro de entrada.
 
 O contrato completo, exemplos de `tools.yaml`, `tool_policies.yaml`, payload MCP, retorno por item, workflows, validação parcial e anti-patterns estão em:
 

@@ -86,7 +86,7 @@ projeto_multi_agent_isolado/
 
 ### MCP multi-item: product, order, and resource lists
 
-When one intent must operate on several items, **do not create an MCP loop inside the agent**. The framework supports `array/list` parameters, pre-validation with `resolved_arguments`, set-level transaction confirmation, and automatic normalization of per-item `results[]` into `SUCCESS`, `PARTIAL_SUCCESS`, or `FAILED`.
+When one intent must operate on several items, **do not create an MCP loop inside the agent**. The framework supports scalar or `array/list` contracts, pre-validation with `resolved_arguments`, set-level transaction confirmation, and automatic normalization of per-item `results[]` into `SUCCESS`, `PARTIAL_SUCCESS`, or `FAILED`. Multi-item support does not depend on the input parameter type.
 
 The complete contract, `tools.yaml` / `tool_policies.yaml` examples, MCP payloads, per-item output, workflow behavior, partial validation, and anti-patterns are documented in:
 

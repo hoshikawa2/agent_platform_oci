@@ -175,7 +175,7 @@ config/agents/<agent_id>/judges.yaml
 
 ## MCP multi-item — não implemente loops no agente
 
-Se uma mesma solicitação envolve vários produtos, pedidos ou outros itens, use o mecanismo multi-item do framework. Declare o parâmetro como `array/list`, use pre-validation para canonicalização quando necessário e faça a tool MCP primária devolver `results[]` com `success`/`ok` por item. O runtime preserva sucesso parcial e produz `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`.
+Se uma mesma solicitação envolve vários produtos, pedidos ou outros itens, use o mecanismo multi-item do framework. Declare o contrato natural da operação (escalar ou coleção), use pre-validation para expandir/canonicalizar itens quando necessário e faça a tool MCP primária devolver `results[]` com `success`/`ok` por item. Multi-item não exige `array/list`. O runtime preserva sucesso parcial e produz `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`.
 
 Guia copiável e completo neste template: [`docs/MCP_MULTI_ITEM.md`](docs/MCP_MULTI_ITEM.md).
 

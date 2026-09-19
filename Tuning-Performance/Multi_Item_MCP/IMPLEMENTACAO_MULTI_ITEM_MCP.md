@@ -1,85 +1,90 @@
 # Implementação prática — MCP Multi-Item
 
-Este documento mostra o caminho mínimo para adicionar uma operação multi-item a um agente sem criar lógica paralela no código do agente.
+Este documento mostra como adicionar uma operação multi-item sem criar lógica paralela no agente e sem alterar desnecessariamente contratos já existentes.
 
 ## 1. Modele uma única operação lógica
-
-Exemplo de requisito:
 
 ```text
 quero cancelar Produto A, Produto B e Produto C
 ```
 
-A operação lógica deve continuar sendo uma só:
+A operação lógica continua sendo uma só. Não crie tools/intents por item nem loops no Agent.
 
-```text
-cancelar_produtos
+## 2. Escolha o contrato natural da operação
+
+### Opção A — parâmetro escalar
+
+Use quando a interface já recebe um `subject`, `id`, `query` ou expressão que pode representar uma ou várias entidades:
+
+```yaml
+tools:
+  cancelar_vas_avulso:
+    args_schema:
+      subject:
+        type: string
 ```
 
-Não crie `cancelar_produto_1`, `cancelar_produto_2`, loops no agent ou intents artificiais por item.
+Entrada:
 
-## 2. Declare a coleção em `tools.yaml`
+```text
+subject = "Produto A, Produto B, Produto C"
+```
+
+### Opção B — coleção explícita
+
+Use quando a API/tool é naturalmente batch:
 
 ```yaml
 tools:
   cancelar_produtos:
-    description: Cancela um ou mais produtos do cliente.
-    mcp_server: contas
-    enabled: true
-    tool_type: action
-    confirmation_required: true
-    requires: [items]
     args_schema:
       items:
         type: array
-        label: os produtos
-        description: Lista de produtos a cancelar.
-        user_prompt: Quais produtos deseja cancelar?
 ```
 
-Também é aceito `type: list` quando o projeto já usa essa forma.
+**Não transforme uma tool escalar em array apenas para obter suporte multi-item.**
 
-## 3. Use a policy transacional existente
+## 3. Use a policy existente
+
+Exemplo escalar:
 
 ```yaml
 tool_policies:
-  cancelar_produtos:
+  cancelar_vas_avulso:
     operation_type: transactional
     require_confirmation: true
-    requires: [items]
+    requires:
+      - subject
     pre_validation:
       enabled: true
-      tool: validar_produtos_cancelamento
+      tool: validar_vas_subject
       fail_open: false
 ```
 
 Nenhuma chave específica de multi-item é necessária.
 
-## 4. Canonicalize os itens no MCP validator
+## 4. Canonicalize/expanda no validator quando necessário
 
-Entrada possível:
+Entrada:
 
 ```json
-{
-  "items": ["produto a", "produto b", "produto c"]
-}
+{"subject": "produto a, produto b, produto c"}
 ```
 
-Saída recomendada:
+Saída possível:
 
 ```json
 {
   "eligible": true,
-  "status": "ELIGIBLE",
   "transaction_decision": {
     "resolved_arguments": {
+      "subject": "Produto A, Produto B, Produto C",
       "items": [
         {"name": "Produto A", "id": "1001"},
         {"name": "Produto B", "id": "1002"},
         {"name": "Produto C", "id": "1003"}
       ]
     },
-    "target_tool": "cancelar_produtos",
     "confirmation_message": "Você confirma o cancelamento de Produto A, Produto B e Produto C?"
   }
 }
@@ -97,30 +102,19 @@ B = inválido
 C = válido
 ```
 
-Se A e C ainda podem ser executados, não use simplesmente:
+Com `fail_open: false`, isto bloquearia tudo:
 
 ```json
-{
-  "eligible": false,
-  "reason": "B inválido"
-}
+{"eligible": false, "reason": "B inválido"}
 ```
 
-Isso encerraria a transação inteira.
+Quando A e C ainda podem ser executados, mantenha a transação globalmente elegível e preserve o estado individual dos itens.
 
-Prefira manter a transação elegível quando houver item acionável e preservar informação suficiente para a tool primária produzir o resultado final por item.
+## 6. Execute no MCP Server ou workflow
 
-## 6. Execute a coleção no MCP Server ou workflow
+A tool/workflow pode receber `subject` e expandir internamente, ou receber `items[]` já canonicalizado.
 
-### Backend com API batch
-
-```python
-async def cancelar_produtos(items):
-    response = await backend.cancel_batch(items)
-    return normalize_results(response)
-```
-
-### Backend com API apenas unitária
+### Backend com API unitária
 
 ```python
 async def cancelar_produtos(items):
@@ -128,25 +122,15 @@ async def cancelar_produtos(items):
     for item in items:
         try:
             response = await backend.cancel_one(item)
-            results.append({
-                "name": item["name"],
-                "success": True,
-                "response": response,
-            })
+            results.append({"name": item["name"], "success": True, "response": response})
         except Exception as exc:
-            results.append({
-                "name": item["name"],
-                "success": False,
-                "error": str(exc),
-            })
+            results.append({"name": item["name"], "success": False, "error": str(exc)})
     return {"results": results}
 ```
 
-O loop acima pertence ao MCP/workflow, **não ao Agent**.
+O loop pertence ao **MCP Server/workflow**, não ao Agent.
 
 ## 7. Retorne `results[]` por item
-
-Contrato mínimo:
 
 ```json
 {
@@ -162,8 +146,6 @@ O framework aceita `success` ou `ok` booleano por item.
 
 ## 8. Resultado interpretado pelo framework
 
-No exemplo anterior:
-
 ```text
 items_count            = 3
 items_succeeded_count  = 2
@@ -171,46 +153,24 @@ items_failed_count     = 1
 multi_item_status      = PARTIAL_SUCCESS
 ```
 
-O framework preserva os resultados terminais e fornece esse contexto para composição/presentation.
-
 ## 9. Workflow com etapa auxiliar
-
-Estrutura recomendada:
-
-```json
-{
-  "status": "COMPLETED",
-  "output": {
-    "cancelar_produtos": {
-      "results": [
-        {"name": "A", "success": true},
-        {"name": "B", "success": true}
-      ]
-    },
-    "registrar_analitica": {
-      "success": false,
-      "error": "analytics unavailable"
-    }
-  }
-}
-```
 
 O resultado autoritativo da operação principal deve estar em:
 
 ```text
-workflow.output[cancelar_produtos].results
+workflow.output[tool_name].results
 ```
 
-Assim uma falha auxiliar não converte A e B em falha operacional.
+Assim uma falha auxiliar posterior não apaga itens já concluídos.
 
 ## 10. Checklist do desenvolvedor
 
-Antes de criar código adicional, verifique:
-
 - [ ] existe uma única tool lógica para a operação;
-- [ ] a coleção está declarada como `array` ou `list` em `tools.yaml`;
-- [ ] confirmação/pre-validation usam `tool_policies.yaml` existente;
-- [ ] canonicalização pertence ao MCP validator;
+- [ ] `tools.yaml` declara o contrato natural, escalar ou coleção;
+- [ ] não existe requisito de `type: array` para habilitar multi-item;
+- [ ] `tool_policies.yaml` mantém os `requires` reais do domínio;
+- [ ] se um escalar representa vários itens, validator/tool/workflow faz a expansão;
+- [ ] com `fail_open: false`, falha individual não bloqueia automaticamente todos os itens acionáveis;
 - [ ] fan-out, se necessário, pertence ao MCP Server/workflow;
 - [ ] a tool primária devolve `results[]`;
 - [ ] cada item contém `success` ou `ok` booleano;
@@ -220,13 +180,13 @@ Antes de criar código adicional, verifique:
 
 ## 11. Testes mínimos recomendados
 
-Cubra ao menos:
-
 ```text
 1 item / sucesso
 N itens / todos sucesso
 N itens / sucesso parcial
 N itens / todos falha
+entrada escalar expandida para N itens
+entrada batch explícita
 item não canonicalizado
 confirmação única para N itens
 falha auxiliar após sucesso primário

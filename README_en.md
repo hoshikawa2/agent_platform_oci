@@ -41,6 +41,7 @@ The newest capabilities are consolidated in:
 - [15 — Presentation, recovery, and observability](docs/developer/en/15_presentation_recovery_and_observability.md)
 - [16 — Multi-agent composition and lifecycle](docs/developer/en/16_multi_agent_composition_and_lifecycle.md)
 - [External guardrails and judges — complete implementation](docs/EXTERNAL_GUARDRAILS_JUDGES_en.md)
+- [MCP Multi-item — product, order, and resource lists](docs/MCP_MULTI_ITEM_DEVELOPER_GUIDE_en.md)
 
 If you are creating a new agent, follow this `README_en.md` from the beginning. For deeper implementation details or troubleshooting, use the links below.
 

@@ -41,6 +41,7 @@ As funcionalidades mais recentes estão consolidadas em:
 - [15 — Apresentação, recuperação e observabilidade](docs/developer/pt/15_apresentacao_recuperacao_e_observabilidade.md)
 - [16 — Multiagente, composição e ciclo de vida](docs/developer/pt/16_multiagente_composicao_e_ciclo_de_vida.md)
 - [Guardrails e judges externos — implementação completa](docs/EXTERNAL_GUARDRAILS_JUDGES.md)
+- [MCP Multi-item — listas de produtos, pedidos e recursos](docs/MCP_MULTI_ITEM_DEVELOPER_GUIDE.md)
 
 Se você está começando um novo agente, siga este `README.md` desde o início. Para aprofundamento ou troubleshooting, use os links abaixo.
 

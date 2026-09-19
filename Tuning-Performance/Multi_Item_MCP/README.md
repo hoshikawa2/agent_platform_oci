@@ -4,6 +4,8 @@ Capability de referência para operações MCP que precisam processar **mais de 
 
 > Esta capability é **framework-native**. Ela não exige um motor multi-item dentro do agente e não adiciona novos atributos obrigatórios a `tools.yaml` ou `tool_policies.yaml`.
 
+> **Importante:** multi-item não é definido por `type: array`. O parâmetro de entrada pode ser escalar (`subject`, `id`, `query`) ou uma coleção. O que torna a execução multi-item é a resolução/execução de vários itens e o retorno por item em `results[]`.
+
 ## Quando usar
 
 Use quando o usuário puder solicitar, por exemplo:
@@ -18,7 +20,7 @@ ou:
 consulte os pedidos 1001, 1002 e 1003
 ```
 
-O desenvolvedor deve modelar **uma operação lógica** que receba a coleção. O framework cuida de estado, confirmação e interpretação de resultados; o MCP Server ou workflow de domínio cuida da execução dos itens.
+O desenvolvedor deve modelar **uma operação lógica**. O framework cuida de estado, confirmação e interpretação de resultados; validator/MCP Server/workflow cuidam da resolução e execução dos itens.
 
 ## Divisão de responsabilidades
 
@@ -30,25 +32,27 @@ Agent
       ↓
 
 tools.yaml
-  declara array/list
+  declara o contrato natural da operação
+  pode ser escalar OU coleção
   NÃO exige chave multi_item
 
       ↓
 
 tool_policies.yaml
-  confirmação + pre-validation
-  usa o mesmo contrato transacional existente
+  confirmação + requires + pre-validation
+  NÃO possui sintaxe especial de multi-item
 
       ↓
 
 MCP validator
-  resolve/canonicaliza os itens
+  resolve/canonicaliza itens
+  pode expandir subject/id/query em items[]
   pode preencher transaction_decision.resolved_arguments
 
       ↓
 
 MCP tool / workflow
-  executa os itens
+  executa 1 ou N itens
   devolve results[] com success/ok por item
 
       ↓
@@ -66,70 +70,75 @@ LLM / Presentation
   apresenta cada sucesso/falha
 ```
 
-## Configuração mínima
+## Configuração mínima — padrão escalar
+
+Este padrão é útil quando a interface natural já usa `subject` e o validator expande múltiplas entidades.
 
 ### `tools.yaml`
 
-O modo de configuração continua o mesmo. Declare o parâmetro como `array` ou `list`:
-
 ```yaml
 tools:
-  cancelar_produtos:
-    description: Cancela um ou mais produtos.
+  cancelar_vas_avulso:
+    description: Cancela um ou mais VAS.
     mcp_server: contas
     enabled: true
     tool_type: action
-    confirmation_required: true
-    requires: [items]
     args_schema:
-      items:
-        type: array
-        label: os produtos
-        description: Produtos solicitados pelo cliente.
-        user_prompt: Informe quais produtos deseja cancelar.
+      subject:
+        type: string
 ```
 
-Não é necessário criar configuração como:
+### `tool_policies.yaml`
 
 ```yaml
-# NÃO EXISTE / NÃO É NECESSÁRIO
+tool_policies:
+  cancelar_vas_avulso:
+    operation_type: transactional
+    require_confirmation: true
+    requires:
+      - subject
+    pre_validation:
+      enabled: true
+      tool: validar_vas_subject
+      fail_open: false
+```
+
+Nenhuma chave abaixo existe ou é necessária:
+
+```yaml
 multi_item: true
 multi_item_strategy: partial
 fan_out: framework
 ```
 
-### `tool_policies.yaml`
+## Configuração alternativa — API batch
 
-O contrato também continua o mesmo:
+Quando a tool MCP recebe naturalmente uma coleção, `array/list` continua válido:
 
 ```yaml
-tool_policies:
-  cancelar_produtos:
-    operation_type: transactional
-    require_confirmation: true
-    requires: [items]
-    pre_validation:
-      enabled: true
-      tool: validar_produtos_cancelamento
-      fail_open: false
+args_schema:
+  items:
+    type: array
 ```
 
-## Pre-validation e lista canônica
+Isso é **uma opção de contrato**, não um pré-requisito para multi-item.
 
-O validator pode transformar nomes informais em uma coleção canônica antes da confirmação:
+## Pre-validation e expansão de itens
+
+Um `subject` escalar pode ser transformado em argumentos canônicos:
 
 ```json
 {
   "eligible": true,
   "transaction_decision": {
     "resolved_arguments": {
+      "subject": "Produto A, Produto B, Produto C",
       "items": [
         {"name": "Produto A", "id": "1001"},
         {"name": "Produto B", "id": "1002"},
         {"name": "Produto C", "id": "1003"}
       ]
     },
-    "target_tool": "cancelar_produtos",
     "confirmation_message": "Você confirma o cancelamento de Produto A, Produto B e Produto C?"
   }
 }
@@ -137,20 +146,16 @@ O validator pode transformar nomes informais em uma coleção canônica antes da
 
 ### Validação parcial
 
-`eligible` é global para a transação. Portanto, se pelo menos um item puder ser processado, o validator **não deve reprovar o lote inteiro apenas porque outro item falhou**.
+`eligible` é global. Com `fail_open: false`, não retorne `eligible: false` apenas porque um item falhou se outros ainda são acionáveis.
 
 Padrão recomendado:
 
-1. `eligible: true` quando existe pelo menos um item acionável;
-2. preservar/canonicalizar todos os itens necessários em `resolved_arguments`;
+1. `eligible: true` enquanto houver pelo menos um item acionável;
+2. preservar resolução/eligibilidade individual;
 3. executar a operação primária;
-4. retornar o resultado terminal individual em `results[]`.
-
-Se nenhum item puder ser processado, `eligible: false` é apropriado.
+4. produzir o resultado terminal individual em `results[]`.
 
 ## Resultado MCP esperado
-
-A tool primária deve retornar `results[]` com `success` ou `ok` booleano por item:
 
 ```json
 {
@@ -162,50 +167,23 @@ A tool primária deve retornar `results[]` com `success` ou `ok` booleano por it
 }
 ```
 
-O framework deriva automaticamente:
+O framework deriva automaticamente `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`.
+
+## Uma operação lógica, sem N chamadas no agente
+
+São válidos:
 
 ```text
-PARTIAL_SUCCESS
-2 succeeded
-1 failed
+Agent -> cancelar(subject="A, B, C") -> validator/workflow -> results[]
 ```
 
-Estados possíveis:
-
-| Resultado dos itens | Status do framework |
-|---|---|
-| todos concluídos | `SUCCESS` |
-| alguns concluídos e alguns falharam | `PARTIAL_SUCCESS` |
-| todos falharam | `FAILED` |
-
-## Uma chamada lógica, não N chamadas no agente
-
-Se o backend suporta batch, prefira:
+ou:
 
 ```text
-Agent -> cancelar_produtos(items=[A,B,C]) -> MCP
+Agent -> cancelar(items=[A,B,C]) -> MCP/workflow -> results[]
 ```
 
-Se o backend possui apenas API unitária, o fan-out deve ficar encapsulado no MCP Server ou no workflow de domínio:
-
-```text
-Agent -> cancelar_produtos(items=[A,B,C])
-                   |
-                   v
-              MCP/workflow
-               /   |   \
-              A    B    C
-               \   |   /
-                results[]
-```
-
-Evite:
-
-```python
-# NÃO: lógica multi-item dentro do agente
-for item in items:
-    await tool_router.call("cancelar_produto", {"item": item})
-```
+Se o backend possui apenas API unitária, o fan-out fica no MCP Server/workflow. Evite loop MCP de negócio dentro do agente.
 
 ## Workflow-backed tools
 
@@ -215,15 +193,13 @@ Quando a operação é implementada por workflow, o caminho preferencial do resu
 workflow.output[tool_name].results
 ```
 
-Isso permite distinguir a operação primária de etapas auxiliares. Uma falha posterior não deve apagar o sucesso terminal de itens já executados.
+Uma falha posterior não deve apagar sucesso terminal de itens já executados.
 
 ## Documentação completa
-
-Consulte também:
 
 - `docs/MCP_MULTI_ITEM_DEVELOPER_GUIDE.md` — guia canônico em português;
 - `docs/MCP_MULTI_ITEM_DEVELOPER_GUIDE_en.md` — guia canônico em inglês;
 - `templates/agent_template_backend/docs/MCP_MULTI_ITEM.md` — referência junto ao template;
-- `specs/SPEC-010-Agent-Development.md` — regra arquitetural de desenvolvimento.
+- `specs/SPEC-010-Agent-Development.md` — regra arquitetural.
 
-Para um passo a passo prático, leia `IMPLEMENTACAO_MULTI_ITEM_MCP.md` nesta pasta.
+Para o passo a passo prático, leia `IMPLEMENTACAO_MULTI_ITEM_MCP.md`.

@@ -91,4 +91,4 @@ O arquivo `config/tool_policies.yaml` classifica tools como `read_only` ou `tran
 
 ## MCP multi-item
 
-Para listas de produtos/pedidos/itens, não crie loop MCP no agente. O runtime aceita parâmetros `array/list` e normaliza `results[]` por item em `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`. Consulte [`docs/MCP_MULTI_ITEM.md`](docs/MCP_MULTI_ITEM.md) antes de criar qualquer mecanismo próprio de lote.
+Para listas de produtos/pedidos/itens, não crie loop MCP no agente. O runtime aceita contratos escalares ou coleções e normaliza `results[]` por item em `SUCCESS`, `PARTIAL_SUCCESS` ou `FAILED`; `array/list` não é requisito para multi-item. Consulte [`docs/MCP_MULTI_ITEM.md`](docs/MCP_MULTI_ITEM.md) antes de criar qualquer mecanismo próprio de lote.

@@ -232,7 +232,7 @@ Antes de publicar um novo template/host, execute os cenários multi-turno descri
 
 ## Contrato MCP Multi-item
 
-Para uma intenção que opere sobre múltiplos itens homogêneos, o agente **não deve implementar fan-out/loop de chamadas MCP por conta própria**. Deve reutilizar o runtime e declarar a coleção no schema da tool (`type: array` ou `type: list`).
+Para uma intenção que opere sobre múltiplos itens homogêneos, o agente **não deve implementar fan-out/loop de chamadas MCP por conta própria**. Deve reutilizar o runtime e declarar o contrato natural da tool. A entrada pode ser escalar ou coleção; `type: array/list` não é requisito para suporte multi-item.
 
 Regras:
 
@@ -309,7 +309,7 @@ Referência de implementação: [`MCP Multi-item — Guia do Desenvolvedor`](../
 - [ ] Configuração ocorre por YAML e `.env`.
 - [ ] Agente usa BusinessContext.
 - [ ] Agente acessa MCP por router/gateway.
-- [ ] Casos multi-item usam array/list + resultado por item, sem loop MCP de negócio dentro do agente.
+- [ ] Casos multi-item usam o contrato natural da operação (escalar ou coleção) + resultado por item, sem loop MCP de negócio dentro do agente.
 - [ ] Agente não conhece payload bruto de canal.
 - [ ] Guardrails e judges são configurados.
 - [ ] Dataset de eval existe.

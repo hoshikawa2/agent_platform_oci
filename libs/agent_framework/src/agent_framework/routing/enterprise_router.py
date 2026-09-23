@@ -256,6 +256,79 @@ class EnterpriseRouter:
                     return matched, raw
         return None, raw
 
+    async def _prefer_contextual_reentry_over_semantic_resume(
+        self,
+        *,
+        text: str,
+        classified: str,
+        expected_input: dict[str, Any],
+        pause_prompt: str,
+        relevant_conversation_context: str,
+    ) -> tuple[bool, str | None, str | None]:
+        """Protect contextual reentry from a premature workflow resume.
+
+        ``semantic_classifier`` is agent-declared and normally authoritative. A
+        special ambiguity exists when the same contract declares an option whose
+        action is ``contextual_reentry``: an LLM can correctly notice a leading
+        answer to the pause (for example a negative acknowledgement) but miss the
+        substantive remainder of the same utterance. Resuming the workflow in
+        that situation can immediately reach a terminal branch such as handoff,
+        before normal routing sees the new information.
+
+        The framework therefore performs a generic *precedence validation* only
+        for non-literal semantic matches and only when the contract explicitly
+        declares contextual reentry. No domain vocabulary or SIM/NAO semantics
+        are embedded here.
+        """
+        if self.llm is None or not isinstance(expected_input, dict):
+            return False, None, None
+        classifier = expected_input.get("semantic_classifier")
+        if not isinstance(classifier, dict):
+            return False, None, None
+        option_actions = classifier.get("option_actions")
+        if not isinstance(option_actions, dict):
+            return False, None, None
+
+        reentry_option = None
+        for option, cfg in option_actions.items():
+            if isinstance(cfg, dict) and str(cfg.get("action") or "").strip().lower() == "contextual_reentry":
+                reentry_option = str(option)
+                break
+        if not reentry_option or str(classified).upper() == reentry_option.upper():
+            return False, reentry_option, None
+        if classifier.get("contextual_reentry_precedence") is False:
+            return False, reentry_option, None
+
+        prompt = (
+            "Você valida precedência entre retomar um workflow pausado e fazer reentrada contextual. "
+            "Não decida a intenção de negócio. Analise apenas se a mensagem atual é totalmente "
+            "consumida pela opção já classificada ou se contém informação substantiva adicional que "
+            "precisa ser interpretada pelo pipeline normal.\n\n"
+            f"Pergunta pendente: {str(pause_prompt or '').strip()}\n"
+            f"Opção inicialmente classificada: {str(classified)}\n"
+            f"Contexto relevante: {str(relevant_conversation_context or '').strip()}\n"
+            f"Mensagem atual: {str(text or '').strip()}\n\n"
+            "Responda somente REENTER se houver pedido, objeção, correção, explicação, motivo, entidade, "
+            "valor, referência ou outro fato novo que ainda precise de interpretação além da resposta "
+            "à pergunta pendente. Responda somente RESUME se a mensagem inteira for apenas a resposta "
+            "à pergunta pendente, admitindo somente cortesia sem nova demanda."
+        )
+        try:
+            answer = await self.llm.ainvoke(
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": str(text or "")},
+                ],
+                profile_name="router",
+                component_name="workflow.expected_input.precedence",
+                generation_name="workflow.expected_input.contextual_reentry_precedence",
+            )
+        except Exception as exc:
+            logger.warning("Falha ao validar precedência de contextual_reentry: %s", exc)
+            return False, reentry_option, None
+        raw = str(answer or "").strip()
+        return raw.upper() == "REENTER", reentry_option, raw
+
     @staticmethod
     def _last_assistant_prompt(state: dict[str, Any], current_text: str) -> str:
         history = [item for item in (state.get("history") or []) if isinstance(item, dict)]
@@ -524,6 +597,39 @@ class EnterpriseRouter:
                         option_actions = option_actions if isinstance(option_actions, dict) else {}
                         action_cfg = option_actions.get(str(classified)) or option_actions.get(str(classified).upper())
                         action_cfg = action_cfg if isinstance(action_cfg, dict) else {}
+
+                        # A semantic match that would resume the paused workflow
+                        # must not prematurely win over an explicitly declared
+                        # contextual_reentry option when the same utterance also
+                        # carries substantive new information. This validation is
+                        # intentionally generic and runs only after literal
+                        # expected_input matching has already failed.
+                        if str(action_cfg.get("action") or "").strip().lower() != "contextual_reentry":
+                            prefer_reentry, reentry_option, precedence_raw = await self._prefer_contextual_reentry_over_semantic_resume(
+                                text=str(text),
+                                classified=str(classified),
+                                expected_input=expected_input,
+                                pause_prompt=str(pause.get("prompt") or ""),
+                                relevant_conversation_context=relevant_context,
+                            )
+                            if prefer_reentry and reentry_option:
+                                decision = await self._route_contextual_reentry(
+                                    state=state,
+                                    original_input=str(text),
+                                    relevant_context=relevant_context,
+                                    classifier_output=str(reentry_option),
+                                    raw_classifier=raw_classifier,
+                                    allowed_values=list(expected_input.get("allowed_values") or []),
+                                )
+                                decision.metadata = {
+                                    **dict(decision.metadata or {}),
+                                    "contextual_reentry_preempted_resume": True,
+                                    "initial_classifier_output": str(classified),
+                                    "contextual_reentry_precedence_raw_output": precedence_raw,
+                                }
+                                await self._emit(decision, state)
+                                return decision
+
                         if str(action_cfg.get("action") or "").strip().lower() == "contextual_reentry":
                             decision = await self._route_contextual_reentry(
                                 state=state,

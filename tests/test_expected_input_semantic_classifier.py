@@ -300,3 +300,81 @@ def test_invoice_explanation_uses_continue_as_contextual_reentry_option():
     assert "quatorze e noventa e nove" in prompt and "CONTINUAR" in prompt
     assert "Nunca trate" in prompt
     assert "OUTRO" in prompt
+
+@pytest.mark.asyncio
+async def test_contextual_reentry_precedence_prevents_premature_resume_and_terminal_handoff(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(
+        """
+router:
+  fallback_agent: fallback_agent
+  confidence_threshold: 0.70
+intents:
+  - name: contestation
+    agent: contestation_agent
+    description: contestar cobrança não reconhecida
+    domain: demo
+    keywords: [contestar]
+    mcp_tools: [contestar_cobranca]
+""",
+        encoding="utf-8",
+    )
+    # 1) classifier misses the remainder and returns NAO;
+    # 2) generic precedence validator detects substantive remainder;
+    # 3) contextual reentry routes the full turn normally.
+    llm = _ClassifierLLM([
+        "NAO",
+        "REENTER",
+        '{"intent":"contestation","agent":"contestation_agent","confidence":0.99,"reason":"há contestação de cobrança não reconhecida"}',
+    ])
+    settings = SimpleNamespace(
+        ROUTING_CONFIG_PATH=str(routing),
+        ENABLE_LLM_ROUTER=True,
+        ENABLE_ROUTE_STICKINESS=False,
+    )
+    router = EnterpriseRouter(settings, llm=llm)
+    state = _state(
+        "ainda nao. Eu nao contratei esse neymar jr",
+        ["SIM", "NAO", "CONTINUAR"],
+        "Classifique {{ user_input }} considerando {{ relevant_conversation_context }} em {{ allowed_values }}",
+        history=[
+            {"role": "user", "content": "estou achando que minha fatura esta errada", "metadata": {"message_id": "anchor"}},
+            {"role": "assistant", "content": "Expliquei as cobranças. Com essa explicação, sanei sua dúvida?", "metadata": {"intent": "owner_intent"}},
+            {"role": "user", "content": "ainda nao. Eu nao contratei esse neymar jr", "metadata": {}},
+        ],
+        include_relevant_context=True,
+    )
+    state["pending_domain_workflow"]["context_anchor_message_id"] = "anchor"
+    state["pending_domain_workflow"]["pause"]["expected_input"]["semantic_classifier"]["option_actions"] = {
+        "CONTINUAR": {"action": "contextual_reentry"}
+    }
+
+    decision = await router.route(state)
+
+    assert decision.intent == "contestation"
+    assert decision.agent == "contestation_agent"
+    assert decision.metadata["contextual_reentry"] is True
+    assert decision.metadata["contextual_reentry_preempted_resume"] is True
+    assert decision.metadata["initial_classifier_output"] == "NAO"
+    assert decision.metadata["classifier_output"] == "CONTINUAR"
+    assert decision.metadata["contextual_reentry_precedence_raw_output"] == "REENTER"
+    assert not decision.metadata.get("workflow_resume")
+
+
+@pytest.mark.asyncio
+async def test_contextual_reentry_precedence_keeps_pure_semantic_resume(tmp_path):
+    router = _router(tmp_path, ["NAO", "RESUME"])
+    state = _state(
+        "ainda não resolveu",
+        ["SIM", "NAO", "CONTINUAR"],
+        "Classifique {{ user_input }} em {{ allowed_values }}",
+    )
+    state["pending_domain_workflow"]["pause"]["expected_input"]["semantic_classifier"]["option_actions"] = {
+        "CONTINUAR": {"action": "contextual_reentry"}
+    }
+
+    decision = await router.route(state)
+
+    assert decision.metadata["workflow_resume"] is True
+    assert decision.metadata["normalized_input"] == "NAO"
+    assert not decision.metadata.get("contextual_reentry")

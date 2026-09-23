@@ -604,31 +604,31 @@ class EnterpriseRouter:
                         # carries substantive new information. This validation is
                         # intentionally generic and runs only after literal
                         # expected_input matching has already failed.
-                        if str(action_cfg.get("action") or "").strip().lower() != "contextual_reentry":
-                            prefer_reentry, reentry_option, precedence_raw = await self._prefer_contextual_reentry_over_semantic_resume(
-                                text=str(text),
-                                classified=str(classified),
-                                expected_input=expected_input,
-                                pause_prompt=str(pause.get("prompt") or ""),
-                                relevant_conversation_context=relevant_context,
-                            )
-                            if prefer_reentry and reentry_option:
-                                decision = await self._route_contextual_reentry(
-                                    state=state,
-                                    original_input=str(text),
-                                    relevant_context=relevant_context,
-                                    classifier_output=str(reentry_option),
-                                    raw_classifier=raw_classifier,
-                                    allowed_values=list(expected_input.get("allowed_values") or []),
-                                )
-                                decision.metadata = {
-                                    **dict(decision.metadata or {}),
-                                    "contextual_reentry_preempted_resume": True,
-                                    "initial_classifier_output": str(classified),
-                                    "contextual_reentry_precedence_raw_output": precedence_raw,
-                                }
-                                await self._emit(decision, state)
-                                return decision
+                        # if str(action_cfg.get("action") or "").strip().lower() != "contextual_reentry":
+                        #     prefer_reentry, reentry_option, precedence_raw = await self._prefer_contextual_reentry_over_semantic_resume(
+                        #         text=str(text),
+                        #         classified=str(classified),
+                        #         expected_input=expected_input,
+                        #         pause_prompt=str(pause.get("prompt") or ""),
+                        #         relevant_conversation_context=relevant_context,
+                        #     )
+                        #     if prefer_reentry and reentry_option:
+                        #         decision = await self._route_contextual_reentry(
+                        #             state=state,
+                        #             original_input=str(text),
+                        #             relevant_context=relevant_context,
+                        #             classifier_output=str(reentry_option),
+                        #             raw_classifier=raw_classifier,
+                        #             allowed_values=list(expected_input.get("allowed_values") or []),
+                        #         )
+                        #         decision.metadata = {
+                        #             **dict(decision.metadata or {}),
+                        #             "contextual_reentry_preempted_resume": True,
+                        #             "initial_classifier_output": str(classified),
+                        #             "contextual_reentry_precedence_raw_output": precedence_raw,
+                        #         }
+                        #         await self._emit(decision, state)
+                        #         return decision
 
                         if str(action_cfg.get("action") or "").strip().lower() == "contextual_reentry":
                             decision = await self._route_contextual_reentry(

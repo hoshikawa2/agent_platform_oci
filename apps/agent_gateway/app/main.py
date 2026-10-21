@@ -16,7 +16,7 @@ from agent_framework.global_supervisor import (
     GlobalSupervisorRouter,
     InMemoryGlobalSessionStore,
 )
-from agent_framework.llm.providers import create_llm
+from app.supervisor_llm import build_supervisor_llm
 from agent_framework.observability.observer import AgentObserver
 from agent_framework.security import install_authentication
 
@@ -38,7 +38,7 @@ app.add_middleware(
 registry = BackendRegistry.from_yaml(settings.BACKENDS_CONFIG_PATH)
 analytics = create_analytics_publisher(settings)
 observer = AgentObserver(analytics=analytics)
-llm = create_llm(settings)
+llm = build_supervisor_llm(settings) if settings.GLOBAL_ROUTING_MODE in {"supervisor", "hybrid"} else None
 session_store = InMemoryGlobalSessionStore(ttl_seconds=settings.GLOBAL_SESSION_TTL_SECONDS)
 router = GlobalSupervisorRouter(
     registry=registry,

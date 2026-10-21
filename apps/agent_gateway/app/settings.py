@@ -46,6 +46,13 @@ class GatewaySettings(BaseSettings):
     LANGFUSE_HOST: str = "https://cloud.langfuse.com"
     MODEL_PRICES_JSON: str | None = None
     USD_BRL_RATE: str = "5.0"
+    OCI_COMPARTMENT_ID: str | None = None
+    OCI_GENAI_PROJECT_OCID: str | None = None
+
+    OCI_AUTH_MODE: str = "config_file"
+    OCI_CONFIG_FILE: str = "~/.oci/config"
+    OCI_CONFIG_PROFILE: str = "DEFAULT"
+    OCI_REGION: str | None = None
 
     # Analytics/Observer do próprio gateway.
     ENABLE_ANALYTICS: bool = False

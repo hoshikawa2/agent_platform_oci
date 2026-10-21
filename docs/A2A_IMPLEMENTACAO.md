@@ -29,7 +29,7 @@ python -m pip install -e 'libs/agent_framework[a2a]' -r apps/agent_gateway/requi
 export ENABLE_A2A=true
 export A2A_PUBLIC_URL=https://meu-gateway.example
 export BACKENDS_CONFIG_PATH="$PWD/apps/agent_gateway/config/backends.a2a.example.yaml"
-python -m uvicorn app.main:app --app-dir apps/agent_gateway --port 8010
+python -m uvicorn app.main:app --app-dir apps/agent_gateway --env-file .env --port 8010
 ```
 
 Edite primeiro as URLs do catálogo de exemplo. Para agentes externos, informe o

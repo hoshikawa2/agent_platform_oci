@@ -4226,3 +4226,10 @@ Este template inclui o arquivo opcional `config/tool_policies.yaml`. Use `operat
 Além da execução direta de MCP tools, uma operação transacional pode usar um workflow LangGraph determinístico após `clarification` e confirmação explícita. Configure `execution.mode: workflow` em `config/tool_policies.yaml`, mantenha as definições versionadas em `workflows/` e implemente as actions do domínio no projeto do agente. O runtime genérico está em `agent_framework.workflows`.
 
 Consulte `libs/agent_framework/docs/TRANSACTIONAL_WORKFLOWS_PT.md` e o exemplo `workflows/devolucao_pedido.v1.yaml`.
+
+## Agente A2A assíncrono
+
+O template também pode expor `/a2a`, com Tasks, consulta de status e streaming
+SSE, usando `ENABLE_A2A=true` e `A2A_TASK_MODE=true`. Consulte
+[A2A assíncrono](../../docs/A2A_ASSINCRONO.md) para ativação e integração ao Gateway.
+Os endpoints nativos permanecem disponíveis.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,13 @@ class GatewaySettings(BaseSettings):
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8010
     CORS_ORIGINS: str = "http://localhost:5173"
+
+    ENABLE_A2A: bool = False
+    A2A_TASK_MODE: bool = True
+    A2A_TASK_TIMEOUT_SECONDS: float = Field(default=120.0, gt=0)
+    A2A_PUBLIC_URL: str = "http://localhost:8010"
+    A2A_SECURITY_SCHEMES: dict = Field(default_factory=dict)
+    A2A_SECURITY: list[dict[str, list[str]]] = Field(default_factory=list)
 
     BACKENDS_CONFIG_PATH: str = "./config/backends.yaml"
     GLOBAL_ROUTING_MODE: Literal["router", "supervisor", "hybrid"] = "hybrid"

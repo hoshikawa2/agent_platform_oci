@@ -219,6 +219,10 @@ import asyncio
 @app.get("/gateway/events/{session_id:path}")
 async def gateway_events(session_id: str):
 
+    existing = await session_store.get(session_id)
+    if existing and existing.active_backend and registry.get(existing.active_backend).protocol == "a2a":
+        raise HTTPException(status_code=409, detail="A2A backend: use message/send; native event proxy is unavailable")
+
     async def stream():
         yield (
             "event: connected\n"
@@ -250,6 +254,9 @@ async def gateway_events(session_id: str):
             return
 
         backend = registry.get(backend_id)
+        if backend.protocol == "a2a":
+            yield 'event: error\ndata: {"message":"Native event proxy is unavailable for A2A backends"}\n\n'
+            return
 
         backend_base_url = (
                 getattr(backend, "base_url", None)
@@ -325,4 +332,17 @@ async def gateway_events(session_id: str):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+# Opt-in: existing deployments do not import or require the A2A SDK.
+if settings.ENABLE_A2A:
+    from agent_framework.a2a.server import install_a2a
+
+    async def _a2a_gateway_handler(data: dict):
+        return await gateway_message(GatewayRequest(**data))
+
+    install_a2a(
+        app, _a2a_gateway_handler, registry, settings.A2A_PUBLIC_URL,
+        settings.A2A_SECURITY_SCHEMES or None, settings.A2A_SECURITY or None,
+        task_mode=settings.A2A_TASK_MODE, timeout_seconds=settings.A2A_TASK_TIMEOUT_SECONDS,
     )

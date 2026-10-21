@@ -71,3 +71,13 @@ O Gateway emite eventos de observabilidade:
 - `IC.GLOBAL_GATEWAY_COMPLETED`
 - `NOC.005` em falhas
 - `NOC.006` em conclusão HTTP
+
+## A2A opcional
+
+A fachada A2A 1.0, a compatibilidade 0.3 e o catálogo misto de backends são
+explicados em [Integração A2A](../../docs/A2A_IMPLEMENTACAO.md).
+A ativação é opcional (`ENABLE_A2A=false` por padrão).
+
+A fachada também oferece [Tasks A2A assíncronas e streaming](../../docs/A2A_ASSINCRONO.md),
+com envio imediato, consulta, reconexão e cancelamento. O template de backend
+pode publicar o mesmo protocolo diretamente.

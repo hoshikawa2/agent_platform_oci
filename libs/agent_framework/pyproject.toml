@@ -27,6 +27,9 @@ dependencies = [
   "PyJWT[crypto]>=2.9.0"
 ]
 
+[project.optional-dependencies]
+a2a = ["a2a-sdk[http-server]==1.2.2"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

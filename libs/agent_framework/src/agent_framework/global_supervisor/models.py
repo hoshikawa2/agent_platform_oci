@@ -21,6 +21,12 @@ class BackendDefinition(BaseModel):
     examples: list[str] = Field(default_factory=list)
     priority: int = 100
     enabled: bool = True
+    protocol: Literal["native", "a2a"] = "native"
+    a2a_version: Literal["1.0", "0.3"] = "1.0"
+    a2a_agent_card_path: str = "/.well-known/agent-card.json"
+    a2a_rpc_path: str = "/a2a"
+    a2a_headers_env: dict[str, str] = Field(default_factory=dict)
+    a2a_poll_interval_seconds: float = Field(default=0.5, gt=0)
     health_path: str = "/health"
     message_path: str = "/gateway/message"
     sse_message_path: str = "/gateway/message/sse"

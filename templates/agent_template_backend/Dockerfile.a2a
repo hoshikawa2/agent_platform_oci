@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY libs/agent_framework /agent_framework
+COPY templates/agent_template_backend /app
+RUN pip install --no-cache-dir -e '/agent_framework[a2a]' -r requirements.txt
+ENV ENABLE_A2A=true
+ENV A2A_TASK_MODE=true
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

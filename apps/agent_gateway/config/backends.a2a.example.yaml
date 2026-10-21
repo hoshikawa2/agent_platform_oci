@@ -1,0 +1,27 @@
+#default_backend: native
+#backends:
+#  native:
+#    url: http://localhost:8000
+#    description: Agente nativo do framework
+#    keywords: [conta, fatura]
+#    # protocol omitido equivale a native
+#  external:
+#    protocol: a2a
+#    a2a_version: '1.0' # ou '0.3'
+#    url: https://external-agent.example
+#    a2a_rpc_path: /a2a # endpoint definido pelo operador a partir do Agent Card
+#    a2a_agent_card_path: /.well-known/agent-card.json
+#    description: Agente externo A2A
+#    keywords: [suporte]
+#    a2a_headers_env:
+#      Authorization: EXTERNAL_AGENT_AUTHORIZATION # valor completo: Bearer <token>
+
+default_backend: agent_template
+
+backends:
+  agent_template:
+    protocol: a2a
+    a2a_version: "1.0"
+    url: http://localhost:8000
+    a2a_rpc_path: /a2a
+    a2a_agent_card_path: /.well-known/agent-card.json

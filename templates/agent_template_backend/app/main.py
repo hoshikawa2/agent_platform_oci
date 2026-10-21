@@ -168,7 +168,14 @@ def _resolve_identity(req: GatewayRequest, msg) -> tuple[AgentIdentity, dict, Bu
     return identity, context, business_context, missing_identity_keys
 
 
-async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) -> dict:
+async def _emit_gateway_event(session_id, event, payload, emit_sse, progress):
+    if emit_sse:
+        await sse_hub.emit(session_id, event, payload)
+    if progress is not None:
+        await progress(event, payload)
+
+
+async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False, progress=None) -> dict:
     try:
         msg = await gateway.normalize(req.channel, req.payload)
     except ValueError as exc:
@@ -191,7 +198,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
 
     stream = sse_hub.stream_for(agent_session_id)
     async with stream.lock:
-        await sse_hub.emit(agent_session_id, "flow.start", {"session_id": agent_session_id, "message_id": message_id, "agent_id": identity.agent_id}) if emit_sse else None
+        await _emit_gateway_event(agent_session_id, "flow.start", {"session_id": agent_session_id, "message_id": message_id, "agent_id": identity.agent_id}, emit_sse, progress)
 
         session = await sessions.get(agent_session_id)
         if not session:
@@ -296,11 +303,11 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
             )
             rendered = await gateway.render(response)
             await telemetry.event("gateway.message.replayed", {"session_id": agent_session_id, "reason": interruption.reason})
-            await sse_hub.emit(agent_session_id, "message.responded", rendered) if emit_sse else None
+            await _emit_gateway_event(agent_session_id, "message.responded", rendered, emit_sse, progress)
             return rendered
 
         effective_text = interruption.text
-        await sse_hub.emit(agent_session_id, "session.upserted", {"session_id": agent_session_id, "business_context": business_context.model_dump()}) if emit_sse else None
+        await _emit_gateway_event(agent_session_id, "session.upserted", {"session_id": agent_session_id, "business_context": business_context.model_dump()}, emit_sse, progress)
 
         await memory.append(
             agent_session_id,
@@ -317,7 +324,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
                 },
             ),
         )
-        await sse_hub.emit(agent_session_id, "message.received", {"session_id": agent_session_id, "role": "user"}) if emit_sse else None
+        await _emit_gateway_event(agent_session_id, "message.received", {"session_id": agent_session_id, "role": "user"}, emit_sse, progress)
         history = [m.model_dump(mode="json") for m in await memory.list(agent_session_id)]
 
         cms_input = {
@@ -362,7 +369,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
             _root_span=True,
         ) as root_span:
             await telemetry.event("gateway.message.received", trace_context)
-            await sse_hub.emit(agent_session_id, "workflow.started", trace_context) if emit_sse else None
+            await _emit_gateway_event(agent_session_id, "workflow.started", trace_context, emit_sse, progress)
             result = await workflow.ainvoke(
                 {
                     "tenant_id": identity.tenant_id,
@@ -396,7 +403,7 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
             )
 
             await checkpoints.put(agent_session_id, {"state": result, "message_id": message_id})
-            await sse_hub.emit(agent_session_id, "workflow.completed", {"session_id": agent_session_id, "route": result.get("route"), "intent": result.get("intent")}) if emit_sse else None
+            await _emit_gateway_event(agent_session_id, "workflow.completed", {"session_id": agent_session_id, "route": result.get("route"), "intent": result.get("intent")}, emit_sse, progress)
 
             answer = result.get("final_answer") or result.get("answer") or ""
             await memory.append(
@@ -480,8 +487,8 @@ async def _process_gateway_message(req: GatewayRequest, emit_sse: bool = False) 
             )
             rendered = await gateway.render(response)
             root_span.set_output(rendered)
-            await sse_hub.emit(agent_session_id, "message.responded", rendered) if emit_sse else None
-            await sse_hub.emit(agent_session_id, "flow.end", {"session_id": agent_session_id, "message_id": message_id}) if emit_sse else None
+            await _emit_gateway_event(agent_session_id, "message.responded", rendered, emit_sse, progress)
+            await _emit_gateway_event(agent_session_id, "flow.end", {"session_id": agent_session_id, "message_id": message_id}, emit_sse, progress)
             return rendered
 
 
@@ -649,3 +656,17 @@ async def get_session_checkpoint(session_id: str):
 @app.on_event("shutdown")
 async def shutdown():
     telemetry.shutdown()
+
+
+# Optional direct A2A endpoint for agents built with the framework template.
+if settings.ENABLE_A2A:
+    from agent_framework.a2a.progress import report_progress
+    from agent_framework.a2a.server import install_backend_a2a
+    from agent_framework.security import install_authentication
+
+    install_authentication(app, prefix="AGENT_AUTH")
+
+    async def _a2a_backend_handler(data: dict):
+        return await _process_gateway_message(GatewayRequest(**data), progress=report_progress)
+
+    install_backend_a2a(app, _a2a_backend_handler, agent_profiles, settings)

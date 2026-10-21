@@ -14,6 +14,13 @@ load_dotenv(override=False)
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
+    ENABLE_A2A: bool = False
+    A2A_PUBLIC_URL: str = 'http://localhost:8000'
+    A2A_TASK_MODE: bool = True
+    A2A_TASK_TIMEOUT_SECONDS: float = Field(default=120.0, gt=0)
+    A2A_SECURITY_SCHEMES: dict = Field(default_factory=dict)
+    A2A_SECURITY: list[dict[str, list[str]]] = Field(default_factory=list)
+
     APP_NAME: str = 'ai-agent-template'
     APP_ENV: str = 'local'
     LOG_LEVEL: str = 'INFO'

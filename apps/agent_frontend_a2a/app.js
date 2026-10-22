@@ -73,7 +73,7 @@ function renderResponse(response) {
   for (const part of agentMessages(response)) {
     const section=document.createElement('section'); section.className='agent-section';
     const header=document.createElement('div'); header.className='agent-header';
-    const avatar=document.createElement('span'); avatar.className='agent-avatar'; avatar.textContent='✳'; avatar.setAttribute('aria-hidden','true');
+    const avatar=document.createElement('span'); avatar.className='agent-avatar'; avatar.textContent='O'; avatar.setAttribute('aria-hidden','true');
     const name=document.createElement('span'); name.textContent=String(part.agent).replaceAll('_',' ');
     const body=document.createElement('div'); body.className='agent-body'; body.textContent=typeof part.text==='string' ? part.text : JSON.stringify(part.text,null,2);
     header.append(avatar,name); section.append(header,body); group.append(section);

@@ -2,12 +2,12 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Agent Workspace · A2A</title><link rel="stylesheet" href="styles.css">
+  <title>Oracle Agent Workspace · A2A</title><link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="workspace">
     <aside class="sidebar">
-      <a class="brand" href="./"><span class="brand-mark" aria-hidden="true">a</span><span>Agent Workspace<small>FRAMEWORK OCI · A2A</small></span></a>
+      <a class="brand" href="./"><img class="oracle-logo" src="oracle-logo.svg" alt="Oracle"><span class="brand-copy">Agent Workspace<small>FRAMEWORK OCI · A2A</small></span></a>
       <div class="sidebar-heading"><span>CONEXÃO</span><span class="badge" id="versionBadge">A2A</span></div>
       <form id="connectionForm" class="connection-form">
         <label>Endereço do serviço<input id="serviceUrl" type="url" value="http://localhost:8000" required spellcheck="false"></label>
@@ -41,7 +41,7 @@
       </section>
       <div id="notice" class="notice" role="alert" hidden></div>
       <section id="chat" class="chat" role="log" aria-label="Conversa com o agente" aria-live="polite">
-        <div id="welcome" class="welcome"><span class="welcome-icon" aria-hidden="true">✳</span><span class="eyebrow">CONVERSAS QUE VIRAM AÇÕES</span><h2>O próximo passo<br>começa com uma mensagem.</h2><p>Conecte um agente ou o Gateway do framework.<br>Acompanhe cada tarefa até a resposta.</p><div class="suggestions"><button type="button" data-prompt="O que você pode fazer por mim?">Conhecer o agente <span>↗</span></button><button type="button" data-prompt="Quero consultar meu pedido.">Consultar um pedido <span>↗</span></button></div></div>
+        <div id="welcome" class="welcome"><span class="eyebrow">CONVERSAS QUE VIRAM AÇÕES</span><h2>O próximo passo<br>começa com uma mensagem.</h2><p>Conecte um agente ou o Gateway do framework.<br>Acompanhe cada tarefa até a resposta.</p><div class="suggestions"><button type="button" data-prompt="O que você pode fazer por mim?">Conhecer o agente <span>↗</span></button><button type="button" data-prompt="Quero consultar meu pedido.">Consultar um pedido <span>↗</span></button></div></div>
       </section>
       <div class="composer-area"><form id="messageForm" class="composer"><label class="sr-only" for="message">Mensagem para o agente</label><textarea id="message" rows="1" placeholder="Escreva uma mensagem para começar…" disabled></textarea><button id="sendButton" type="submit" class="send-button" aria-label="Enviar mensagem" disabled>↑</button></form><div class="composer-footer"><span>Enter envia · Shift + Enter quebra a linha</span><span id="contextShort">Conversa nova</span></div></div>
       <details class="activity-panel"><summary>Atividade da tarefa <span id="eventCount">0 eventos</span></summary><ol id="activity"></ol><dl><dt>Contexto</dt><dd id="contextId">—</dd><dt>Tarefa</dt><dd id="taskId">—</dd></dl></details>

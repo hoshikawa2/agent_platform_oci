@@ -4,7 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders" />
+    <list default="true" id="30a0e1d8-9d7d-469b-b241-f300911cee8a" name="Changes" comment="Ajustes na documentação e remanejamento dos folders">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -51,6 +53,7 @@
     "ModuleVcsDetector.initialDetectionPerformed": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
@@ -58,9 +61,9 @@
     "Shell Script.agent_template_backend.executor": "Run",
     "Shell Script.mcp_gateway.executor": "Run",
     "Shell Script.mcp_server.executor": "Run",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "main",
     "kotlin-language-version-configured": "true",
-    "last_opened_file_path": "C:/Asus_Projects/kbdb/agent_framework_oci/templates/agent_template_backend",
+    "last_opened_file_path": "D:/Dropbox/ORACLE/TIM/FY27/Commits/agent_platform_oci",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -149,8 +152,8 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-jdk-9823dce3aa75-fbdcb00ec9e3-intellij.indexing.shared.core-IU-251.29188.36" />
-        <option value="bundled-js-predefined-d6986cc7102b-09060db00ec0-JavaScript-IU-251.29188.36" />
+        <option value="bundled-jdk-30f59d01ecdd-cffe25b9f5b3-intellij.indexing.shared.core-IU-253.28294.334" />
+        <option value="bundled-js-predefined-d6986cc7102b-c7e53b3be11b-JavaScript-IU-253.28294.334" />
       </set>
     </attachedChunks>
   </component>
@@ -174,6 +177,7 @@
       <workItem from="1785409583147" duration="1561000" />
       <workItem from="1785452072692" duration="784000" />
       <workItem from="1785453511270" duration="1006000" />
+      <workItem from="1792665278602" duration="734000" />
     </task>
     <task id="LOCAL-00001" summary="Ajustes na documentação e remanejamento dos folders">
       <option name="closed" value="true" />
